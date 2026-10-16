@@ -53,6 +53,7 @@ ${setupLine}
 - Copy the template's structure: one test.describe block, every test title starts with its type tag ([happy], [schema], [invalid-input], [auth]), and every test records test.info().annotations.push({ type: 'actual-status', description: String(response.status()) }) (or a helper like recordStatus) before its first expect.
 - Status assertions, exactly in the template's style: happy and schema expect(response.status()).toBe(<exact probe status ${probe.status}>); invalid-input expect status toBeGreaterThanOrEqual(400) and toBeLessThanOrEqual(499); auth expect([401, 403]).toContain(response.status()).
 - Never expect a 5xx. Assert status codes, field presence and field types. Assert exact values only for values the test itself sent.
+- Tests run in parallel against a shared live API while other tests create, update and delete data. Never assert a list length or item count, never compare the results of two calls, and never assume a list is unchanged or contains (or lacks) a specific item you did not create in the same test. For lists, assert the array type and the shape of its items only.
 - Response bodies may be empty or not JSON (see the probe). Only call response.json() when the probe shows a JSON body for that status.
 - No process.env, no test.only, no test.skip, no try/catch, no .catch(). Do not import from @playwright/test.
 - One test per plan case: ${plan.cases.length} tests in total.

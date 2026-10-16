@@ -28,11 +28,18 @@ export function claudeCallsUsed(): number {
   return callsUsed;
 }
 
-// Defensive: never let an auth value from the environment reach an error or log line.
-function redact(text: string): string {
+// Never let an auth value reach an error or log line: env values whose name contains AUTH,
+// plus any extra secrets the caller passes.
+export function redact(text: string, extraSecrets: string[] = []): string {
+  const secrets = [
+    ...Object.entries(process.env)
+      .filter(([name]) => /AUTH/i.test(name))
+      .map(([, value]) => value),
+    ...extraSecrets,
+  ];
   let out = text;
-  for (const [name, value] of Object.entries(process.env)) {
-    if (/AUTH/i.test(name) && value && value.length >= 6) out = out.split(value).join('<redacted>');
+  for (const value of secrets) {
+    if (value && value.length >= 6) out = out.split(value).join('<redacted>');
   }
   return out;
 }
@@ -47,8 +54,9 @@ type CliOutput = {
 
 export async function callClaude(stepName: string, endpointId: string, system: string, user: string): Promise<string> {
   const budget = claudeBudget();
+  // Check and increment with no await in between, so parallel callers cannot overshoot the budget.
   if (callsUsed >= budget) throw new BudgetExceeded(callsUsed, budget);
-  callsUsed++;
+  const callNumber = ++callsUsed;
 
   const cwd = mkdtempSync(join(tmpdir(), 'api-test-agent-'));
   const env = { ...process.env };
@@ -63,6 +71,7 @@ export async function callClaude(stepName: string, endpointId: string, system: s
     '--disable-slash-commands',
     '--no-session-persistence',
   ];
+  if (process.env.CLAUDE_MODEL) args.push('--model', process.env.CLAUDE_MODEL);
 
   const started = Date.now();
   try {
@@ -113,7 +122,7 @@ export async function callClaude(stepName: string, endpointId: string, system: s
     const tokens = u
       ? ` tokens in=${(u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0)} out=${u.output_tokens ?? 0}`
       : '';
-    console.log(`[claude] ${stepName} ${endpointId} ${secs}s${tokens} (call ${callsUsed}/${budget})`);
+    console.log(`[claude] ${stepName} ${endpointId} ${secs}s${tokens} (call ${callNumber}/${budget})`);
     return parsed.result;
   } finally {
     rmSync(cwd, { recursive: true, force: true });

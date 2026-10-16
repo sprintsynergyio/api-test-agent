@@ -81,6 +81,7 @@ ${endpoint.requiresAuth ? '- "auth" cases send the same valid request without th
 - expectedStatus is a string: an exact code like "200", or "4xx", or "401|403".
 - Each title starts with its type tag in square brackets, e.g. "[happy] ${endpoint.id} ...".
 - assertions are short, concrete checks: status, presence and type of response fields, and exact values only for values the test itself sent.
+- Tests run in parallel against a shared live API while other tests create, update and delete data. Every case must be independent of that. Never plan cases that compare two calls ("stable", "idempotent", "unchanged"), count items, or check the exact contents of a list. For list endpoints check the array type and the shape of its items only.
 
 Answer with JSON only, exactly this shape:
 {"endpointId":"${endpoint.id}","cases":[{"id":"short-kebab-id","type":"happy","title":"[happy] ...","requestDescription":"...","expectedStatus":"${probe.status}","assertions":["..."]}]}`;

@@ -8,7 +8,8 @@
     "typecheck": "tsc -p tsconfig.json",
     "api:local": "node local-api/server.mjs",
     "api:local:fixed": "FIXED=1 node local-api/server.mjs",
-    "probe": "tsx agent/probe.ts"
+    "probe": "tsx agent/probe.ts",
+    "agent": "tsx agent/cli.ts"
   },
   "keywords": [],
   "author": "",
