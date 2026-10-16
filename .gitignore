@@ -6,3 +6,4 @@ test-results/
 generated/
 input/ui-run.json
 playwright-report/
+.tscheck/

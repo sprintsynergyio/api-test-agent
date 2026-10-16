@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { loadConfig, type Config, type Endpoint } from './config';
@@ -18,8 +18,19 @@ export type ProbeResult = {
   body?: unknown;
   bodyText?: string;
   durationMs: number;
+  usable: boolean;
   error?: string;
 };
+
+const isSuccess = (status: number | null) => status !== null && status >= 200 && status < 300;
+
+export function readProbe(endpointId: string, file = join(PROBE_DIR, `${endpointId}.json`)): ProbeResult {
+  try {
+    return JSON.parse(readFileSync(file, 'utf8')) as ProbeResult;
+  } catch (err) {
+    throw new Error(`Cannot read probe file ${file} (run npm run probe first): ${firstLine(err)}`);
+  }
+}
 
 // Playwright errors append a multi-line call log that includes request headers (auth value).
 // Keep only the first line so the console line stays parseable and no secret is written out.
@@ -44,6 +55,7 @@ async function probeEndpoint(config: Config, clients: Clients, endpoint: Endpoin
     status: null,
     contentType: null,
     durationMs: 0,
+    usable: false,
   };
 
   if (endpoint.setup) {
@@ -64,6 +76,7 @@ async function probeEndpoint(config: Config, clients: Clients, endpoint: Endpoin
     result.durationMs = Date.now() - started;
     result.status = response.status();
     result.contentType = response.headers()['content-type'] ?? null;
+    result.usable = isSuccess(result.status);
     try {
       if (text.trim() === '') throw new Error('empty');
       result.body = truncateArrays(JSON.parse(text));
@@ -85,9 +98,15 @@ export async function probeAll(config: Config, authValue: string): Promise<Probe
   const results: ProbeResult[] = [];
   try {
     for (const endpoint of config.endpoints) {
-      const result = await probeEndpoint(config, clients, endpoint);
+      let result = await probeEndpoint(config, clients, endpoint);
+      // A non-2xx probe is not usable for planning. Retry once (setup runs again, so a fresh id).
+      if (result.status !== null && !result.usable) {
+        result = await probeEndpoint(config, clients, endpoint);
+      }
       writeFileSync(join(PROBE_DIR, `${endpoint.id}.json`), JSON.stringify(result, null, 2) + '\n');
-      console.log(result.status === null ? `${endpoint.id} FAILED ${result.error}` : `${endpoint.id} OK ${result.status}`);
+      if (result.status === null) console.log(`${endpoint.id} FAILED ${result.error}`);
+      else if (!result.usable) console.log(`${endpoint.id} FAILED returned ${result.status} after retry`);
+      else console.log(`${endpoint.id} OK ${result.status}`);
       results.push(result);
     }
   } finally {
