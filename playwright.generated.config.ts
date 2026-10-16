@@ -5,6 +5,7 @@ export default defineConfig({
   testIgnore: '**/.candidate/**',
   timeout: 60_000,
   reporter: [
+    ['list'],
     ['html', { outputFolder: 'reports/html', open: 'never' }],
     ['json', { outputFile: 'reports/results.json' }],
   ],

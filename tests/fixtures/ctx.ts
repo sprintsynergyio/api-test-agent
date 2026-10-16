@@ -1,6 +1,7 @@
 import 'dotenv/config';
-import { test as base, expect, request, type APIRequestContext } from '@playwright/test';
+import { test as base, expect, type APIRequestContext } from '@playwright/test';
 import { loadConfig } from '../../agent/config';
+import { createClients, createResource, disposeClients } from '../../agent/http';
 
 export type Ctx = {
   baseUrl: string;
@@ -22,45 +23,16 @@ export const test = base.extend<{ ctx: Ctx }>({
       );
     }
 
-    const api = await request.newContext({
-      baseURL: config.baseUrl,
-      extraHTTPHeaders: { ...config.defaultHeaders, [config.auth.header]: authValue },
+    const clients = await createClients(config, authValue);
+
+    await use({
+      baseUrl: config.baseUrl,
+      api: clients.api,
+      noAuthApi: clients.noAuthApi,
+      createResource: (endpointId) => createResource(config, clients, endpointId),
     });
-    const noAuthApi = await request.newContext({
-      baseURL: config.baseUrl,
-      extraHTTPHeaders: { ...config.defaultHeaders },
-    });
 
-    const createResource = async (endpointId: string): Promise<string> => {
-      const endpoint = config.endpoints.find((e) => e.id === endpointId);
-      if (!endpoint) throw new Error(`createResource: unknown endpoint "${endpointId}"`);
-      const idField = config.endpoints.find((e) => e.setup?.endpointId === endpointId)?.setup?.idField;
-      if (!idField) throw new Error(`createResource: no endpoint uses "${endpointId}" as setup, so idField is unknown`);
-
-      const client = endpoint.requiresAuth ? api : noAuthApi;
-      const response = await client.fetch(endpoint.path, { method: endpoint.method, data: endpoint.body });
-      const text = await response.text();
-      if (!response.ok()) {
-        throw new Error(`createResource(${endpointId}) failed: status ${response.status()}, body: ${text}`);
-      }
-      let id: unknown;
-      try {
-        id = JSON.parse(text)?.[idField];
-      } catch {
-        id = undefined;
-      }
-      if (id === undefined || id === null || id === '') {
-        throw new Error(
-          `createResource(${endpointId}) returned no "${idField}": status ${response.status()}, body: ${text}`,
-        );
-      }
-      return String(id);
-    };
-
-    await use({ baseUrl: config.baseUrl, api, noAuthApi, createResource });
-
-    await api.dispose();
-    await noAuthApi.dispose();
+    await disposeClients(clients);
   },
 });
 
