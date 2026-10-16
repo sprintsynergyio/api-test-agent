@@ -1,0 +1,62 @@
+{
+  "baseUrl": "https://restful-booker.herokuapp.com",
+  "defaultHeaders": {
+    "Accept": "application/json",
+    "Content-Type": "application/json"
+  },
+  "auth": {
+    "header": "Authorization",
+    "valueEnv": "API_AUTH_VALUE"
+  },
+  "endpoints": [
+    {
+      "id": "list-bookings",
+      "method": "GET",
+      "path": "/booking",
+      "requiresAuth": false
+    },
+    {
+      "id": "create-booking",
+      "method": "POST",
+      "path": "/booking",
+      "requiresAuth": false,
+      "body": {
+        "firstname": "Jim",
+        "lastname": "Brown",
+        "totalprice": 111,
+        "depositpaid": true,
+        "bookingdates": { "checkin": "2026-11-01", "checkout": "2026-11-05" },
+        "additionalneeds": "Breakfast"
+      }
+    },
+    {
+      "id": "get-booking",
+      "method": "GET",
+      "path": "/booking/{id}",
+      "requiresAuth": false,
+      "setup": { "endpointId": "create-booking", "idField": "bookingid" }
+    },
+    {
+      "id": "update-booking",
+      "method": "PUT",
+      "path": "/booking/{id}",
+      "requiresAuth": true,
+      "body": {
+        "firstname": "Sara",
+        "lastname": "Khan",
+        "totalprice": 250,
+        "depositpaid": false,
+        "bookingdates": { "checkin": "2026-12-10", "checkout": "2026-12-14" },
+        "additionalneeds": "Late checkout"
+      },
+      "setup": { "endpointId": "create-booking", "idField": "bookingid" }
+    },
+    {
+      "id": "delete-booking",
+      "method": "DELETE",
+      "path": "/booking/{id}",
+      "requiresAuth": true,
+      "setup": { "endpointId": "create-booking", "idField": "bookingid" }
+    }
+  ]
+}

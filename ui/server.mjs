@@ -1,0 +1,249 @@
+// Demo UI server. No dependencies. Run from the project root: node ui/server.mjs
+// Open http://localhost:3000
+//
+// Contract with the agent (agent/cli.ts):
+//   - stdout phase headers: "=== PROBING ===", "=== PLANNING ===", "=== GENERATING ===",
+//     "=== RUNNING TESTS ===", "=== SUMMARY ==="
+//   - per endpoint lines inside probe/plan/generate: "<endpointId> OK <detail>" or "<endpointId> FAILED <reason>"
+//   - out/summary.json in the shape documented in ui/CONTRACT.md
+//
+// AGENT_CMD env var overrides the agent command (used for testing the UI with a mock agent).
+
+import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const PORT = Number(process.env.UI_PORT || 3000);
+const INPUT_DIR = path.join(ROOT, "input");
+const RUN_FILE = "input/ui-run.json";
+const SUMMARY = path.join(ROOT, "out", "summary.json");
+const GENERATED = path.join(ROOT, "generated");
+const REPORT_DIR = path.join(ROOT, "reports", "html");
+const INDEX = path.join(ROOT, "ui", "index.html");
+
+const MIME = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".svg": "image/svg+xml",
+  ".zip": "application/zip",
+  ".txt": "text/plain; charset=utf-8",
+  ".webm": "video/webm",
+};
+
+let run = null; // { proc, lines, startedAt, exitCode, clients }
+
+function json(res, status, body) {
+  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+  res.end(JSON.stringify(body));
+}
+
+function readBody(req) {
+  return new Promise((resolve) => {
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", () => resolve(raw));
+  });
+}
+
+function listInputs() {
+  if (!fs.existsSync(INPUT_DIR)) return [];
+  return fs
+    .readdirSync(INPUT_DIR)
+    .filter((f) => f.endsWith(".json") && f !== "ui-run.json")
+    .sort();
+}
+
+// Quick shape check so the user gets instant feedback. The agent does the full zod validation.
+function checkInput(text) {
+  let cfg;
+  try {
+    cfg = JSON.parse(text);
+  } catch (e) {
+    return `Invalid JSON: ${e.message}`;
+  }
+  if (!cfg || typeof cfg !== "object") return "Input must be a JSON object";
+  if (typeof cfg.baseUrl !== "string" || !/^https?:\/\//.test(cfg.baseUrl)) return "baseUrl must be a URL starting with http:// or https://";
+  if (!Array.isArray(cfg.endpoints) || cfg.endpoints.length === 0) return "endpoints must be a non-empty array";
+  for (const [i, e] of cfg.endpoints.entries()) {
+    if (!e || typeof e.id !== "string") return `endpoints[${i}].id is required`;
+    if (typeof e.method !== "string") return `endpoints[${i}].method is required`;
+    if (typeof e.path !== "string" || !e.path.startsWith("/")) return `endpoints[${i}].path must start with /`;
+  }
+  return null;
+}
+
+const ANSI = /\x1b\[[0-9;]*[A-Za-z]/g;
+
+function broadcast(event, data) {
+  if (!run) return;
+  const msg = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const c of run.clients) c.write(msg);
+}
+
+function pushLine(line) {
+  const clean = line.replace(ANSI, "").replace(/\r/g, "");
+  run.lines.push(clean);
+  broadcast("log", clean);
+}
+
+function agentCommand() {
+  if (process.env.AGENT_CMD) {
+    const parts = process.env.AGENT_CMD.split(" ").filter(Boolean);
+    return { cmd: parts[0], args: parts.slice(1) };
+  }
+  const tsx = path.join(ROOT, "node_modules", ".bin", "tsx");
+  return { cmd: tsx, args: ["agent/cli.ts"] };
+}
+
+function startRun() {
+  const { cmd, args } = agentCommand();
+  const proc = spawn(cmd, [...args, RUN_FILE], {
+    cwd: ROOT,
+    env: { ...process.env, FORCE_COLOR: "0", NO_COLOR: "1" },
+  });
+  const prevClients = run ? run.clients : new Set();
+  run = { proc, lines: [], startedAt: Date.now(), exitCode: null, clients: prevClients };
+  broadcast("start", { startedAt: run.startedAt });
+
+  for (const stream of [proc.stdout, proc.stderr]) {
+    let buf = "";
+    stream.on("data", (chunk) => {
+      buf += chunk.toString();
+      const parts = buf.split("\n");
+      buf = parts.pop();
+      parts.forEach(pushLine);
+    });
+    stream.on("end", () => {
+      if (buf) pushLine(buf);
+      buf = "";
+    });
+  }
+  proc.on("error", (err) => {
+    pushLine(`UI: could not start the agent: ${err.message}`);
+  });
+  proc.on("close", (code) => {
+    run.exitCode = code ?? 1;
+    broadcast("done", { exitCode: run.exitCode, durationSec: Math.round((Date.now() - run.startedAt) / 1000) });
+  });
+}
+
+function isRunning() {
+  return run && run.exitCode === null;
+}
+
+function serveFile(res, file) {
+  fs.readFile(file, (err, data) => {
+    if (err) return json(res, 404, { error: "not found" });
+    res.writeHead(200, { "Content-Type": MIME[path.extname(file)] || "application/octet-stream", "Cache-Control": "no-store" });
+    res.end(data);
+  });
+}
+
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, "http://localhost");
+  const p = url.pathname;
+
+  if (req.method === "GET" && (p === "/" || p === "/index.html")) return serveFile(res, INDEX);
+
+  if (req.method === "GET" && p === "/api/inputs") return json(res, 200, listInputs());
+
+  if (req.method === "GET" && p === "/api/input") {
+    const name = url.searchParams.get("name");
+    if (!listInputs().includes(name)) return json(res, 404, { error: "unknown input file" });
+    return json(res, 200, { name, content: fs.readFileSync(path.join(INPUT_DIR, name), "utf8") });
+  }
+
+  if (req.method === "GET" && p === "/api/state") {
+    return json(res, 200, {
+      running: !!isRunning(),
+      startedAt: run ? run.startedAt : null,
+      exitCode: run ? run.exitCode : null,
+      hasSummary: fs.existsSync(SUMMARY),
+    });
+  }
+
+  if (req.method === "POST" && p === "/api/run") {
+    if (isRunning()) return json(res, 409, { error: "A run is already in progress" });
+    let body;
+    try {
+      body = JSON.parse(await readBody(req));
+    } catch {
+      return json(res, 400, { error: "Request body must be JSON" });
+    }
+    const problem = checkInput(body && body.json);
+    if (problem) return json(res, 400, { error: problem });
+    fs.writeFileSync(path.join(ROOT, RUN_FILE), body.json);
+    startRun();
+    return json(res, 202, { started: true });
+  }
+
+  if (req.method === "POST" && p === "/api/stop") {
+    if (!isRunning()) return json(res, 409, { error: "No run in progress" });
+    run.proc.kill("SIGTERM");
+    pushLine("UI: run stopped by user");
+    return json(res, 200, { stopped: true });
+  }
+
+  if (req.method === "GET" && p === "/api/stream") {
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-store",
+      Connection: "keep-alive",
+    });
+    res.write(": connected\n\n");
+    if (!run) run = { proc: null, lines: [], startedAt: null, exitCode: -1, clients: new Set() };
+    if (run.startedAt) {
+      res.write(`event: start\ndata: ${JSON.stringify({ startedAt: run.startedAt })}\n\n`);
+      for (const l of run.lines) res.write(`event: log\ndata: ${JSON.stringify(l)}\n\n`);
+      if (run.exitCode !== null && run.exitCode !== -1) {
+        res.write(`event: done\ndata: ${JSON.stringify({ exitCode: run.exitCode, replay: true })}\n\n`);
+      }
+    }
+    run.clients.add(res);
+    const ping = setInterval(() => res.write(": ping\n\n"), 15000);
+    req.on("close", () => {
+      clearInterval(ping);
+      run.clients.delete(res);
+    });
+    return;
+  }
+
+  if (req.method === "GET" && p === "/api/summary") {
+    if (!fs.existsSync(SUMMARY)) return json(res, 404, { error: "No summary yet. Run the agent first." });
+    try {
+      return json(res, 200, JSON.parse(fs.readFileSync(SUMMARY, "utf8")));
+    } catch (e) {
+      return json(res, 500, { error: `summary.json is not valid JSON: ${e.message}` });
+    }
+  }
+
+  if (req.method === "GET" && p === "/api/spec") {
+    const name = url.searchParams.get("name") || "";
+    if (!/^[a-z0-9-]+\.spec\.ts$/.test(name)) return json(res, 400, { error: "invalid spec name" });
+    const file = path.join(GENERATED, name);
+    if (!fs.existsSync(file)) return json(res, 404, { error: "spec not found" });
+    return json(res, 200, { name, content: fs.readFileSync(file, "utf8") });
+  }
+
+  if (req.method === "GET" && (p === "/report" || p.startsWith("/report/"))) {
+    let rel = decodeURIComponent(p.slice("/report".length)) || "/index.html";
+    if (rel.endsWith("/")) rel += "index.html";
+    const file = path.normalize(path.join(REPORT_DIR, rel));
+    if (!file.startsWith(REPORT_DIR)) return json(res, 403, { error: "forbidden" });
+    if (!fs.existsSync(file)) return json(res, 404, { error: "Report not found. Run the agent first." });
+    return serveFile(res, file);
+  }
+
+  json(res, 404, { error: "not found" });
+});
+
+server.listen(PORT, "127.0.0.1", () => {
+  console.log(`API Test Agent UI running on http://localhost:${PORT}`);
+});

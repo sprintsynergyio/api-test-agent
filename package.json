@@ -1,0 +1,27 @@
+{
+  "name": "qa-test-agent",
+  "version": "1.0.0",
+  "description": "",
+  "scripts": {
+    "test:template": "playwright test -c playwright.config.ts",
+    "test:generated": "playwright test -c playwright.generated.config.ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "api:local": "node local-api/server.mjs",
+    "api:local:fixed": "FIXED=1 node local-api/server.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "@playwright/test": "^1.64.1",
+    "@types/node": "^26.6.5",
+    "dotenv": "^18.0.8",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "zod": "^4.6.7"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

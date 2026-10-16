@@ -1,0 +1,46 @@
+{
+  "baseUrl": "https://restful-booker.herokuapp.com",
+  "defaultHeaders": {
+    "Accept": "application/json",
+    "Content-Type": "application/json"
+  },
+  "auth": {
+    "header": "Authorization",
+    "valueEnv": "API_AUTH_VALUE"
+  },
+  "endpoints": [
+    {
+      "id": "list-bookings",
+      "method": "GET",
+      "path": "/booking",
+      "requiresAuth": false
+    },
+    {
+      "id": "create-booking",
+      "method": "POST",
+      "path": "/booking",
+      "requiresAuth": false,
+      "body": {
+        "firstname": "Jim",
+        "lastname": "Brown",
+        "totalprice": 111,
+        "depositpaid": true,
+        "bookingdates": {
+          "checkin": "2026-11-01",
+          "checkout": "2026-11-05"
+        },
+        "additionalneeds": "Breakfast"
+      }
+    },
+    {
+      "id": "get-booking",
+      "method": "GET",
+      "path": "/booking/{id}",
+      "requiresAuth": false,
+      "setup": {
+        "endpointId": "create-booking",
+        "idField": "bookingid"
+      }
+    }
+  ]
+}

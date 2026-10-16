@@ -1,0 +1,8 @@
+node_modules/
+.env
+out/
+reports/
+test-results/
+generated/
+input/ui-run.json
+playwright-report/

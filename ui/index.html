@@ -1,0 +1,785 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>API Test Agent</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Crect width=%2232%22 height=%2232%22 rx=%228%22 fill=%22%234f46e5%22/%3E%3Cpath d=%22M12 6h8M13 6v7l-6 11h18l-6-11V6%22 stroke=%22white%22 stroke-width=%222.5%22 fill=%22none%22 stroke-linejoin=%22round%22/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #f4f5f9;
+    --card: #ffffff;
+    --ink: #0f172a;
+    --ink-2: #334155;
+    --muted: #64748b;
+    --line: #e2e8f0;
+    --accent: #4f46e5;
+    --accent-soft: #eef2ff;
+    --ok: #059669;
+    --ok-soft: #ecfdf5;
+    --bad: #dc2626;
+    --bad-soft: #fef2f2;
+    --warn: #b45309;
+    --warn-soft: #fffbeb;
+    --term: #0b1020;
+    --term-ink: #cbd5e1;
+    --radius: 14px;
+    --shadow: 0 1px 2px rgba(15, 23, 42, .04), 0 4px 16px rgba(15, 23, 42, .06);
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  button { font: inherit; cursor: pointer; }
+  .wrap { max-width: 1440px; margin: 0 auto; padding: 0 28px 48px; }
+
+  /* Header */
+  header {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    padding: 22px 0 20px;
+  }
+  .brand { display: flex; align-items: center; gap: 14px; }
+  .logo {
+    width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center;
+    background: linear-gradient(135deg, #4f46e5, #7c3aed); color: #fff;
+    box-shadow: 0 6px 18px rgba(79, 70, 229, .35);
+  }
+  .brand h1 { margin: 0; font-size: 26px; line-height: 1.1; letter-spacing: -.01em; }
+  .brand p { margin: 2px 0 0; color: var(--muted); font-size: 15px; }
+  .status-pill {
+    display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 999px;
+    background: var(--card); border: 1px solid var(--line); font-weight: 600; font-size: 14px; white-space: nowrap;
+  }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #94a3b8; }
+  .status-pill.running .dot { background: var(--accent); animation: pulse 1.2s infinite; }
+  .status-pill.done .dot { background: var(--ok); }
+  .status-pill.error .dot { background: var(--bad); }
+  @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(79,70,229,.5); } 50% { box-shadow: 0 0 0 6px rgba(79,70,229,0); } }
+
+  /* Layout */
+  .grid { display: grid; grid-template-columns: 400px 1fr; gap: 22px; align-items: start; }
+  @media (max-width: 1050px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+  .card-h { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 18px 20px 0; }
+  .card-h h2 { margin: 0; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+  .card-b { padding: 16px 20px 20px; }
+
+  /* Input panel */
+  label.lbl { display: block; font-size: 13px; font-weight: 600; color: var(--ink-2); margin-bottom: 6px; }
+  select {
+    width: 100%; font: inherit; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line);
+    background: #fff; color: var(--ink);
+  }
+  .base-url {
+    margin-top: 14px; padding: 10px 12px; border-radius: 10px; background: var(--accent-soft);
+    font-family: var(--mono); font-size: 14px; color: var(--accent); word-break: break-all;
+  }
+  .ep-list { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 8px; }
+  .ep {
+    display: grid; grid-template-columns: 70px 1fr auto; align-items: center; gap: 10px;
+    padding: 9px 10px; border: 1px solid var(--line); border-radius: 10px; background: #fff;
+  }
+  .ep .path { font-family: var(--mono); font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ep .lock { color: var(--muted); display: inline-flex; vertical-align: -2px; margin-left: 6px; }
+  .phase-dots { display: flex; gap: 4px; }
+  .pd { width: 10px; height: 10px; border-radius: 3px; background: var(--line); transition: background .25s; }
+  .pd.ok { background: var(--ok); }
+  .pd.fail { background: var(--bad); }
+  .pd.active { background: var(--accent); animation: blink 1s infinite; }
+  @keyframes blink { 50% { opacity: .35; } }
+  .m {
+    font-family: var(--mono); font-size: 12px; font-weight: 700; text-align: center; padding: 3px 0;
+    border-radius: 6px; letter-spacing: .03em;
+  }
+  .m.GET { background: #e0f2fe; color: #0369a1; }
+  .m.POST { background: #dcfce7; color: #15803d; }
+  .m.PUT, .m.PATCH { background: #fef3c7; color: #b45309; }
+  .m.DELETE { background: #fee2e2; color: #b91c1c; }
+  .legend { margin-top: 10px; font-size: 12px; color: var(--muted); }
+
+  .link-btn { background: none; border: 0; color: var(--accent); font-weight: 600; font-size: 14px; padding: 0; }
+  textarea {
+    width: 100%; min-height: 260px; margin-top: 12px; padding: 12px; border-radius: 10px;
+    border: 1px solid var(--line); font: 13px/1.5 var(--mono); color: var(--ink); resize: vertical; background: #fbfcfe;
+  }
+  textarea:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .json-err { color: var(--bad); font-size: 13px; margin-top: 6px; }
+
+  .actions { display: grid; gap: 10px; margin-top: 18px; }
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 10px;
+    padding: 14px 18px; border-radius: 12px; border: 1px solid transparent; font-weight: 700; font-size: 17px;
+    transition: transform .05s, box-shadow .2s, background .2s;
+  }
+  .btn:active { transform: translateY(1px); }
+  .btn-primary { background: var(--accent); color: #fff; box-shadow: 0 8px 20px rgba(79,70,229,.3); }
+  .btn-primary:hover { background: #4338ca; }
+  .btn-primary:disabled { background: #a5b4fc; box-shadow: none; cursor: not-allowed; }
+  .btn-ghost { background: #fff; color: var(--ink-2); border-color: var(--line); font-size: 15px; padding: 11px 16px; }
+  .btn-ghost:hover { background: #f8fafc; }
+  .btn-danger { background: #fff; color: var(--bad); border-color: #fecaca; font-size: 15px; padding: 11px 16px; }
+  .err-box {
+    margin-top: 12px; padding: 10px 12px; border-radius: 10px; background: var(--bad-soft);
+    color: var(--bad); font-size: 14px; border: 1px solid #fecaca;
+  }
+
+  /* Pipeline */
+  .pipeline { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; padding: 20px; }
+  @media (max-width: 700px) { .pipeline { grid-template-columns: repeat(2, 1fr); } }
+  .step {
+    position: relative; padding: 16px; border-radius: 12px; border: 1px solid var(--line); background: #fafbfd;
+    transition: all .3s;
+  }
+  .step .ic {
+    width: 38px; height: 38px; border-radius: 10px; display: grid; place-items: center;
+    background: #eef1f6; color: var(--muted); margin-bottom: 10px; transition: all .3s;
+  }
+  .step .t { font-weight: 700; font-size: 17px; }
+  .step .s { color: var(--muted); font-size: 13px; min-height: 20px; }
+  .step.active { border-color: #c7d2fe; background: var(--accent-soft); box-shadow: 0 0 0 3px rgba(79,70,229,.08); }
+  .step.active .ic { background: var(--accent); color: #fff; }
+  .step.active .ic svg { animation: spin 1.4s linear infinite; }
+  .step.done { border-color: #a7f3d0; background: var(--ok-soft); }
+  .step.done .ic { background: var(--ok); color: #fff; }
+  .step.failed { border-color: #fecaca; background: var(--bad-soft); }
+  .step.failed .ic { background: var(--bad); color: #fff; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .timer { font-family: var(--mono); font-size: 14px; color: var(--muted); }
+
+  /* Terminal */
+  .term-wrap { padding: 0 20px 20px; }
+  .term {
+    background: var(--term); color: var(--term-ink); border-radius: 12px; padding: 14px 16px;
+    font: 13.5px/1.6 var(--mono); height: 300px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+  }
+  .term .h { color: #a5b4fc; font-weight: 700; margin-top: 6px; }
+  .term .ok { color: #6ee7b7; }
+  .term .fail { color: #fca5a5; }
+  .term .dim { color: #64748b; }
+  .term .empty { color: #64748b; font-style: italic; }
+  .term::-webkit-scrollbar { width: 10px; }
+  .term::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 10px; }
+
+  /* Results */
+  #results { margin-top: 22px; display: none; }
+  .banner {
+    padding: 14px 18px; border-radius: 12px; font-weight: 700; margin-bottom: 16px; border: 1px solid;
+  }
+  .banner.warn { background: var(--warn-soft); color: var(--warn); border-color: #fde68a; }
+  .banner.bad { background: var(--bad-soft); color: var(--bad); border-color: #fecaca; }
+  .hero {
+    display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap;
+    padding: 22px 24px; border-radius: var(--radius); margin-bottom: 18px; border: 1px solid;
+  }
+  .hero.bad { background: linear-gradient(135deg, #fef2f2, #fff); border-color: #fecaca; }
+  .hero.good { background: linear-gradient(135deg, #ecfdf5, #fff); border-color: #a7f3d0; }
+  .hero .big { font-size: 34px; font-weight: 800; letter-spacing: -.02em; line-height: 1.1; }
+  .hero.bad .big { color: var(--bad); }
+  .hero.good .big { color: var(--ok); }
+  .hero .sub { color: var(--ink-2); margin-top: 4px; }
+  .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 18px; }
+  @media (max-width: 800px) { .tiles { grid-template-columns: repeat(2, 1fr); } }
+  .tile { padding: 18px 20px; }
+  .tile .k { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600; }
+  .tile .v { font-size: 40px; font-weight: 800; letter-spacing: -.02em; line-height: 1.15; }
+  .tile.pass .v { color: var(--ok); }
+  .tile.fail .v { color: var(--bad); }
+  .bar { height: 8px; border-radius: 99px; background: #fee2e2; overflow: hidden; margin-top: 8px; }
+  .bar > span { display: block; height: 100%; background: var(--ok); border-radius: 99px; transition: width .8s ease; }
+
+  .res-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; align-items: start; }
+  @media (max-width: 1050px) { .res-grid { grid-template-columns: 1fr; } }
+
+  .finding {
+    border: 1px solid #fecaca; background: var(--bad-soft); border-radius: 12px; padding: 14px 16px; margin-bottom: 10px;
+  }
+  .finding.review { border-color: #fde68a; background: var(--warn-soft); }
+  .finding .top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .tag {
+    font-size: 12px; font-weight: 700; padding: 3px 8px; border-radius: 999px; background: #fff; border: 1px solid #fecaca; color: var(--bad);
+  }
+  .finding.review .tag { border-color: #fde68a; color: var(--warn); }
+  .finding .ttl { font-weight: 600; margin-top: 8px; }
+  .finding .st { margin-top: 8px; font-family: var(--mono); font-size: 14px; display: flex; gap: 14px; flex-wrap: wrap; }
+  .finding .st b { font-weight: 700; }
+  .exp { color: var(--ink-2); }
+  .got { color: var(--bad); }
+  .no-findings {
+    padding: 18px; border-radius: 12px; background: var(--ok-soft); color: var(--ok); font-weight: 700;
+    border: 1px solid #a7f3d0; text-align: center;
+  }
+
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  td { padding: 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  tbody tr { cursor: pointer; transition: background .15s; }
+  tbody tr:hover { background: #f8fafc; }
+  tbody tr.sel { background: var(--accent-soft); }
+  td.num { font-variant-numeric: tabular-nums; font-weight: 600; }
+  td .p { color: var(--ok); }
+  td .f { color: var(--bad); }
+  .yes { color: var(--ok); font-weight: 700; }
+  .no { color: var(--bad); font-weight: 700; }
+  .reason { font-size: 13px; color: var(--bad); margin-top: 2px; }
+
+  /* Code viewer */
+  #codeCard { margin-top: 22px; display: none; }
+  .code {
+    background: var(--term); color: #e2e8f0; border-radius: 12px; margin: 0 20px 20px; overflow: auto; max-height: 560px;
+    font: 13.5px/1.6 var(--mono);
+  }
+  .code table { border-collapse: collapse; width: auto; min-width: 100%; }
+  .code td { border: 0; padding: 0 14px; white-space: pre; cursor: default; }
+  .code tr { cursor: default; }
+  .code tr:hover { background: transparent; }
+  .code td.ln { color: #475569; text-align: right; user-select: none; padding-right: 10px; width: 1%; }
+  .code tr:first-child td { padding-top: 14px; }
+  .code tr:last-child td { padding-bottom: 14px; }
+  .tk-k { color: #c4b5fd; }
+  .tk-s { color: #86efac; }
+  .tk-c { color: #64748b; font-style: italic; }
+  .tk-n { color: #fcd34d; }
+  .tk-t { color: #f9a8d4; font-weight: 700; }
+
+  .meta-row { display: flex; gap: 18px; flex-wrap: wrap; color: var(--muted); font-size: 14px; margin-bottom: 14px; }
+  .meta-row b { color: var(--ink-2); }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <div class="logo" aria-hidden="true">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6"/><path d="M10 3v6.5L4.6 18.2A2 2 0 0 0 6.3 21h11.4a2 2 0 0 0 1.7-2.8L14 9.5V3"/><path d="M7.5 15h9"/></svg>
+      </div>
+      <div>
+        <h1>API Test Agent</h1>
+        <p>From endpoints to a running Playwright suite, powered by Claude</p>
+      </div>
+    </div>
+    <div id="pill" class="status-pill"><span class="dot"></span><span id="pillText">Ready</span></div>
+  </header>
+
+  <div class="grid">
+    <!-- Input -->
+    <section class="card">
+      <div class="card-h"><h2>Input</h2><button id="toggleJson" class="link-btn">Edit JSON</button></div>
+      <div class="card-b">
+        <label class="lbl" for="inputSel">API to test</label>
+        <select id="inputSel"></select>
+        <div id="baseUrl" class="base-url">Loading...</div>
+        <ul id="epList" class="ep-list"></ul>
+        <div class="legend">Squares show Probe, Plan, Generate for each endpoint</div>
+        <textarea id="jsonBox" class="hidden" spellcheck="false"></textarea>
+        <div id="jsonErr" class="json-err hidden"></div>
+        <div class="actions">
+          <button id="runBtn" class="btn btn-primary">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>
+            Generate tests
+          </button>
+          <button id="stopBtn" class="btn btn-danger hidden">Stop run</button>
+          <button id="lastBtn" class="btn btn-ghost">Load last run</button>
+        </div>
+        <div id="runErr" class="err-box hidden"></div>
+      </div>
+    </section>
+
+    <!-- Pipeline + log -->
+    <section class="card">
+      <div class="card-h"><h2>Agent pipeline</h2><span id="timer" class="timer">00:00</span></div>
+      <div class="pipeline">
+        <div class="step" data-step="0">
+          <div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></div>
+          <div class="t">Probe</div><div class="s">Call each endpoint</div>
+        </div>
+        <div class="step" data-step="1">
+          <div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M9 6h11M9 12h11M9 18h11"/><path d="M4 6h.01M4 12h.01M4 18h.01"/></svg></div>
+          <div class="t">Plan</div><div class="s">Design test cases</div>
+        </div>
+        <div class="step" data-step="2">
+          <div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m8 7-5 5 5 5"/><path d="m16 7 5 5-5 5"/></svg></div>
+          <div class="t">Generate</div><div class="s">Write Playwright specs</div>
+        </div>
+        <div class="step" data-step="3">
+          <div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></div>
+          <div class="t">Run tests</div><div class="s">Execute the suite</div>
+        </div>
+      </div>
+      <div class="term-wrap"><div id="term" class="term"><span class="empty">Pick an API and click Generate tests. Live agent output appears here.</span></div></div>
+    </section>
+  </div>
+
+  <!-- Results -->
+  <section id="results">
+    <div id="banner" class="banner hidden"></div>
+    <div id="hero" class="hero">
+      <div>
+        <div id="heroBig" class="big"></div>
+        <div id="heroSub" class="sub"></div>
+      </div>
+      <button id="reportBtn" class="btn btn-primary">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3h7v7"/><path d="M10 14 21 3"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/></svg>
+        Open Playwright report
+      </button>
+    </div>
+    <div class="tiles">
+      <div class="card tile"><div class="k">Endpoints</div><div id="tEp" class="v">0</div></div>
+      <div class="card tile"><div class="k">Tests generated</div><div id="tGen" class="v">0</div></div>
+      <div class="card tile pass"><div class="k">Passed</div><div id="tPass" class="v">0</div><div class="bar"><span id="passBar" style="width:0"></span></div></div>
+      <div class="card tile fail"><div class="k">Failed</div><div id="tFail" class="v">0</div></div>
+    </div>
+    <div class="res-grid">
+      <div class="card">
+        <div class="card-h"><h2>API findings</h2><span id="findCount" class="timer"></span></div>
+        <div class="card-b" id="findings"></div>
+      </div>
+      <div class="card">
+        <div class="card-h"><h2>Endpoints</h2><span class="timer">Click a row to see its tests</span></div>
+        <div class="card-b" style="padding-top:8px">
+          <table>
+            <thead><tr><th>Endpoint</th><th>Cases</th><th>Spec</th><th>Result</th></tr></thead>
+            <tbody id="epTable"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <section id="codeCard" class="card">
+      <div class="card-h"><h2 id="codeTitle">Generated spec</h2><button id="copyBtn" class="link-btn">Copy</button></div>
+      <div style="height:16px"></div>
+      <div id="code" class="code"></div>
+    </section>
+    <div class="meta-row" style="margin-top:18px" id="metaRow"></div>
+  </section>
+</div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const PHASES = ["PROBING", "PLANNING", "GENERATING", "RUNNING TESTS", "SUMMARY"];
+  const PHASE_KEY = ["probe", "plan", "generate"];
+  const lockSvg = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>';
+
+  let config = null;
+  let phaseIdx = -1;
+  let epState = {};
+  let timerStart = null, timerHandle = null;
+  let es = null;
+  let termHasContent = false;
+  let lastSpec = "";
+
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+  function setPill(kind, text) {
+    $("pill").className = "status-pill " + (kind || "");
+    $("pillText").textContent = text;
+  }
+
+  // ---------- Input ----------
+  async function loadInputs() {
+    const res = await fetch("/api/inputs");
+    const files = await res.json();
+    const sel = $("inputSel");
+    sel.innerHTML = files.map((f) => `<option value="${esc(f)}">${esc(f.replace(/\.json$/, ""))}</option>`).join("");
+    const pref = files.find((f) => f === "local-shop.json") || files[0];
+    if (pref) { sel.value = pref; await loadInput(pref); }
+    else $("baseUrl").textContent = "No input files found in input/";
+  }
+
+  async function loadInput(name) {
+    const res = await fetch("/api/input?name=" + encodeURIComponent(name));
+    const data = await res.json();
+    $("jsonBox").value = data.content;
+    parseConfig();
+  }
+
+  function parseConfig() {
+    try {
+      config = JSON.parse($("jsonBox").value);
+      $("jsonErr").classList.add("hidden");
+      renderEndpoints();
+      return true;
+    } catch (e) {
+      $("jsonErr").textContent = "JSON error: " + e.message;
+      $("jsonErr").classList.remove("hidden");
+      return false;
+    }
+  }
+
+  const STEP_LABELS = ["Call each endpoint", "Design test cases", "Write Playwright specs", "Execute the suite"];
+  function updateStepText() {
+    const eps = config?.endpoints || [];
+    document.querySelectorAll(".step").forEach((el, i) => {
+      const sEl = el.querySelector(".s");
+      if (i > 2 || !eps.length) { sEl.textContent = STEP_LABELS[i]; return; }
+      const key = PHASE_KEY[i];
+      let ok = 0, fail = 0;
+      for (const e of eps) { const v = epState[e.id]?.[key]; if (v === "ok") ok++; if (v === "fail") fail++; }
+      if (!ok && !fail) { sEl.textContent = STEP_LABELS[i]; return; }
+      sEl.textContent = `${ok} of ${eps.length} done` + (fail ? `, ${fail} failed` : "");
+    });
+  }
+
+  function renderEndpoints() {
+    updateStepText();
+    $("baseUrl").textContent = config?.baseUrl || "No baseUrl";
+    const eps = Array.isArray(config?.endpoints) ? config.endpoints : [];
+    $("epList").innerHTML = eps.map((e) => {
+      const st = epState[e.id] || {};
+      const dots = PHASE_KEY.map((k) => `<span class="pd ${st[k] || ""}" title="${k}"></span>`).join("");
+      return `<li class="ep">
+        <span class="m ${esc((e.method || "").toUpperCase())}">${esc((e.method || "").toUpperCase())}</span>
+        <span class="path" title="${esc(e.id)}">${esc(e.path)}${e.requiresAuth ? `<span class="lock" title="Requires auth">${lockSvg}</span>` : ""}</span>
+        <span class="phase-dots">${dots}</span>
+      </li>`;
+    }).join("");
+  }
+
+  $("inputSel").addEventListener("change", (e) => { epState = {}; loadInput(e.target.value); });
+  $("jsonBox").addEventListener("input", () => parseConfig());
+  $("toggleJson").addEventListener("click", () => {
+    const box = $("jsonBox");
+    box.classList.toggle("hidden");
+    $("toggleJson").textContent = box.classList.contains("hidden") ? "Edit JSON" : "Hide JSON";
+  });
+
+  // ---------- Pipeline ----------
+  function setPhase(i) {
+    phaseIdx = i;
+    document.querySelectorAll(".step").forEach((el, idx) => {
+      el.classList.remove("active", "done", "failed");
+      if (i >= 4 || idx < i) el.classList.add("done");
+      else if (idx === i) el.classList.add("active");
+    });
+    if (i >= 1 && i <= 3) {
+      // anything still active in the previous phase is finished
+      const prev = PHASE_KEY[i - 1];
+      if (prev) for (const id in epState) if (epState[id][prev] === "active") epState[id][prev] = "ok";
+    }
+    if (i >= 0 && i < 3) {
+      const key = PHASE_KEY[i];
+      for (const e of config?.endpoints || []) {
+        epState[e.id] = epState[e.id] || {};
+        if (!epState[e.id][key]) epState[e.id][key] = "active";
+      }
+    }
+    if (i >= 3) for (const id in epState) for (const k of PHASE_KEY) if (epState[id][k] === "active") epState[id][k] = "";
+    renderEndpoints();
+  }
+
+  function resetPipeline() {
+    phaseIdx = -1;
+    epState = {};
+    document.querySelectorAll(".step").forEach((el) => el.classList.remove("active", "done", "failed"));
+    renderEndpoints();
+  }
+
+  function startTimer(from) {
+    timerStart = from || Date.now();
+    clearInterval(timerHandle);
+    const tick = () => {
+      const s = Math.floor((Date.now() - timerStart) / 1000);
+      $("timer").textContent = String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
+    };
+    tick();
+    timerHandle = setInterval(tick, 500);
+  }
+  function stopTimer() { clearInterval(timerHandle); }
+
+  // ---------- Log ----------
+  function appendLog(line) {
+    const term = $("term");
+    if (!termHasContent) { term.innerHTML = ""; termHasContent = true; }
+    const atBottom = term.scrollHeight - term.scrollTop - term.clientHeight < 40;
+    const div = document.createElement("div");
+    const h = line.match(/^=+\s*(.+?)\s*=+$/);
+    if (h) {
+      div.className = "h";
+      const idx = PHASES.indexOf(h[1].toUpperCase());
+      if (idx >= 0) setPhase(idx);
+    } else if (/\b(FAILED|Error|error:|✘|failed)\b/.test(line)) div.className = "fail";
+    else if (/\b(OK|passed|✓)\b/.test(line)) div.className = "ok";
+    else if (/^\s*$/.test(line)) div.className = "dim";
+    div.textContent = line || " ";
+    term.appendChild(div);
+    if (atBottom) term.scrollTop = term.scrollHeight;
+
+    // per endpoint status lines: "<endpointId> OK ..." or "<endpointId> FAILED ..."
+    if (phaseIdx >= 0 && phaseIdx < 3) {
+      const m = line.match(/([a-z0-9][a-z0-9-]*)\s+(OK|FAILED)\b/i);
+      if (m && (config?.endpoints || []).some((e) => e.id === m[1])) {
+        epState[m[1]] = epState[m[1]] || {};
+        epState[m[1]][PHASE_KEY[phaseIdx]] = m[2].toUpperCase() === "OK" ? "ok" : "fail";
+        renderEndpoints();
+      }
+    }
+  }
+
+  function clearLog() {
+    $("term").innerHTML = "";
+    termHasContent = true;
+  }
+
+  // ---------- Run ----------
+  function setRunning(on) {
+    $("runBtn").disabled = on;
+    $("stopBtn").classList.toggle("hidden", !on);
+    $("inputSel").disabled = on;
+    $("jsonBox").readOnly = on;
+  }
+
+  async function startRun() {
+    $("runErr").classList.add("hidden");
+    if (!parseConfig()) { showRunErr("Fix the JSON before running."); return; }
+    const res = await fetch("/api/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ json: $("jsonBox").value }),
+    });
+    if (res.status !== 202) {
+      const body = await res.json().catch(() => ({}));
+      showRunErr(body.error || "Could not start the run (" + res.status + ")");
+      return;
+    }
+    $("results").style.display = "none";
+    $("codeCard").style.display = "none";
+  }
+
+  function showRunErr(msg) {
+    $("runErr").textContent = msg;
+    $("runErr").classList.remove("hidden");
+  }
+
+  function connectStream() {
+    if (es) es.close();
+    es = new EventSource("/api/stream");
+    es.addEventListener("start", (ev) => {
+      const { startedAt } = JSON.parse(ev.data);
+      resetPipeline();
+      clearLog();
+      setRunning(true);
+      setPill("running", "Agent running");
+      startTimer(startedAt);
+    });
+    es.addEventListener("log", (ev) => appendLog(JSON.parse(ev.data)));
+    es.addEventListener("done", async (ev) => {
+      const { exitCode } = JSON.parse(ev.data);
+      stopTimer();
+      setRunning(false);
+      if (exitCode === 0) {
+        setPhase(4);
+        setPill("done", "Run complete");
+      } else {
+        document.querySelectorAll(".step.active").forEach((el) => { el.classList.remove("active"); el.classList.add("failed"); });
+        setPill("error", "Run ended with errors");
+      }
+      await loadSummary(true);
+    });
+  }
+
+  $("runBtn").addEventListener("click", startRun);
+  $("stopBtn").addEventListener("click", () => fetch("/api/stop", { method: "POST" }));
+  $("lastBtn").addEventListener("click", () => loadSummary(false));
+  $("reportBtn").addEventListener("click", () => window.open("/report/index.html", "_blank"));
+
+  // ---------- Results ----------
+  async function loadSummary(afterRun) {
+    const res = await fetch("/api/summary");
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      if (!afterRun) showRunErr(body.error || "No previous run found.");
+      return;
+    }
+    $("runErr").classList.add("hidden");
+    renderSummary(await res.json());
+  }
+
+  function renderSummary(s) {
+    const t = s.totals || {};
+    const findings = Array.isArray(s.findings) ? s.findings : [];
+    const apiFindings = findings.filter((f) => /api finding/i.test(f.classification || ""));
+    const review = findings.filter((f) => !/api finding/i.test(f.classification || ""));
+    const eps = Array.isArray(s.endpoints) ? s.endpoints : [];
+
+    // Banner
+    const banner = $("banner");
+    banner.className = "banner hidden";
+    if (s.status === "stopped-budget") { banner.textContent = "STOPPED: budget reached. Results below cover the tests generated before the limit."; banner.className = "banner warn"; }
+    if (s.status === "no-tests") { banner.textContent = "NO TESTS GENERATED. Check the log for the reason."; banner.className = "banner bad"; }
+
+    // Hero
+    const hero = $("hero");
+    if (apiFindings.length) {
+      hero.className = "hero bad";
+      $("heroBig").textContent = `${apiFindings.length} API bug${apiFindings.length === 1 ? "" : "s"} found`;
+      $("heroSub").textContent = `The agent wrote ${t.testsGenerated ?? 0} tests across ${eps.length} endpoints and caught behavior that breaks REST rules.`;
+    } else if ((t.failed ?? 0) === 0 && (t.testsGenerated ?? 0) > 0) {
+      hero.className = "hero good";
+      $("heroBig").textContent = "All checks passed";
+      $("heroSub").textContent = `${t.testsGenerated} generated tests ran green across ${eps.length} endpoints.`;
+    } else {
+      hero.className = "hero bad";
+      $("heroBig").textContent = `${t.failed ?? 0} test${t.failed === 1 ? "" : "s"} need review`;
+      $("heroSub").textContent = "No confirmed API bugs. Failures are listed below for review.";
+    }
+
+    // Tiles
+    animateNum($("tEp"), t.endpoints ?? eps.length);
+    animateNum($("tGen"), t.testsGenerated ?? 0);
+    animateNum($("tPass"), t.passed ?? 0);
+    animateNum($("tFail"), t.failed ?? 0);
+    const total = (t.passed ?? 0) + (t.failed ?? 0);
+    requestAnimationFrame(() => { $("passBar").style.width = total ? Math.round(((t.passed ?? 0) / total) * 100) + "%" : "0"; });
+
+    // Findings
+    $("findCount").textContent = apiFindings.length ? `${apiFindings.length} suspected` : "";
+    const card = (f, isApi) => `
+      <div class="finding ${isApi ? "" : "review"}">
+        <div class="top">
+          <span class="tag">${isApi ? "Suspected API bug" : "Needs review"}</span>
+          <span class="m ${esc(methodOf(f.endpointId, eps))}" style="padding:3px 8px">${esc(methodOf(f.endpointId, eps))}</span>
+          <strong>${esc(f.endpointId)}</strong>
+        </div>
+        <div class="ttl">${esc(f.testTitle)}</div>
+        <div class="st"><span class="exp">Expected <b>${esc(f.expectedStatus ?? "?")}</b></span><span class="got">Got <b>${esc(f.actualStatus ?? "?")}</b></span></div>
+      </div>`;
+    let html = "";
+    if (apiFindings.length) html += apiFindings.map((f) => card(f, true)).join("");
+    else html += `<div class="no-findings">No API bugs found</div>`;
+    if (review.length) html += `<div style="margin:16px 0 8px;font-weight:700;color:var(--ink-2)">Other failures</div>` + review.map((f) => card(f, false)).join("");
+    $("findings").innerHTML = html;
+
+    // Endpoint table
+    $("epTable").innerHTML = eps.map((e) => {
+      const spec = e.specWritten ? `<span class="yes">Yes</span>` : `<span class="no">No</span>`;
+      const result = e.specWritten
+        ? `<span class="p">${e.passed ?? 0} passed</span>${(e.failed ?? 0) ? ` <span class="f">· ${e.failed} failed</span>` : ""}`
+        : `<span class="f">Not run</span>`;
+      return `<tr data-spec="${esc(e.specFile || "")}">
+        <td><span class="m ${esc((e.method || "").toUpperCase())}" style="padding:3px 8px;margin-right:8px">${esc((e.method || "").toUpperCase())}</span><strong>${esc(e.id)}</strong>
+          ${e.failureReason ? `<div class="reason">${esc(e.failureReason)}</div>` : ""}</td>
+        <td class="num">${e.casesPlanned ?? 0}</td>
+        <td>${spec}</td>
+        <td class="num">${result}</td>
+      </tr>`;
+    }).join("");
+    document.querySelectorAll("#epTable tr").forEach((tr) => tr.addEventListener("click", () => {
+      document.querySelectorAll("#epTable tr").forEach((r) => r.classList.remove("sel"));
+      tr.classList.add("sel");
+      if (tr.dataset.spec) showSpec(tr.dataset.spec);
+    }));
+
+    // Meta
+    const meta = [];
+    if (s.inputFile) {
+      const shown = /ui-run\.json$/.test(s.inputFile) ? `${$("inputSel").value} (via UI)` : s.inputFile;
+      meta.push(`Input <b>${esc(shown)}</b>`);
+    }
+    if (s.baseUrl) meta.push(`Base URL <b>${esc(s.baseUrl)}</b>`);
+    if (s.durationSec != null) meta.push(`Duration <b>${esc(s.durationSec)}s</b>`);
+    if (s.claudeCalls) meta.push(`Claude calls <b>${esc(s.claudeCalls.used)} / ${esc(s.claudeCalls.budget)}</b>`);
+    if (s.startedAt) meta.push(`Started <b>${esc(new Date(s.startedAt).toLocaleTimeString())}</b>`);
+    $("metaRow").innerHTML = meta.map((m) => `<span>${m}</span>`).join("");
+
+    // Mark endpoint dots from the summary when loading a past run
+    if (phaseIdx < 0) {
+      epState = {};
+      for (const e of eps) {
+        epState[e.id] = {
+          probe: e.probeStatus == null ? "fail" : "ok",
+          plan: (e.casesPlanned ?? 0) > 0 ? "ok" : "fail",
+          generate: e.specWritten ? "ok" : "fail",
+        };
+      }
+      renderEndpoints();
+    }
+
+    $("results").style.display = "block";
+    $("codeCard").style.display = "none";
+    $("results").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function methodOf(id, eps) {
+    const e = eps.find((x) => x.id === id) || (config?.endpoints || []).find((x) => x.id === id);
+    return (e?.method || "").toUpperCase();
+  }
+
+  function animateNum(el, to) {
+    const from = 0, dur = 700, t0 = performance.now();
+    const step = (now) => {
+      const p = Math.min(1, (now - t0) / dur);
+      el.textContent = Math.round(from + (to - from) * (1 - Math.pow(1 - p, 3)));
+      if (p < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
+
+  // ---------- Code viewer ----------
+  async function showSpec(name) {
+    const res = await fetch("/api/spec?name=" + encodeURIComponent(name));
+    if (!res.ok) return;
+    const data = await res.json();
+    lastSpec = data.content;
+    $("codeTitle").textContent = "generated/" + data.name;
+    const lines = highlight(data.content).split("\n");
+    $("code").innerHTML = "<table>" + lines.map((l, i) => `<tr><td class="ln">${i + 1}</td><td>${l || " "}</td></tr>`).join("") + "</table>";
+    $("codeCard").style.display = "block";
+    $("codeCard").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  $("copyBtn").addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(lastSpec); $("copyBtn").textContent = "Copied"; }
+    catch { $("copyBtn").textContent = "Copy failed"; }
+    setTimeout(() => ($("copyBtn").textContent = "Copy"), 1500);
+  });
+
+  function highlight(src) {
+    const re = /(\/\/[^\n]*|\/\*[\s\S]*?\*\/)|(`(?:\\[\s\S]|[^`\\])*`|'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*")|\b(import|from|export|const|let|var|await|async|function|return|if|else|for|of|in|new|throw|typeof|true|false|null|undefined|expect|test|describe)\b|\b(\d+(?:\.\d+)?)\b/g;
+    let out = "", last = 0, m;
+    while ((m = re.exec(src))) {
+      out += esc(src.slice(last, m.index));
+      const [tok, c, s, k, n] = m;
+      if (c) out += `<span class="tk-c">${esc(tok)}</span>`;
+      else if (s) {
+        const tagged = esc(tok).replace(/\[(happy|schema|invalid-input|auth)\]/g, '<span class="tk-t">[$1]</span>');
+        out += `<span class="tk-s">${tagged}</span>`;
+      }
+      else if (k) out += `<span class="tk-k">${esc(tok)}</span>`;
+      else if (n) out += `<span class="tk-n">${esc(tok)}</span>`;
+      last = m.index + tok.length;
+    }
+    out += esc(src.slice(last));
+    // keep multi-line spans valid when split per line
+    return out.split("\n").map(fixSpans()).join("\n");
+  }
+
+  function fixSpans() {
+    let open = null;
+    return (line) => {
+      let l = (open ? open : "") + line;
+      const opens = [...l.matchAll(/<span class="[^"]+">/g)];
+      const closes = (l.match(/<\/span>/g) || []).length;
+      if (opens.length > closes) { open = opens[opens.length - 1][0]; l += "</span>"; }
+      else open = null;
+      return l;
+    };
+  }
+
+  // ---------- Boot ----------
+  (async () => {
+    await loadInputs();
+    connectStream();
+    try {
+      const st = await (await fetch("/api/state")).json();
+      if (!st.running && st.hasSummary) $("lastBtn").textContent = "Load last run";
+    } catch {}
+  })();
+})();
+</script>
+</body>
+</html>
