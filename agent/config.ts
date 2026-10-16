@@ -16,14 +16,20 @@ const EndpointSchema = z.object({
 });
 
 const ConfigSchema = z.object({
+  name: z.string().regex(/^[a-z0-9-]+$/, 'must use lowercase letters, numbers and dashes only').optional(),
   baseUrl: z.url(),
   defaultHeaders: z.record(z.string(), z.string()),
-  auth: z.object({
-    header: z.string().min(1),
-    valueEnv: z.string().min(1),
-  }),
+  auth: z
+    .object({
+      header: z.string().min(1),
+      valueEnv: z.string().min(1),
+    })
+    .optional(),
   endpoints: z.array(EndpointSchema).min(1),
 });
+
+// A path placeholder such as {id} or {productId}; setup fills it with the created resource id.
+export const PATH_PARAM = /\{[^}]+\}/;
 
 export type Endpoint = z.infer<typeof EndpointSchema>;
 export type Config = z.infer<typeof ConfigSchema>;
@@ -58,6 +64,13 @@ export function loadConfig(path: string): Config {
     ids.add(ep.id);
   });
   config.endpoints.forEach((ep, i) => {
+    if (ep.requiresAuth && !config.auth) {
+      throw new Error(
+        `Invalid input file ${path}: field "endpoints[${i}].requiresAuth" endpoint "${ep.id}" requires auth but the input has no auth section`,
+      );
+    }
+  });
+  config.endpoints.forEach((ep, i) => {
     if (!ep.setup) return;
     const target = config.endpoints.find((e) => e.id === ep.setup!.endpointId);
     if (!target) {
@@ -65,7 +78,7 @@ export function loadConfig(path: string): Config {
         `Invalid input file ${path}: field "endpoints[${i}].setup.endpointId" references unknown endpoint "${ep.setup.endpointId}"`,
       );
     }
-    if (!ep.path.includes('{id}')) {
+    if (!PATH_PARAM.test(ep.path)) {
       throw new Error(`Invalid input file ${path}: field "endpoints[${i}].path" has setup but no {id} placeholder`);
     }
   });

@@ -16,8 +16,9 @@ export const test = base.extend<{ ctx: Ctx }>({
   ctx: async ({}, use) => {
     const config = loadConfig(inputFile);
 
-    const authValue = process.env[config.auth.valueEnv];
-    if (!authValue) {
+    // No auth section: api and noAuthApi are the same. With one, the value must be set.
+    const authValue = config.auth ? process.env[config.auth.valueEnv] : undefined;
+    if (config.auth && !authValue) {
       throw new Error(
         `Missing auth value: environment variable ${config.auth.valueEnv} is not set (required by ${inputFile}). Add it to .env.`,
       );

@@ -2,17 +2,23 @@ import { request, type APIRequestContext } from '@playwright/test';
 import type { Config } from './config';
 
 // Shared HTTP logic for the ctx fixture and the agent. Never reads process.env or files:
-// callers pass the auth value in.
+// callers pass the auth value in. Without an auth section, api and noAuthApi are the same.
+
+const PATH_PARAM = /\{[^}]+\}/;
 
 export type Clients = {
   api: APIRequestContext;
   noAuthApi: APIRequestContext;
 };
 
-export async function createClients(config: Config, authValue: string, timeoutMs?: number): Promise<Clients> {
+export async function createClients(config: Config, authValue: string | undefined, timeoutMs?: number): Promise<Clients> {
+  if (config.auth && !authValue) {
+    throw new Error(`Missing auth value for header ${config.auth.header} (environment variable ${config.auth.valueEnv})`);
+  }
+  const authHeaders: Record<string, string> = config.auth && authValue ? { [config.auth.header]: authValue } : {};
   const api = await request.newContext({
     baseURL: config.baseUrl,
-    extraHTTPHeaders: { ...config.defaultHeaders, [config.auth.header]: authValue },
+    extraHTTPHeaders: { ...config.defaultHeaders, ...authHeaders },
     timeout: timeoutMs,
   });
   const noAuthApi = await request.newContext({
@@ -29,7 +35,7 @@ export async function disposeClients(clients: Clients): Promise<void> {
 }
 
 export function resolvePath(path: string, id: string): string {
-  return path.replace('{id}', encodeURIComponent(id));
+  return path.replace(PATH_PARAM, encodeURIComponent(id));
 }
 
 // Calls endpointId with its sample body and returns the id read from idField.

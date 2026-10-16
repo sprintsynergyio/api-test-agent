@@ -61,6 +61,8 @@ export async function callClaude(stepName: string, endpointId: string, system: s
   const cwd = mkdtempSync(join(tmpdir(), 'api-test-agent-'));
   const env = { ...process.env };
   delete env.CLAUDECODE;
+  // The model never needs API auth values.
+  for (const name of Object.keys(env)) if (/AUTH/i.test(name)) delete env[name];
 
   const args = [
     '-p',

@@ -7,3 +7,5 @@ generated/
 input/ui-run.json
 playwright-report/
 .tscheck/
+frameworks/*
+!frameworks/.gitkeep

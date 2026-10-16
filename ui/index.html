@@ -62,7 +62,7 @@
   @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(79,70,229,.5); } 50% { box-shadow: 0 0 0 6px rgba(79,70,229,0); } }
 
   /* Layout */
-  .grid { display: grid; grid-template-columns: 400px 1fr; gap: 22px; align-items: start; }
+  .grid { display: grid; grid-template-columns: 430px 1fr; gap: 22px; align-items: start; }
   @media (max-width: 1050px) { .grid { grid-template-columns: 1fr; } }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
   .card-h { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 18px 20px 0; }
@@ -249,6 +249,62 @@
   .meta-row { display: flex; gap: 18px; flex-wrap: wrap; color: var(--muted); font-size: 14px; margin-bottom: 14px; }
   .meta-row b { color: var(--ink-2); }
   .hidden { display: none !important; }
+
+  /* Tabs + custom API form */
+  .tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; border-radius: 12px; background: #eef1f6; margin-bottom: 18px; }
+  .tab { border: 0; background: transparent; padding: 9px 10px; border-radius: 9px; font-weight: 700; font-size: 15px; color: var(--muted); }
+  .tab.on { background: #fff; color: var(--ink); box-shadow: 0 1px 3px rgba(15,23,42,.1); }
+  .field { margin-bottom: 14px; }
+  input.txt {
+    width: 100%; font: inherit; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: #fff; color: var(--ink);
+  }
+  input.txt:focus, select.sm:focus, input.sm:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .hint { font-size: 12.5px; color: var(--muted); }
+  .ep-edit { border: 1px solid var(--line); border-radius: 12px; padding: 10px; margin-bottom: 8px; background: #fbfcfe; }
+  .ep-edit .top { display: grid; grid-template-columns: 92px 1fr 32px 32px 32px; gap: 5px; align-items: center; }
+  select.sm, input.sm {
+    width: 100%; font: 14px var(--mono); padding: 8px 9px; border-radius: 8px; border: 1px solid var(--line); background: #fff; color: var(--ink);
+  }
+  .icon-btn {
+    width: 32px; height: 34px; border-radius: 8px; border: 1px solid var(--line); background: #fff; color: var(--muted);
+    display: grid; place-items: center; padding: 0;
+  }
+  .icon-btn:hover { background: #f8fafc; }
+  .icon-btn.on { color: var(--accent); border-color: #c7d2fe; background: var(--accent-soft); }
+  .icon-btn.del:hover { color: var(--bad); border-color: #fecaca; background: var(--bad-soft); }
+  .ep-more { display: none; margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); }
+  .ep-edit.open .ep-more { display: block; }
+  .ep-more textarea { min-height: 110px; margin-top: 4px; }
+  .ep-id { font: 12px var(--mono); color: var(--muted); margin-top: 6px; }
+  .add-btn {
+    width: 100%; border: 1.5px dashed #c7d2fe; background: #fff; color: var(--accent); border-radius: 10px;
+    padding: 10px; font-weight: 700; margin-top: 2px;
+  }
+  .add-btn:hover { background: var(--accent-soft); }
+  .custom-links { display: flex; justify-content: space-between; margin-top: 12px; }
+  .ok-msg { color: var(--ok); font-size: 13px; margin-top: 8px; }
+  .bad-msg { color: var(--bad); font-size: 13px; margin-top: 8px; }
+
+  /* Framework card */
+  #fwCard { margin-bottom: 18px; }
+  .fw-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 20px; align-items: start; }
+  @media (max-width: 1050px) { .fw-grid { grid-template-columns: 1fr; } }
+  .fw-lead { margin: 0 0 14px; color: var(--ink-2); }
+  .fw-files {
+    font: 13.5px/1.75 var(--mono); background: var(--term); color: #cbd5e1; border-radius: 12px; padding: 14px 16px;
+    max-height: 320px; overflow: auto; white-space: pre;
+  }
+  .fw-files .dir { color: #a5b4fc; font-weight: 700; }
+  .fw-files .spec { color: #86efac; }
+  .fw-steps { margin: 0 0 16px; padding: 0; list-style: none; display: grid; gap: 8px; }
+  .fw-steps li { display: grid; grid-template-columns: 26px 1fr; gap: 10px; align-items: start; }
+  .fw-steps .n {
+    width: 26px; height: 26px; border-radius: 50%; background: var(--accent-soft); color: var(--accent);
+    font-weight: 800; font-size: 13px; display: grid; place-items: center;
+  }
+  .fw-steps code { font: 13.5px var(--mono); background: #f1f5f9; padding: 3px 7px; border-radius: 6px; word-break: break-all; }
+
 </style>
 </head>
 <body>
@@ -271,13 +327,59 @@
     <section class="card">
       <div class="card-h"><h2>Input</h2><button id="toggleJson" class="link-btn">Edit JSON</button></div>
       <div class="card-b">
-        <label class="lbl" for="inputSel">API to test</label>
-        <select id="inputSel"></select>
-        <div id="baseUrl" class="base-url">Loading...</div>
-        <ul id="epList" class="ep-list"></ul>
-        <div class="legend">Squares show Probe, Plan, Generate for each endpoint</div>
-        <textarea id="jsonBox" class="hidden" spellcheck="false"></textarea>
-        <div id="jsonErr" class="json-err hidden"></div>
+        <div class="tabs" role="tablist">
+          <button id="tabSaved" class="tab on" type="button">Saved API</button>
+          <button id="tabCustom" class="tab" type="button">Custom API</button>
+        </div>
+
+        <div id="savedPane">
+          <label class="lbl" for="inputSel">API to test</label>
+          <select id="inputSel"></select>
+          <div id="baseUrl" class="base-url">Loading...</div>
+          <div id="savedTokenWrap" class="field hidden" style="margin-top:14px">
+            <label class="lbl" for="savedToken">Auth header value for this API</label>
+            <input id="savedToken" class="txt" type="password" placeholder="Bearer ..." autocomplete="off">
+            <div class="hint" style="margin-top:4px">Used for this run only. Never written to disk.</div>
+          </div>
+          <ul id="epList" class="ep-list"></ul>
+          <div class="legend">Squares show Probe, Plan, Generate for each endpoint</div>
+          <textarea id="jsonBox" class="hidden" spellcheck="false"></textarea>
+          <div id="jsonErr" class="json-err hidden"></div>
+        </div>
+
+        <div id="customPane" class="hidden">
+          <div class="field">
+            <label class="lbl" for="cName">API name</label>
+            <input id="cName" class="txt" placeholder="orders-api" autocomplete="off">
+          </div>
+          <div class="field">
+            <label class="lbl" for="cBase">Base URL</label>
+            <input id="cBase" class="txt" placeholder="https://api.example.com" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="field">
+            <label class="lbl" for="cAuth">Auth</label>
+            <select id="cAuth">
+              <option value="none">No auth</option>
+              <option value="header">Header token</option>
+            </select>
+          </div>
+          <div id="cAuthFields" class="hidden">
+            <div class="row2 field">
+              <div><label class="lbl" for="cAuthHeader">Header name</label><input id="cAuthHeader" class="txt" value="Authorization" autocomplete="off"></div>
+              <div><label class="lbl" for="cAuthValue">Header value</label><input id="cAuthValue" class="txt" type="password" placeholder="Bearer ..." autocomplete="off"></div>
+            </div>
+            <div class="hint" style="margin:-6px 0 14px">Passed to this run only. Never written to disk.</div>
+          </div>
+          <label class="lbl">Endpoints</label>
+          <div id="cEps"></div>
+          <button id="cAdd" class="add-btn" type="button">+ Add endpoint</button>
+          <div class="custom-links">
+            <button id="cExample" class="link-btn" type="button">Fill example</button>
+            <button id="cSave" class="link-btn" type="button">Save as input file</button>
+          </div>
+          <div id="cMsg"></div>
+        </div>
+
         <div class="actions">
           <button id="runBtn" class="btn btn-primary">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>
@@ -328,6 +430,22 @@
         Open Playwright report
       </button>
     </div>
+    <section id="fwCard" class="card hidden">
+      <div class="card-h"><h2>Playwright framework</h2><span id="fwPath" class="timer"></span></div>
+      <div class="card-b">
+        <p class="fw-lead">A standalone Playwright API test project for this API, ready to commit to your repo.</p>
+        <div class="fw-grid">
+          <div id="fwFiles" class="fw-files"></div>
+          <div>
+            <ol class="fw-steps" id="fwSteps"></ol>
+            <button id="fwDl" class="btn btn-primary" style="width:100%">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+              Download framework (.zip)
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
     <div class="tiles">
       <div class="card tile"><div class="k">Endpoints</div><div id="tEp" class="v">0</div></div>
       <div class="card tile"><div class="k">Tests generated</div><div id="tGen" class="v">0</div></div>
@@ -402,6 +520,7 @@
     try {
       config = JSON.parse($("jsonBox").value);
       $("jsonErr").classList.add("hidden");
+      $("savedTokenWrap").classList.toggle("hidden", config?.auth?.valueEnv !== "CUSTOM_API_AUTH");
       renderEndpoints();
       return true;
     } catch (e) {
@@ -531,15 +650,30 @@
     $("stopBtn").classList.toggle("hidden", !on);
     $("inputSel").disabled = on;
     $("jsonBox").readOnly = on;
+    $("tabSaved").disabled = on;
+    $("tabCustom").disabled = on;
+    document.querySelectorAll("#customPane input, #customPane select, #customPane textarea, #customPane button").forEach((el) => (el.disabled = on));
   }
 
   async function startRun() {
     $("runErr").classList.add("hidden");
-    if (!parseConfig()) { showRunErr("Fix the JSON before running."); return; }
+    let payload;
+    if (mode === "custom") {
+      const built = buildCustomConfig();
+      if (built.errors.length) { showRunErr(built.errors.join(" ")); return; }
+      config = built.config;
+      payload = { json: JSON.stringify(built.config, null, 2), authValue: built.authValue || undefined };
+    } else {
+      if (!parseConfig()) { showRunErr("Fix the JSON before running."); return; }
+      const needsToken = config?.auth?.valueEnv === "CUSTOM_API_AUTH";
+      const tok = $("savedToken").value.trim();
+      if (needsToken && !tok) { showRunErr("This API needs an auth header value. Enter it above."); return; }
+      payload = { json: $("jsonBox").value, authValue: needsToken ? tok : undefined };
+    }
     const res = await fetch("/api/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ json: $("jsonBox").value }),
+      body: JSON.stringify(payload),
     });
     if (res.status !== 202) {
       const body = await res.json().catch(() => ({}));
@@ -699,6 +833,7 @@
       renderEndpoints();
     }
 
+    renderFramework(s.framework);
     $("results").style.display = "block";
     $("codeCard").style.display = "none";
     $("results").scrollIntoView({ behavior: "smooth", block: "start" });
@@ -769,6 +904,212 @@
       return l;
     };
   }
+
+  // ---------- Framework ----------
+  function renderFramework(fw) {
+    const card = $("fwCard");
+    if (!fw || !Array.isArray(fw.files) || !fw.files.length) { card.classList.add("hidden"); return; }
+    card.classList.remove("hidden");
+    $("fwPath").textContent = (fw.dir || "") + "/";
+    // build a tree from the file list
+    const root = {};
+    for (const f of fw.files) {
+      const parts = String(f).split("/");
+      let node = root;
+      parts.forEach((p, i) => { node[p] = node[p] || (i === parts.length - 1 ? null : {}); if (node[p]) node = node[p]; });
+    }
+    const lines = [`<span class="dir">${esc(fw.name || "framework")}/</span>`];
+    const walk = (node, prefix) => {
+      const keys = Object.keys(node).sort((a, b) => {
+        const da = node[a] !== null, db = node[b] !== null;
+        return da === db ? a.localeCompare(b) : da ? -1 : 1;
+      });
+      keys.forEach((k, i) => {
+        const last = i === keys.length - 1;
+        const branch = prefix + (last ? "└── " : "├── ");
+        if (node[k] !== null) {
+          lines.push(`${branch}<span class="dir">${esc(k)}/</span>`);
+          walk(node[k], prefix + (last ? "    " : "│   "));
+        } else {
+          lines.push(`${branch}<span class="${/\.spec\.ts$/.test(k) ? "spec" : ""}">${esc(k)}</span>`);
+        }
+      });
+    };
+    walk(root, "");
+    $("fwFiles").innerHTML = lines.join("\n");
+    const dir = fw.dir || "frameworks/" + (fw.name || "api");
+    $("fwSteps").innerHTML = [
+      `<li><span class="n">1</span><span>Unzip it, or open <code>${esc(dir)}</code></span></li>`,
+      `<li><span class="n">2</span><span><code>npm install</code></span></li>`,
+      `<li><span class="n">3</span><span><code>cp .env.example .env</code> and fill in the auth value</span></li>`,
+      `<li><span class="n">4</span><span><code>npx playwright test</code></span></li>`,
+    ].join("");
+  }
+  $("fwDl").addEventListener("click", () => { window.location.href = "/api/framework/download"; });
+
+  // ---------- Custom API ----------
+  let mode = "saved";
+  let cEps = [];
+  const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
+  const icon = {
+    lock: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
+    more: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h10"/></svg>',
+    del: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>',
+  };
+
+  function setMode(m) {
+    mode = m;
+    $("tabSaved").classList.toggle("on", m === "saved");
+    $("tabCustom").classList.toggle("on", m === "custom");
+    $("savedPane").classList.toggle("hidden", m !== "saved");
+    $("customPane").classList.toggle("hidden", m !== "custom");
+    $("toggleJson").classList.toggle("hidden", m !== "saved");
+    $("runErr").classList.add("hidden");
+    if (m === "custom" && !cEps.length) addEp();
+    if (m === "saved") parseConfig();
+  }
+  $("tabSaved").addEventListener("click", () => setMode("saved"));
+  $("tabCustom").addEventListener("click", () => setMode("custom"));
+  $("cAuth").addEventListener("change", () => $("cAuthFields").classList.toggle("hidden", $("cAuth").value !== "header"));
+
+  function slug(s) { return String(s || "").toLowerCase().replace(/\{[^}]*\}/g, "id").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, ""); }
+  function epIds() {
+    const seen = {};
+    return cEps.map((e) => {
+      let id = slug(e.method + "-" + (e.path || "root")) || "endpoint";
+      if (seen[id]) { seen[id]++; id = id + "-" + seen[id]; } else seen[id] = 1;
+      return id;
+    });
+  }
+
+  function addEp(data) {
+    cEps.push(Object.assign({ method: "GET", path: "", auth: false, body: "", setupFrom: "", idField: "id", open: false }, data || {}));
+    renderEps();
+  }
+
+  function renderEps() {
+    const ids = epIds();
+    $("cEps").innerHTML = cEps.map((e, i) => `
+      <div class="ep-edit ${e.open ? "open" : ""}" data-i="${i}">
+        <div class="top">
+          <select class="sm" data-k="method">${METHODS.map((m) => `<option ${m === e.method ? "selected" : ""}>${m}</option>`).join("")}</select>
+          <input class="sm" data-k="path" placeholder="/products/{id}" value="${esc(e.path)}" spellcheck="false" autocomplete="off">
+          <button type="button" class="icon-btn ${e.auth ? "on" : ""}" data-act="auth" title="Requires auth">${icon.lock}</button>
+          <button type="button" class="icon-btn ${e.open ? "on" : ""}" data-act="more" title="Body and setup">${icon.more}</button>
+          <button type="button" class="icon-btn del" data-act="del" title="Remove">${icon.del}</button>
+        </div>
+        <div class="ep-id">id: ${esc(ids[i])}</div>
+        <div class="ep-more">
+          <label class="lbl">Sample request body (JSON, optional)</label>
+          <textarea data-k="body" spellcheck="false" placeholder='{ "name": "Trail Runner", "price": 89.99 }'>${esc(e.body)}</textarea>
+          <div class="row2" style="margin-top:10px">
+            <div>
+              <label class="lbl">Create resource first with</label>
+              <select class="sm" data-k="setupFrom">
+                <option value="">None</option>
+                ${ids.map((id, j) => (j !== i && cEps[j].method === "POST") ? `<option value="${esc(id)}" ${e.setupFrom === id ? "selected" : ""}>${esc(id)}</option>` : "").join("")}
+              </select>
+            </div>
+            <div>
+              <label class="lbl">Id field in its response</label>
+              <input class="sm" data-k="idField" value="${esc(e.idField)}" spellcheck="false" autocomplete="off">
+            </div>
+          </div>
+          <div class="hint" style="margin-top:6px">Needed when the path has {id}: the agent creates a resource first and uses its id.</div>
+        </div>
+      </div>`).join("");
+  }
+
+  $("customPane").addEventListener("input", () => { $("runErr").classList.add("hidden"); $("cMsg").textContent = ""; });
+  $("cEps").addEventListener("input", (ev) => {
+    const row = ev.target.closest(".ep-edit"); const k = ev.target.dataset.k;
+    if (!row || !k) return;
+    cEps[+row.dataset.i][k] = ev.target.value;
+    if (k === "path") row.querySelector(".ep-id").textContent = "id: " + epIds()[+row.dataset.i];
+  });
+  $("cEps").addEventListener("change", (ev) => {
+    const k = ev.target.dataset.k;
+    if (k === "method" || k === "path") renderEps(); // refresh ids and setup options
+  });
+  $("cEps").addEventListener("click", (ev) => {
+    const btn = ev.target.closest("[data-act]"); if (!btn) return;
+    const i = +btn.closest(".ep-edit").dataset.i;
+    if (btn.dataset.act === "auth") cEps[i].auth = !cEps[i].auth;
+    if (btn.dataset.act === "more") cEps[i].open = !cEps[i].open;
+    if (btn.dataset.act === "del") { cEps.splice(i, 1); if (!cEps.length) addEp(); }
+    renderEps();
+  });
+  $("cAdd").addEventListener("click", () => addEp({ open: false }));
+
+  $("cExample").addEventListener("click", () => {
+    $("cName").value = "jsonplaceholder";
+    $("cBase").value = "https://jsonplaceholder.typicode.com";
+    $("cAuth").value = "none";
+    $("cAuthFields").classList.add("hidden");
+    cEps = [
+      { method: "GET", path: "/posts", auth: false, body: "", setupFrom: "", idField: "id", open: false },
+      { method: "GET", path: "/posts/1", auth: false, body: "", setupFrom: "", idField: "id", open: false },
+      { method: "POST", path: "/posts", auth: false, body: JSON.stringify({ title: "Hello", body: "Generated by the agent", userId: 1 }, null, 2), setupFrom: "", idField: "id", open: true },
+    ];
+    renderEps();
+  });
+
+  function buildCustomConfig() {
+    const errors = [];
+    const name = slug($("cName").value);
+    const baseUrl = $("cBase").value.trim().replace(/\/+$/, "");
+    const authMode = $("cAuth").value;
+    if (!name) errors.push("Enter an API name.");
+    if (!/^https?:\/\/\S+$/.test(baseUrl)) errors.push("Base URL must start with http:// or https://.");
+    const ids = epIds();
+    const endpoints = [];
+    cEps.forEach((e, i) => {
+      const path = e.path.trim();
+      if (!path) { errors.push(`Endpoint ${i + 1} needs a path.`); return; }
+      if (!path.startsWith("/")) errors.push(`${ids[i]}: path must start with /.`);
+      const ep = { id: ids[i], method: e.method, path, requiresAuth: !!e.auth };
+      if (e.auth && authMode === "none") errors.push(`${ids[i]} requires auth, but Auth is set to No auth.`);
+      if (e.body.trim()) {
+        try { ep.body = JSON.parse(e.body); } catch (err) { errors.push(`${ids[i]}: body is not valid JSON.`); }
+      }
+      if (/\{[^}]+\}/.test(path)) {
+        if (!e.setupFrom) errors.push(`${ids[i]}: path has {id}, so pick which endpoint creates the resource first.`);
+        else ep.setup = { endpointId: e.setupFrom, idField: (e.idField || "id").trim() };
+      }
+      endpoints.push(ep);
+    });
+    if (!cEps.length) errors.push("Add at least one endpoint.");
+    const cfg = {
+      name,
+      baseUrl,
+      defaultHeaders: { Accept: "application/json", "Content-Type": "application/json" },
+    };
+    if (authMode === "header") {
+      if (!$("cAuthHeader").value.trim()) errors.push("Enter the auth header name.");
+      if (!$("cAuthValue").value.trim()) errors.push("Enter the auth header value.");
+      cfg.auth = { header: $("cAuthHeader").value.trim(), valueEnv: "CUSTOM_API_AUTH" };
+    }
+    cfg.endpoints = endpoints;
+    return { config: cfg, authValue: authMode === "header" ? $("cAuthValue").value.trim() : "", errors };
+  }
+
+  $("cSave").addEventListener("click", async () => {
+    const msg = $("cMsg");
+    const built = buildCustomConfig();
+    if (built.errors.length) { msg.className = "bad-msg"; msg.textContent = built.errors.join(" "); return; }
+    const res = await fetch("/api/inputs/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: built.config.name, json: JSON.stringify(built.config, null, 2) }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { msg.className = "bad-msg"; msg.textContent = body.error || "Could not save."; return; }
+    msg.className = "ok-msg";
+    msg.textContent = `Saved as input/${body.file}. The auth value was not saved.`;
+    const keep = $("inputSel").value;
+    await loadInputs();
+    if (keep && keep !== $("inputSel").value) { $("inputSel").value = keep; await loadInput(keep); }
+  });
 
   // ---------- Boot ----------
   (async () => {

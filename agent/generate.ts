@@ -48,7 +48,7 @@ ${read('tests/template/update-booking.spec.ts')}
 RULES:
 - The file lives in generated/, so import exactly: import { test, expect } from '../tests/fixtures/ctx';
 ${setupLine}
-- Paths are relative, for example \`${endpoint.path.replace('{id}', '${id}')}\`. The base URL comes from ctx.api. Never write http:// or https://.
+- Paths are relative, for example \`${endpoint.path.replace(/\{[^}]+\}/, '${id}')}\`. The base URL comes from ctx.api. Never write http:// or https://.
 - Use ctx.api for normal requests and ctx.noAuthApi for auth cases (the same valid request without the auth header).
 - Copy the template's structure: one test.describe block, every test title starts with its type tag ([happy], [schema], [invalid-input], [auth]), and every test records test.info().annotations.push({ type: 'actual-status', description: String(response.status()) }) (or a helper like recordStatus) before its first expect.
 - Status assertions, exactly in the template's style: happy and schema expect(response.status()).toBe(<exact probe status ${probe.status}>); invalid-input expect status toBeGreaterThanOrEqual(400) and toBeLessThanOrEqual(499); auth expect([401, 403]).toContain(response.status()).

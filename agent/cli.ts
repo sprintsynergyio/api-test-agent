@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { basename } from 'node:path';
 import { BudgetExceeded, claudeBudget, claudeCallsUsed, redact } from './claude';
 import { loadConfig, type Endpoint } from './config';
+import { exportFramework, type FrameworkInfo } from './export';
 import { generateEndpoint } from './generate';
 import { planEndpoint, type Plan } from './plan';
 import { probeAll, type ProbeResult } from './probe';
@@ -183,11 +184,11 @@ async function main() {
   const inputFile = process.argv[2] || 'input/endpoints.json';
   const startedAt = new Date();
   const config = loadConfig(inputFile);
-  const authValue = process.env[config.auth.valueEnv];
-  if (!authValue) {
+  const authValue = config.auth ? process.env[config.auth.valueEnv] : undefined;
+  if (config.auth && !authValue) {
     throw new Error(`Missing auth value: environment variable ${config.auth.valueEnv} is not set (required by ${inputFile}).`);
   }
-  const secrets = [authValue];
+  const secrets = authValue ? [authValue] : [];
 
   for (const dir of ['generated', 'out', 'reports', 'test-results']) rmSync(dir, { recursive: true, force: true });
 
@@ -235,6 +236,17 @@ async function main() {
     .filter((o) => !o.passed)
     .map((o) => toFinding(o, states.find((s) => s.endpoint.id === o.endpointId)?.plan));
 
+  let framework: FrameworkInfo | null = null;
+  if (status !== 'no-tests') {
+    framework = exportFramework({
+      config,
+      inputFile,
+      authValue,
+      endpoints: states,
+      findings: findings.filter((f) => f.classification === 'suspected API finding'),
+    });
+  }
+
   const summary = {
     status,
     inputFile,
@@ -265,6 +277,7 @@ async function main() {
       };
     }),
     findings,
+    framework,
   };
   mkdirSync('out', { recursive: true });
   writeFileSync(SUMMARY_FILE, JSON.stringify(summary, null, 2) + '\n');
@@ -291,6 +304,7 @@ async function main() {
     for (const f of review) console.log(`  - ${f.testTitle}: expected ${f.expectedStatus}, got ${f.actualStatus ?? 'no status'}`);
   }
   console.log(`Summary written to ${SUMMARY_FILE}, report in reports/html`);
+  if (framework) console.log(`framework written to ${framework.dir} (${framework.files.length} files)`);
 }
 
 main().catch((err) => {

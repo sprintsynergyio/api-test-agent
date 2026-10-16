@@ -46,6 +46,15 @@ const summary = { status: "completed", inputFile: file, baseUrl: cfg.baseUrl, st
   findings: [
     { endpointId: "create-product", testTitle: "[invalid-input] create-product rejects price sent as text", type: "invalid-input", expectedStatus: "4xx", actualStatus: 500, classification: "suspected API finding", error: "Expected 4xx, received 500" },
     { endpointId: "delete-product", testTitle: "[auth] delete-product rejects request without token", type: "auth", expectedStatus: "401|403", actualStatus: 204, classification: "suspected API finding", error: "Expected 401|403, received 204" } ] };
+// fake framework export
+const fwName = cfg.name || (file.includes("ui-run") ? "custom-api" : file.split("/").pop().replace(/\.json$/, ""));
+const fwDir = `frameworks/${fwName}`;
+fs.rmSync(fwDir, { recursive: true, force: true });
+const fwFiles = ["package.json", "playwright.config.ts", "tsconfig.json", ".env.example", ".gitignore", "README.md", "config/api.json", "src/http.ts", "tests/fixtures/ctx.ts", ...ids.map(id => `tests/${id}.spec.ts`)];
+for (const f of fwFiles) { fs.mkdirSync(`${fwDir}/${f.split("/").slice(0, -1).join("/") || "."}`, { recursive: true }); fs.writeFileSync(`${fwDir}/${f}`, "// mock\n"); }
 fs.mkdirSync("out", { recursive: true });
+fs.writeFileSync("out/framework.zip", "PK mock zip");
+summary.framework = { name: fwName, dir: fwDir, zip: "out/framework.zip", files: fwFiles, specCount: ids.length };
+console.log("framework written to " + fwDir + (process.env.CUSTOM_API_AUTH ? " (custom auth received)" : ""));
 fs.writeFileSync("out/summary.json", JSON.stringify(summary, null, 2));
 console.log("2 suspected API findings");

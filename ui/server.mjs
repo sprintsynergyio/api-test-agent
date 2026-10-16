@@ -23,6 +23,8 @@ const SUMMARY = path.join(ROOT, "out", "summary.json");
 const GENERATED = path.join(ROOT, "generated");
 const REPORT_DIR = path.join(ROOT, "reports", "html");
 const INDEX = path.join(ROOT, "ui", "index.html");
+const FRAMEWORK_ZIP = path.join(ROOT, "out", "framework.zip");
+const PROTECTED_INPUTS = new Set(["endpoints.json", "demo-small.json", "local-shop.json"]);
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -71,8 +73,12 @@ function checkInput(text) {
   if (!cfg || typeof cfg !== "object") return "Input must be a JSON object";
   if (typeof cfg.baseUrl !== "string" || !/^https?:\/\//.test(cfg.baseUrl)) return "baseUrl must be a URL starting with http:// or https://";
   if (!Array.isArray(cfg.endpoints) || cfg.endpoints.length === 0) return "endpoints must be a non-empty array";
+  if (cfg.auth !== undefined && (typeof cfg.auth !== "object" || typeof cfg.auth.header !== "string" || typeof cfg.auth.valueEnv !== "string")) {
+    return "auth must have header and valueEnv";
+  }
   for (const [i, e] of cfg.endpoints.entries()) {
     if (!e || typeof e.id !== "string") return `endpoints[${i}].id is required`;
+    if (e.requiresAuth === true && !cfg.auth) return `endpoints[${i}] requires auth but the input has no auth section`;
     if (typeof e.method !== "string") return `endpoints[${i}].method is required`;
     if (typeof e.path !== "string" || !e.path.startsWith("/")) return `endpoints[${i}].path must start with /`;
   }
@@ -102,11 +108,12 @@ function agentCommand() {
   return { cmd: tsx, args: ["agent/cli.ts"] };
 }
 
-function startRun() {
+function startRun(authValue) {
   const { cmd, args } = agentCommand();
   const proc = spawn(cmd, [...args, RUN_FILE], {
     cwd: ROOT,
-    env: { ...process.env, FORCE_COLOR: "0", NO_COLOR: "1" },
+    // A custom auth value is passed to this run only, through the environment. It is never written to disk.
+    env: { ...process.env, FORCE_COLOR: "0", NO_COLOR: "1", ...(authValue ? { CUSTOM_API_AUTH: authValue } : {}) },
   });
   const prevClients = run ? run.clients : new Set();
   run = { proc, lines: [], startedAt: Date.now(), exitCode: null, clients: prevClients };
@@ -179,9 +186,47 @@ const server = http.createServer(async (req, res) => {
     }
     const problem = checkInput(body && body.json);
     if (problem) return json(res, 400, { error: problem });
+    if (body.authValue !== undefined && typeof body.authValue !== "string") return json(res, 400, { error: "authValue must be a string" });
+    const cfg = JSON.parse(body.json);
+    if (cfg.auth && cfg.auth.valueEnv === "CUSTOM_API_AUTH" && !body.authValue) {
+      return json(res, 400, { error: "This API needs an auth header value" });
+    }
     fs.writeFileSync(path.join(ROOT, RUN_FILE), body.json);
-    startRun();
+    startRun(body.authValue || "");
     return json(res, 202, { started: true });
+  }
+
+  if (req.method === "POST" && p === "/api/inputs/save") {
+    let body;
+    try {
+      body = JSON.parse(await readBody(req));
+    } catch {
+      return json(res, 400, { error: "Request body must be JSON" });
+    }
+    const name = String((body && body.name) || "");
+    if (!/^[a-z0-9][a-z0-9-]{0,40}$/.test(name) || name === "ui-run") return json(res, 400, { error: "Name must use lowercase letters, numbers and dashes" });
+    const file = `${name}.json`;
+    if (PROTECTED_INPUTS.has(file)) return json(res, 409, { error: `${file} is a kit file and cannot be overwritten` });
+    const problem = checkInput(body.json);
+    if (problem) return json(res, 400, { error: problem });
+    if (/"(Bearer|Basic) [^"]+"/.test(body.json)) return json(res, 400, { error: "Input files must not contain auth values" });
+    fs.writeFileSync(path.join(INPUT_DIR, file), body.json);
+    return json(res, 200, { saved: true, file });
+  }
+
+  if (req.method === "GET" && p === "/api/framework/download") {
+    if (!fs.existsSync(FRAMEWORK_ZIP)) return json(res, 404, { error: "No framework yet. Run the agent first." });
+    let name = "playwright-api-framework";
+    try {
+      const s = JSON.parse(fs.readFileSync(SUMMARY, "utf8"));
+      if (s.framework && /^[a-z0-9-]+$/.test(s.framework.name || "")) name = `${s.framework.name}-playwright-tests`;
+    } catch {}
+    res.writeHead(200, {
+      "Content-Type": "application/zip",
+      "Content-Disposition": `attachment; filename="${name}.zip"`,
+      "Cache-Control": "no-store",
+    });
+    return fs.createReadStream(FRAMEWORK_ZIP).pipe(res);
   }
 
   if (req.method === "POST" && p === "/api/stop") {

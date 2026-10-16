@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import { BudgetExceeded, callClaude } from './claude';
-import { loadConfig, type Endpoint } from './config';
+import { loadConfig, PATH_PARAM, type Endpoint } from './config';
 import { readProbe, type ProbeResult } from './probe';
 
 const PLAN_DIR = 'out/plans';
@@ -28,7 +28,7 @@ export type PlanResult = { ok: true; plan: Plan } | { ok: false; reason: string 
 // invalid-input needs something to make invalid: a body or a path id.
 function allowedTypes(endpoint: Endpoint): Plan['cases'][number]['type'][] {
   const types: Plan['cases'][number]['type'][] = ['happy', 'schema'];
-  if (endpoint.body || endpoint.path.includes('{id}')) types.push('invalid-input');
+  if (endpoint.body || PATH_PARAM.test(endpoint.path)) types.push('invalid-input');
   if (endpoint.requiresAuth) types.push('auth');
   return types;
 }

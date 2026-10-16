@@ -90,7 +90,7 @@ async function probeEndpoint(config: Config, clients: Clients, endpoint: Endpoin
   return result;
 }
 
-export async function probeAll(config: Config, authValue: string): Promise<ProbeResult[]> {
+export async function probeAll(config: Config, authValue: string | undefined): Promise<ProbeResult[]> {
   rmSync(PROBE_DIR, { recursive: true, force: true });
   mkdirSync(PROBE_DIR, { recursive: true });
 
@@ -118,8 +118,8 @@ export async function probeAll(config: Config, authValue: string): Promise<Probe
 async function main() {
   const inputFile = process.argv[2] || 'input/endpoints.json';
   const config = loadConfig(inputFile);
-  const authValue = process.env[config.auth.valueEnv];
-  if (!authValue) {
+  const authValue = config.auth ? process.env[config.auth.valueEnv] : undefined;
+  if (config.auth && !authValue) {
     throw new Error(`Missing auth value: environment variable ${config.auth.valueEnv} is not set (required by ${inputFile}).`);
   }
   await probeAll(config, authValue);
