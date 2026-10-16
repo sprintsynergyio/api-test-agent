@@ -425,10 +425,16 @@
         <div id="heroBig" class="big"></div>
         <div id="heroSub" class="sub"></div>
       </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <button id="allureBtn" class="btn btn-ghost hidden" style="font-size:17px;padding:14px 18px">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 5-6"/></svg>
+        Open Allure report
+      </button>
       <button id="reportBtn" class="btn btn-primary">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3h7v7"/><path d="M10 14 21 3"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/></svg>
         Open Playwright report
       </button>
+      </div>
     </div>
     <section id="fwCard" class="card hidden">
       <div class="card-h"><h2>Playwright framework</h2><span id="fwPath" class="timer"></span></div>
@@ -720,6 +726,7 @@
   $("stopBtn").addEventListener("click", () => fetch("/api/stop", { method: "POST" }));
   $("lastBtn").addEventListener("click", () => loadSummary(false));
   $("reportBtn").addEventListener("click", () => window.open("/report/index.html", "_blank"));
+  $("allureBtn").addEventListener("click", () => window.open("/allure/index.html", "_blank"));
 
   // ---------- Results ----------
   async function loadSummary(afterRun) {
@@ -841,6 +848,7 @@
     }
 
     renderFramework(s.framework);
+    $("allureBtn").classList.toggle("hidden", !s.allureReport);
     $("results").style.display = "block";
     $("codeCard").style.display = "none";
     $("results").scrollIntoView({ behavior: "smooth", block: "start" });

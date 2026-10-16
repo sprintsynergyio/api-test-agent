@@ -22,6 +22,7 @@ const RUN_FILE = "input/ui-run.json";
 const SUMMARY = path.join(ROOT, "out", "summary.json");
 const GENERATED = path.join(ROOT, "generated");
 const REPORT_DIR = path.join(ROOT, "reports", "html");
+const ALLURE_DIR = path.join(ROOT, "reports", "allure-report");
 const INDEX = path.join(ROOT, "ui", "index.html");
 const FRAMEWORK_ZIP = path.join(ROOT, "out", "framework.zip");
 const PROTECTED_INPUTS = new Set(["endpoints.json", "demo-small.json", "local-shop.json"]);
@@ -37,6 +38,10 @@ const MIME = {
   ".zip": "application/zip",
   ".txt": "text/plain; charset=utf-8",
   ".webm": "video/webm",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".ico": "image/x-icon",
+  ".gif": "image/gif",
 };
 
 let run = null; // { proc, lines, startedAt, exitCode, clients }
@@ -275,6 +280,15 @@ const server = http.createServer(async (req, res) => {
     const file = path.join(GENERATED, name);
     if (!fs.existsSync(file)) return json(res, 404, { error: "spec not found" });
     return json(res, 200, { name, content: fs.readFileSync(file, "utf8") });
+  }
+
+  if (req.method === "GET" && (p === "/allure" || p.startsWith("/allure/"))) {
+    let rel = decodeURIComponent(p.slice("/allure".length)) || "/index.html";
+    if (rel.endsWith("/")) rel += "index.html";
+    const file = path.normalize(path.join(ALLURE_DIR, rel));
+    if (!file.startsWith(ALLURE_DIR)) return json(res, 403, { error: "forbidden" });
+    if (!fs.existsSync(file)) return json(res, 404, { error: "Allure report not found. Run the agent first." });
+    return serveFile(res, file);
   }
 
   if (req.method === "GET" && (p === "/report" || p.startsWith("/report/"))) {

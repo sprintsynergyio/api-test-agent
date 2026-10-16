@@ -83,3 +83,9 @@ New UI routes:
 - POST /api/run body may include "authValue" (string)
 - POST /api/inputs/save { name, json } writes input/<name>.json (kit files protected, auth values refused)
 - GET /api/framework/download streams out/framework.zip
+
+## 5. Allure report
+
+out/summary.json gets "allureReport": "reports/allure-report" when the Allure HTML report was generated
+for this run, or null when it was not. The UI shows an "Open Allure report" button only when it is set,
+and serves the folder at /allure/.

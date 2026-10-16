@@ -1,9 +1,9 @@
 import 'dotenv/config';
-import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { basename, sep } from 'node:path';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { basename, join, sep } from 'node:path';
 import { BudgetExceeded, claudeBudget, claudeCallsUsed, redact } from './claude';
-import { loadConfig, type Endpoint } from './config';
+import { apiName, loadConfig, type Endpoint } from './config';
 import { exportFramework, type FrameworkInfo } from './export';
 import { generateEndpoint } from './generate';
 import { planEndpoint, type Plan } from './plan';
@@ -14,6 +14,8 @@ import { probeAll, type ProbeResult } from './probe';
 
 const CONCURRENCY = 3;
 const RESULTS_FILE = 'reports/results.json';
+const ALLURE_RESULTS = 'reports/allure-results';
+const ALLURE_REPORT = 'reports/allure-report';
 const SUMMARY_FILE = 'out/summary.json';
 
 type EndpointState = {
@@ -172,6 +174,38 @@ function readOutcomes(secrets: string[]): { outcomes: TestOutcome[]; loadErrors:
   return { outcomes, loadErrors };
 }
 
+function filesUnder(dir: string): string[] {
+  return readdirSync(dir).flatMap((entry) => {
+    const full = join(dir, entry);
+    return statSync(full).isDirectory() ? filesUnder(full) : [full];
+  });
+}
+
+// Builds the Allure HTML report from the raw results. Never fails the run: returns the reason instead.
+function generateAllure(reportName: string, secrets: string[]): { dir: string | null; reason?: string } {
+  if (!existsSync(ALLURE_RESULTS)) return { dir: null, reason: `${ALLURE_RESULTS} was not written` };
+  const res = spawnSync(
+    'node_modules/.bin/allure',
+    ['generate', ALLURE_RESULTS, '--output', ALLURE_REPORT, '--report-name', reportName],
+    { encoding: 'utf8', timeout: 120_000 },
+  );
+  if (res.error || res.status !== 0) {
+    const detail = res.error?.message ?? `${res.stderr}${res.stdout}`.trim().split('\n')[0];
+    return { dir: null, reason: cleanError(`allure exited with ${res.status}: ${detail}`, secrets) };
+  }
+  if (!existsSync(join(ALLURE_REPORT, 'index.html'))) return { dir: null, reason: `${ALLURE_REPORT}/index.html is missing` };
+  for (const dir of [ALLURE_RESULTS, ALLURE_REPORT]) {
+    for (const file of filesUnder(dir)) {
+      if (secrets.some((s) => s && readFileSync(file).includes(s))) {
+        rmSync(ALLURE_RESULTS, { recursive: true, force: true });
+        rmSync(ALLURE_REPORT, { recursive: true, force: true });
+        return { dir: null, reason: `auth value found in ${file}, Allure output deleted` };
+      }
+    }
+  }
+  return { dir: ALLURE_REPORT };
+}
+
 function classify(type: string, actual: number | null): Finding['classification'] {
   if (actual === null) return 'needs review';
   if (actual >= 500) return 'suspected API finding';
@@ -228,6 +262,7 @@ async function main() {
   const written = states.filter((s) => s.specFile);
   let status: 'completed' | 'stopped-budget' | 'no-tests' = budgetHit ? 'stopped-budget' : 'completed';
   let outcomes: TestOutcome[] = [];
+  let allureReport: string | null = null;
 
   if (written.length === 0) {
     status = 'no-tests';
@@ -243,6 +278,9 @@ async function main() {
         s.failureReason = 'spec produced no test results (failed to load)';
       }
     }
+    const allure = generateAllure(`${apiName(config, inputFile)} API tests`, secrets);
+    allureReport = allure.dir;
+    if (!allure.dir) console.log(`allure report not generated: ${allure.reason}`);
   }
 
   const findings = outcomes
@@ -291,6 +329,7 @@ async function main() {
     }),
     findings,
     framework,
+    allureReport,
   };
   mkdirSync('out', { recursive: true });
   writeFileSync(SUMMARY_FILE, JSON.stringify(summary, null, 2) + '\n');
@@ -317,6 +356,7 @@ async function main() {
     for (const f of review) console.log(`  - ${f.testTitle}: expected ${f.expectedStatus}, got ${f.actualStatus ?? 'no status'}`);
   }
   console.log(`Summary written to ${SUMMARY_FILE}, report in reports/html`);
+  if (allureReport) console.log(`allure report written to ${allureReport}`);
   if (framework) console.log(`framework written to ${framework.dir} (${framework.files.length} files)`);
 }
 

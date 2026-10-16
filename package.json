@@ -10,7 +10,8 @@
     "api:local:fixed": "FIXED=1 node local-api/server.mjs",
     "probe": "tsx agent/probe.ts",
     "agent": "tsx agent/cli.ts",
-    "ui": "node ui/server.mjs"
+    "ui": "node ui/server.mjs",
+    "allure": "allure open reports/allure-report"
   },
   "keywords": [],
   "author": "",
@@ -19,6 +20,9 @@
   "devDependencies": {
     "@playwright/test": "^1.64.1",
     "@types/node": "^26.6.5",
+    "allure": "3.21.0",
+    "allure-js-commons": "3.13.0",
+    "allure-playwright": "3.13.0",
     "dotenv": "^18.0.8",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",

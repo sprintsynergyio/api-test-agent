@@ -34,6 +34,17 @@ export const PATH_PARAM = /\{[^}]+\}/;
 export type Endpoint = z.infer<typeof EndpointSchema>;
 export type Config = z.infer<typeof ConfigSchema>;
 
+// The API name: config.name, else the input file name. A UI run without a name is "custom-api".
+// Used for the framework folder and the Allure epic.
+export function apiName(config: Config, inputFile: string): string {
+  const fromFile = (inputFile.split(/[\\/]/).pop() ?? inputFile)
+    .replace(/\.json$/, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, '-');
+  const name = config.name ?? fromFile;
+  return name === 'ui-run' ? 'custom-api' : name;
+}
+
 function fieldName(path: PropertyKey[]): string {
   return path.reduce<string>((acc, key) => {
     if (typeof key === 'number') return `${acc}[${key}]`;

@@ -2,13 +2,13 @@ import { spawnSync } from 'node:child_process';
 import { builtinModules } from 'node:module';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
-import type { Config, Endpoint } from './config';
+import { apiName, type Config, type Endpoint } from './config';
 
 // Writes the generated suite as a standalone Playwright project in frameworks/<name>/ and zips it.
 
 const FRAMEWORKS_DIR = 'frameworks';
 const ZIP_FILE = 'out/framework.zip';
-const ALLOWED_PACKAGES = new Set(['@playwright/test', 'dotenv', 'dotenv/config']);
+const ALLOWED_PACKAGES = new Set(['@playwright/test', 'dotenv', 'dotenv/config', 'allure-js-commons']);
 const TYPES = ['happy', 'schema', 'invalid-input', 'auth'] as const;
 
 export type FrameworkInfo = { name: string; dir: string; zip: string; files: string[]; specCount: number };
@@ -16,15 +16,10 @@ export type FrameworkInfo = { name: string; dir: string; zip: string; files: str
 export type ExportEndpoint = { endpoint: Endpoint; specFile: string | null; failureReason: string | null };
 export type ExportFinding = { endpointId: string; testTitle: string; expectedStatus: string | null; actualStatus: number | null };
 
-export function frameworkName(config: Config, inputFile: string): string {
-  const fromFile = basename(inputFile).replace(/\.json$/, '').toLowerCase().replace(/[^a-z0-9-]+/g, '-');
-  const name = config.name ?? fromFile;
-  return name === 'ui-run' ? 'custom-api' : name;
-}
 
 function pinnedVersions(): Record<string, string> {
   const pkg = JSON.parse(readFileSync('package.json', 'utf8')) as { devDependencies: Record<string, string> };
-  const pick = ['@playwright/test', 'dotenv', 'typescript', '@types/node'];
+  const pick = ['@playwright/test', 'dotenv', 'typescript', '@types/node', 'allure', 'allure-playwright', 'allure-js-commons'];
   return Object.fromEntries(
     pick.map((dep) => {
       const v = pkg.devDependencies[dep];
@@ -63,7 +58,16 @@ function httpSource(): string {
 const CTX_SOURCE = `import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { test as base, expect, type APIRequestContext } from '@playwright/test';
-import { createClients, createResource, disposeClients, type Config } from '../../src/http';
+import { labels } from 'allure-js-commons';
+import {
+  createClients,
+  createResource,
+  disposeClients,
+  formatExchange,
+  recordClients,
+  reportLabels,
+  type Config,
+} from '../../src/http';
 
 // The only file that reads process.env. The API config comes from config/api.json.
 
@@ -77,7 +81,7 @@ export type Ctx = {
 const configFile = fileURLToPath(new URL('../../config/api.json', import.meta.url));
 
 export const test = base.extend<{ ctx: Ctx }>({
-  ctx: async ({}, use) => {
+  ctx: async ({}, use, testInfo) => {
     const config = JSON.parse(readFileSync(configFile, 'utf8')) as Config;
 
     // No auth section: api and noAuthApi are the same. With one, the value must be set.
@@ -88,13 +92,20 @@ export const test = base.extend<{ ctx: Ctx }>({
       );
     }
 
+    await labels(...reportLabels(config.name ?? 'api', testInfo.titlePath, testInfo.file));
+
+    // Every request and response is attached to the test (Playwright report and Allure).
     const clients = await createClients(config, authValue);
+    const recordedClients = recordClients(config, clients, authValue, async (exchange) => {
+      const { name, body } = formatExchange(config, exchange, authValue);
+      await testInfo.attach(name, { body, contentType: 'application/json' });
+    });
 
     await use({
       baseUrl: config.baseUrl,
-      api: clients.api,
-      noAuthApi: clients.noAuthApi,
-      createResource: (endpointId) => createResource(config, clients, endpointId),
+      api: recordedClients.api,
+      noAuthApi: recordedClients.noAuthApi,
+      createResource: (endpointId) => createResource(config, recordedClients, endpointId),
     });
 
     await disposeClients(clients);
@@ -112,7 +123,7 @@ export default defineConfig({
   // The tests share one live API, so they run one at a time.
   workers: 1,
   timeout: 60_000,
-  reporter: [['list'], ['html', { open: 'never' }]],
+  reporter: [['list'], ['html', { open: 'never' }], ['allure-playwright', { resultsDir: 'allure-results' }]],
 });
 `;
 
@@ -178,6 +189,15 @@ ${envStep}
 
 The API config (base URL, headers, endpoints) is in \`config/api.json\`.
 
+## Allure report
+
+\`npm test\` also writes raw Allure results to \`allure-results/\`. Then:
+
+1. \`npm run allure:generate\` builds the HTML report in \`allure-report/\` (Allure 3, no Java needed).
+2. \`npm run allure:open\` serves it and opens it in the browser.
+
+Tests are grouped by epic (the API), feature (the endpoint) and story (the case type). Auth and invalid-input tests have severity critical, the rest normal. Every request and response a test makes is attached to it as JSON, with the auth header shown as \`<redacted>\`.
+
 ## Suspected API findings from the generating run
 
 ${
@@ -237,7 +257,7 @@ export function exportFramework(opts: {
   findings: ExportFinding[];
 }): FrameworkInfo {
   const { config, inputFile, authValue, endpoints, findings } = opts;
-  const name = frameworkName(config, inputFile);
+  const name = apiName(config, inputFile);
   const dir = join(FRAMEWORKS_DIR, name);
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(join(dir, 'tests', 'fixtures'), { recursive: true });
@@ -253,7 +273,12 @@ export function exportFramework(opts: {
         name: `${name}-api-tests`,
         private: true,
         type: 'module',
-        scripts: { test: 'playwright test', report: 'playwright show-report' },
+        scripts: {
+          test: 'playwright test',
+          report: 'playwright show-report',
+          'allure:generate': 'allure generate allure-results --output allure-report',
+          'allure:open': 'allure open allure-report',
+        },
         devDependencies: pinnedVersions(),
       },
       null,
@@ -263,11 +288,13 @@ export function exportFramework(opts: {
   write('playwright.config.ts', PLAYWRIGHT_CONFIG);
   write('tsconfig.json', TSCONFIG);
   // The validated config holds only the env variable name, never an auth value.
-  write('config/api.json', JSON.stringify(config, null, 2) + '\n');
+  // name is set to the framework name so the fixture can use it as the Allure epic.
+  const { name: _inputName, ...configRest } = config;
+  write('config/api.json', JSON.stringify({ name, ...configRest }, null, 2) + '\n');
   write('src/http.ts', httpSource());
   write('tests/fixtures/ctx.ts', CTX_SOURCE);
   if (config.auth) write('.env.example', `${config.auth.valueEnv}=\n`);
-  write('.gitignore', 'node_modules/\n.env\nplaywright-report/\ntest-results/\n');
+  write('.gitignore', 'node_modules/\n.env\nplaywright-report/\ntest-results/\nallure-results/\nallure-report/\n');
 
   const specs = new Map<string, string>();
   for (const e of endpoints) {

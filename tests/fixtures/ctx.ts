@@ -1,7 +1,8 @@
 import 'dotenv/config';
 import { test as base, expect, type APIRequestContext } from '@playwright/test';
-import { loadConfig } from '../../agent/config';
-import { createClients, createResource, disposeClients } from '../../agent/http';
+import { labels } from 'allure-js-commons';
+import { apiName, loadConfig } from '../../agent/config';
+import { createClients, createResource, disposeClients, formatExchange, recordClients, reportLabels } from '../../agent/http';
 
 export type Ctx = {
   baseUrl: string;
@@ -13,7 +14,7 @@ export type Ctx = {
 const inputFile = process.env.INPUT_FILE || 'input/endpoints.json';
 
 export const test = base.extend<{ ctx: Ctx }>({
-  ctx: async ({}, use) => {
+  ctx: async ({}, use, testInfo) => {
     const config = loadConfig(inputFile);
 
     // No auth section: api and noAuthApi are the same. With one, the value must be set.
@@ -24,13 +25,20 @@ export const test = base.extend<{ ctx: Ctx }>({
       );
     }
 
+    await labels(...reportLabels(apiName(config, inputFile), testInfo.titlePath, testInfo.file));
+
+    // Every request and response is attached to the test (Playwright report and Allure).
     const clients = await createClients(config, authValue);
+    const recordedClients = recordClients(config, clients, authValue, async (exchange) => {
+      const { name, body } = formatExchange(config, exchange, authValue);
+      await testInfo.attach(name, { body, contentType: 'application/json' });
+    });
 
     await use({
       baseUrl: config.baseUrl,
-      api: clients.api,
-      noAuthApi: clients.noAuthApi,
-      createResource: (endpointId) => createResource(config, clients, endpointId),
+      api: recordedClients.api,
+      noAuthApi: recordedClients.noAuthApi,
+      createResource: (endpointId) => createResource(config, recordedClients, endpointId),
     });
 
     await disposeClients(clients);

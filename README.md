@@ -24,6 +24,7 @@ The agent prints five phases (PROBING, PLANNING, GENERATING, RUNNING TESTS, SUMM
 
 - `generated/<endpointId>.spec.ts`: the generated tests
 - `reports/html/`: the Playwright HTML report
+- `reports/allure-report/`: the Allure 3 report (no Java needed), with every request and response attached and the auth header redacted. Open it with `npm run allure`.
 - `out/summary.json`: totals, per-endpoint results and findings
 - `frameworks/<name>/` and `out/framework.zip`: the standalone project (see below)
 
