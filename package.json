@@ -9,7 +9,8 @@
     "api:local": "node local-api/server.mjs",
     "api:local:fixed": "FIXED=1 node local-api/server.mjs",
     "probe": "tsx agent/probe.ts",
-    "agent": "tsx agent/cli.ts"
+    "agent": "tsx agent/cli.ts",
+    "ui": "node ui/server.mjs"
   },
   "keywords": [],
   "author": "",
