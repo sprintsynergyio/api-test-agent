@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { basename } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { basename, sep } from 'node:path';
 import { BudgetExceeded, claudeBudget, claudeCallsUsed, redact } from './claude';
 import { loadConfig, type Endpoint } from './config';
 import { exportFramework, type FrameworkInfo } from './export';
@@ -119,6 +119,19 @@ function runPlaywright(inputFile: string): Promise<number | null> {
 
 const stripAnsi = (s: string) => s.replace(/\u001b\[[0-9;]*m/g, '');
 
+// Error text goes into summary.json and the UI: show paths relative to the project folder,
+// and never a home folder like /Users/<name>/.
+const PROJECT_ROOTS = [...new Set([process.cwd(), realpathSync(process.cwd())])];
+function relativePaths(text: string): string {
+  let out = text;
+  for (const root of PROJECT_ROOTS) out = out.split(root + sep).join('');
+  return out.replace(/(?:\/private)?\/(?:Users|home)\/[^/\s]+\//g, '~/');
+}
+
+function cleanError(text: string, secrets: string[]): string {
+  return relativePaths(redact(stripAnsi(text), secrets));
+}
+
 type JsonSuite = { suites?: JsonSuite[]; specs?: JsonSpec[] };
 type JsonAnnotation = { type: string; description?: string };
 type JsonSpec = {
@@ -148,14 +161,14 @@ function readOutcomes(secrets: string[]): { outcomes: TestOutcome[]; loadErrors:
           title: spec.title,
           passed: t.status === 'expected' || t.status === 'flaky',
           actualStatus: actual,
-          error: redact(stripAnsi(message), secrets).slice(0, 300),
+          error: cleanError(message, secrets).slice(0, 300),
         });
       }
     }
     (suite.suites ?? []).forEach(walk);
   };
   (report.suites ?? []).forEach(walk);
-  const loadErrors = (report.errors ?? []).map((e) => redact(stripAnsi(e.message ?? ''), secrets).split('\n')[0]);
+  const loadErrors = (report.errors ?? []).map((e) => cleanError(e.message ?? '', secrets).split('\n')[0]);
   return { outcomes, loadErrors };
 }
 
@@ -273,7 +286,7 @@ async function main() {
         specFile: s.specFile,
         passed: mine.filter((o) => o.passed).length,
         failed: mine.filter((o) => !o.passed).length,
-        failureReason: s.failureReason === null ? null : redact(oneLine(s.failureReason), secrets),
+        failureReason: s.failureReason === null ? null : cleanError(oneLine(s.failureReason), secrets),
       };
     }),
     findings,

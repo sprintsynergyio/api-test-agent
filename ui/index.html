@@ -748,7 +748,14 @@
 
     // Hero
     const hero = $("hero");
-    if (apiFindings.length) {
+    const connRefused = eps.length > 0 && eps.every((e) => /ECONNREFUSED|ENOTFOUND|connect /i.test(e.failureReason || ""));
+    if (s.status === "no-tests") {
+      hero.className = "hero bad";
+      $("heroBig").textContent = connRefused ? "API not reachable" : "No tests generated";
+      $("heroSub").textContent = connRefused
+        ? `Could not connect to ${s.baseUrl || "the API"}. Is the API running?`
+        : "The agent could not plan any endpoint. The reasons are in the table below.";
+    } else if (apiFindings.length) {
       hero.className = "hero bad";
       $("heroBig").textContent = `${apiFindings.length} API bug${apiFindings.length === 1 ? "" : "s"} found`;
       $("heroSub").textContent = `The agent wrote ${t.testsGenerated ?? 0} tests across ${eps.length} endpoints and caught behavior that breaks REST rules.`;
