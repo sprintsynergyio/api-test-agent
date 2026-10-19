@@ -9,3 +9,4 @@ playwright-report/
 .tscheck/
 frameworks/*
 !frameworks/.gitkeep
+.DS_Store
