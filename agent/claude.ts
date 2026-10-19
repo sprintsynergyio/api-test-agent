@@ -44,6 +44,16 @@ export function redact(text: string, extraSecrets: string[] = []): string {
   return out;
 }
 
+// Environment for every claude CLI child process: the parent's environment, PATH included so the
+// CLI can be found, minus CLAUDECODE and every variable with AUTH in its name. The model never
+// needs API auth values.
+export function claudeEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  delete env.CLAUDECODE;
+  for (const name of Object.keys(env)) if (/AUTH/i.test(name)) delete env[name];
+  return env;
+}
+
 type CliOutput = {
   result?: unknown;
   is_error?: boolean;
@@ -57,12 +67,18 @@ export async function callClaude(stepName: string, endpointId: string, system: s
   // Check and increment with no await in between, so parallel callers cannot overshoot the budget.
   if (callsUsed >= budget) throw new BudgetExceeded(callsUsed, budget);
   const callNumber = ++callsUsed;
+  return runClaude(stepName, endpointId, system, user, `call ${callNumber}/${budget}`);
+}
 
+// For the text importer, which runs before any agent run: it caps its own calls, they do not count
+// against the run budget, and each one is logged with its own counter.
+export function callClaudeOutsideBudget(stepName: string, label: string, system: string, user: string, counter: string): Promise<string> {
+  return runClaude(stepName, label, system, user, counter);
+}
+
+async function runClaude(stepName: string, endpointId: string, system: string, user: string, counter: string): Promise<string> {
   const cwd = mkdtempSync(join(tmpdir(), 'api-test-agent-'));
-  const env = { ...process.env };
-  delete env.CLAUDECODE;
-  // The model never needs API auth values.
-  for (const name of Object.keys(env)) if (/AUTH/i.test(name)) delete env[name];
+  const env = claudeEnv();
 
   const args = [
     '-p',
@@ -124,7 +140,7 @@ export async function callClaude(stepName: string, endpointId: string, system: s
     const tokens = u
       ? ` tokens in=${(u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0)} out=${u.output_tokens ?? 0}`
       : '';
-    console.log(`[claude] ${stepName} ${endpointId} ${secs}s${tokens} (call ${callNumber}/${budget})`);
+    console.log(`[claude] ${stepName} ${endpointId} ${secs}s${tokens} (${counter})`);
     return parsed.result;
   } finally {
     rmSync(cwd, { recursive: true, force: true });

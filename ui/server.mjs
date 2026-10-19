@@ -26,6 +26,10 @@ const ALLURE_DIR = path.join(ROOT, "reports", "allure-report");
 const INDEX = path.join(ROOT, "ui", "index.html");
 const FRAMEWORK_ZIP = path.join(ROOT, "out", "framework.zip");
 const PROTECTED_INPUTS = new Set(["endpoints.json", "demo-small.json", "local-shop.json"]);
+const IMPORT_TYPES = ["postman", "openapi", "curl", "har", "text"];
+const MAX_IMPORT_BYTES = 5 * 1024 * 1024;
+// A text import makes up to 2 Claude calls of up to 3 minutes each.
+const IMPORT_TIMEOUT_MS = 7 * 60 * 1000;
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -56,6 +60,51 @@ function readBody(req) {
     let raw = "";
     req.on("data", (c) => (raw += c));
     req.on("end", () => resolve(raw));
+  });
+}
+
+// Like readBody, but stops keeping data past limit bytes and resolves null.
+function readBodyCapped(req, limit) {
+  return new Promise((resolve) => {
+    const chunks = [];
+    let size = 0;
+    req.on("data", (c) => {
+      size += c.length;
+      if (size <= limit) chunks.push(c);
+    });
+    req.on("end", () => resolve(size > limit ? null : Buffer.concat(chunks).toString("utf8")));
+  });
+}
+
+// Runs agent/import.ts with the content on stdin. Nothing is written to disk. The importer never
+// needs an API auth value, so it gets no environment variable with AUTH in its name.
+function runImport(type, content) {
+  return new Promise((resolve) => {
+    const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/AUTH/i.test(name)));
+    const child = spawn(path.join(ROOT, "node_modules", ".bin", "tsx"), ["agent/import.ts", type], {
+      cwd: ROOT,
+      env: { ...env, FORCE_COLOR: "0", NO_COLOR: "1" },
+    });
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, IMPORT_TIMEOUT_MS);
+    child.stdout.on("data", (d) => (stdout += d));
+    child.stderr.on("data", (d) => (stderr += d));
+    // If the importer exits before reading all of stdin, "close" below reports how it failed.
+    child.stdin.on("error", () => {});
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      resolve({ code: -1, stdout, stderr: `import FAILED could not start the importer: ${err.message}`, timedOut });
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({ code, stdout, stderr, timedOut });
+    });
+    child.stdin.end(content);
   });
 }
 
@@ -113,9 +162,12 @@ function agentCommand() {
   return { cmd: tsx, args: ["agent/cli.ts"] };
 }
 
-function startRun(authValue) {
+function startRun(authValue, inputPath) {
   const { cmd, args } = agentCommand();
-  const proc = spawn(cmd, [...args, RUN_FILE], {
+  // The agent only clears out/ after it has loaded the input, so a run that fails earlier would leave the
+  // previous summary behind. Remove it here so a run can never be shown the old run's results.
+  fs.rmSync(SUMMARY, { force: true });
+  const proc = spawn(cmd, [...args, inputPath], {
     cwd: ROOT,
     // A custom auth value is passed to this run only, through the environment. It is never written to disk.
     env: { ...process.env, FORCE_COLOR: "0", NO_COLOR: "1", ...(authValue ? { CUSTOM_API_AUTH: authValue } : {}) },
@@ -196,9 +248,49 @@ const server = http.createServer(async (req, res) => {
     if (cfg.auth && cfg.auth.valueEnv === "CUSTOM_API_AUTH" && !body.authValue) {
       return json(res, 400, { error: "This API needs an auth header value" });
     }
-    fs.writeFileSync(path.join(ROOT, RUN_FILE), body.json);
-    startRun(body.authValue || "");
+    // An unedited saved API runs from its own file so summary.inputFile names the selected API.
+    // Edited or custom JSON runs from input/ui-run.json.
+    const saved = listInputs().find((f) => fs.readFileSync(path.join(INPUT_DIR, f), "utf8") === body.json);
+    if (!saved) fs.writeFileSync(path.join(ROOT, RUN_FILE), body.json);
+    startRun(body.authValue || "", saved ? `input/${saved}` : RUN_FILE);
     return json(res, 202, { started: true });
+  }
+
+  if (req.method === "POST" && p === "/api/import") {
+    // The JSON envelope escapes the content, so allow some room above 5 MB before parsing it.
+    const raw = await readBodyCapped(req, 3 * MAX_IMPORT_BYTES);
+    if (raw === null) return json(res, 413, { error: "The content is larger than 5 MB." });
+    let body;
+    try {
+      body = JSON.parse(raw);
+    } catch {
+      return json(res, 400, { error: "Request body must be JSON" });
+    }
+    const type = body && body.type;
+    if (!IMPORT_TYPES.includes(type)) return json(res, 400, { error: `type must be one of: ${IMPORT_TYPES.join(", ")}` });
+    if (typeof body.content !== "string" || !body.content.trim()) return json(res, 400, { error: "content must be a non-empty string" });
+    if (Buffer.byteLength(body.content, "utf8") > MAX_IMPORT_BYTES) return json(res, 413, { error: "The content is larger than 5 MB." });
+    const result = await runImport(type, body.content);
+    // Log Claude's call lines (no content in them) and counts. Never the content itself.
+    for (const line of result.stderr.split("\n")) if (line.startsWith("[claude] ")) console.log(`UI: import ${line}`);
+    if (result.timedOut) {
+      console.log(`UI: import ${type} timed out`);
+      return json(res, 504, { error: "The import timed out." });
+    }
+    if (result.code !== 0) {
+      const lines = result.stderr.split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("[claude] "));
+      const failure = (lines.find((l) => l.startsWith("import FAILED ")) ?? lines.pop() ?? `the importer exited with ${result.code}`).replace(/^import FAILED /, "");
+      console.log(`UI: import ${type} failed (exit ${result.code})`);
+      return json(res, 422, { error: failure });
+    }
+    let out;
+    try {
+      out = JSON.parse(result.stdout);
+    } catch {
+      return json(res, 500, { error: "The importer did not print JSON." });
+    }
+    console.log(`UI: import ${type}: ${out.input.endpoints.length} endpoints, ${out.skipped.length} skipped, ${out.warnings.length} warnings`);
+    return json(res, 200, out);
   }
 
   if (req.method === "POST" && p === "/api/inputs/save") {

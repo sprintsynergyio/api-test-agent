@@ -89,3 +89,38 @@ New UI routes:
 out/summary.json gets "allureReport": "reports/allure-report" when the Allure HTML report was generated
 for this run, or null when it was not. The UI shows an "Open Allure report" button only when it is set,
 and serves the folder at /allure/.
+
+## 6. Importers
+
+New UI route:
+
+    POST /api/import  { "type": "postman" | "openapi" | "curl" | "har" | "text", "content": "<source text>" }
+
+The server runs `node_modules/.bin/tsx agent/import.ts <type>` with `content` on stdin (no environment
+variable with AUTH in its name). It writes nothing to disk and never logs the content; it logs only
+the type, the counts, and the `[claude]` call lines of a text import.
+
+Responses:
+
+- 200: exactly the JSON that agent/import.ts prints:
+
+      {
+        "input": { "name": "...", "baseUrl": "http://localhost:4000", "defaultHeaders": { ... },
+                   "auth": { "header": "Authorization", "valueEnv": "CUSTOM_API_AUTH" },
+                   "endpoints": [ { "id": "get-products-id", "method": "GET", "path": "/products/{id}",
+                                    "requiresAuth": false, "setup": { "endpointId": "post-products", "idField": "id" } } ] },
+        "skipped": [ { "item": "Track event (POST https://analytics.example.com/track)", "reason": "origin ... differs from the base URL ..." } ],
+        "warnings": [ "Auth value removed. Enter it in the auth field before running." ]
+      }
+
+  `input` has the input file shape (section 4), except that `baseUrl` may be "" when the source has
+  none; the user must fill it in before running. `name` and `auth` are optional. `auth.valueEnv` is
+  always "CUSTOM_API_AUTH". No credential value ever appears in the response.
+- 400 `{ "error" }`: unknown type, or content missing or not a string
+- 413 `{ "error" }`: content over 5 MB
+- 422 `{ "error" }`: the importer failed (nothing importable, not valid JSON or YAML, Claude call
+  failed); `error` is the importer's message
+- 504 `{ "error" }`: the import timed out (7 minutes)
+
+The Custom API tab shows the result as a preview; "Use these endpoints" puts the checked endpoints
+into the Saved API JSON editor, and the run goes through POST /api/run as before (section 4).

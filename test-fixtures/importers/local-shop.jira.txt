@@ -1,0 +1,29 @@
+SHOP-142  Product catalog API for the storefront
+Type: Story   Priority: High   Sprint: Hackathon 3   Assignee: QA team
+
+Description
+As a storefront developer I need a small product catalog API, so the shop can list, create, update and remove products.
+
+Environment
+Base URL (local): http://localhost:4000
+All requests and responses are JSON.
+
+Endpoints
+1. GET /products: list all products. Public, no auth needed.
+2. POST /products: create a product. Requires auth: send the header "Authorization: Bearer importer-secret-test-value" (QA token, do not share).
+   Request body example:
+   {"name": "Trail Runner Shoe", "price": 89.99, "category": "shoes", "inStock": true}
+3. GET /products/{id}: get one product by its id. Public.
+4. PUT /products/{id}: replace a product. Requires auth (same token).
+   Body: {"name": "Trail Runner Shoe V2", "price": 99.5, "category": "shoes", "inStock": false}
+5. DELETE /products/{id}: delete a product. Requires auth. Returns 204 with no body.
+
+Acceptance criteria
+- AC1: GET /products returns 200 and a JSON array of products with id, name, price, category and inStock.
+- AC2: POST /products with a valid body returns 201 and the created product with a numeric id.
+- AC3: POST /products with the price sent as text ("price": "cheap") returns 400, never 500.
+- AC4: POST, PUT and DELETE without the Authorization header return 401.
+- AC5: GET /products/{id} for an unknown id returns 404.
+
+Notes
+Ask in #shop-api for the staging token. Staging runs elsewhere and is out of scope for this story.

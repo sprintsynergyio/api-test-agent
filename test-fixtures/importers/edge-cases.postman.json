@@ -1,0 +1,107 @@
+{
+  "info": {
+    "name": "Edge Cases",
+    "description": "Postman v2.0 collection with the cases the importer must handle. Test fixture.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.0.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:4000" },
+    { "key": "apiKey", "value": "importer-secret-test-value" },
+    { "key": "otherBase", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "List products",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/products",
+        "header": [
+          { "key": "X-Tenant-Id", "value": "acme" },
+          { "key": "X-Debug", "value": "1", "disabled": true }
+        ]
+      }
+    },
+    { "name": "List shoes", "request": { "method": "GET", "url": "{{baseUrl}}/products?category=shoes" } },
+    { "name": "List page 2 with key", "request": { "method": "GET", "url": "{{baseUrl}}/products?api_key={{apiKey}}&page=2" } },
+    { "name": "Health on another host", "request": { "method": "GET", "url": "{{otherBase}}/health" } },
+    {
+      "name": "Track event",
+      "request": {
+        "method": "POST",
+        "url": "https://analytics.example.com/track",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": { "mode": "raw", "raw": "{\"event\":\"view\"}" }
+      }
+    },
+    {
+      "name": "Catalog",
+      "item": [
+        {
+          "name": "Admin",
+          "item": [
+            {
+              "name": "Upload image",
+              "request": {
+                "method": "POST",
+                "url": "{{baseUrl}}/products/:id/image",
+                "body": { "mode": "formdata", "formdata": [{ "key": "file", "type": "file", "src": "shoe.png" }] }
+              }
+            },
+            {
+              "name": "Create product (form)",
+              "request": {
+                "method": "POST",
+                "url": "{{baseUrl}}/products",
+                "body": { "mode": "urlencoded", "urlencoded": [{ "key": "name", "value": "Shoe" }] }
+              }
+            },
+            {
+              "name": "Create product",
+              "request": {
+                "method": "POST",
+                "url": "{{baseUrl}}/products",
+                "auth": { "type": "apikey", "apikey": { "key": "X-API-Key", "value": "{{apiKey}}", "in": "header" } },
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": { "mode": "raw", "raw": "{\"name\":\"Edge Shoe\",\"price\":10,\"category\":\"shoes\",\"inStock\":true}" }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    { "name": "Get review", "request": { "method": "GET", "url": "{{baseUrl}}/reviews/:reviewId" } },
+    { "name": "Options", "request": { "method": "OPTIONS", "url": "{{baseUrl}}/products" } },
+    {
+      "name": "Legacy XML update",
+      "request": {
+        "method": "PUT",
+        "url": "{{baseUrl}}/products/:id",
+        "header": [
+          { "key": "Content-Type", "value": "application/xml" },
+          { "key": "Authorization", "value": "Bearer importer-secret-test-value" }
+        ],
+        "body": { "mode": "raw", "raw": "<product><name>Shoe</name></product>" }
+      }
+    },
+    {
+      "name": "Delete with session cookie",
+      "request": {
+        "method": "DELETE",
+        "url": "{{baseUrl}}/products/:id",
+        "header": [{ "key": "Cookie", "value": "session=importer-secret-test-value" }]
+      }
+    },
+    {
+      "name": "Update product",
+      "request": {
+        "method": "PUT",
+        "url": "{{baseUrl}}/products/:id",
+        "header": [
+          { "key": "x-api-key", "value": "{{apiKey}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": { "mode": "raw", "raw": "{\"name\":\"Edge Shoe 2\",\"price\":11,\"category\":\"shoes\",\"inStock\":false}" }
+      }
+    }
+  ]
+}

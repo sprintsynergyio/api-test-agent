@@ -1,0 +1,133 @@
+# The local shop demo API: the same 5 endpoints as input/local-shop.json.
+# Test fixture for the OpenAPI importer.
+openapi: 3.0.3
+info:
+  title: Local Shop API
+  version: 1.0.0
+  description: |
+    In-memory product store used for the hackathon demo.
+    Example request header from the docs: "Authorization: Bearer importer-secret-test-value"
+servers:
+  - url: http://localhost:4000
+    description: local
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: 'Send "Authorization: Bearer importer-secret-test-value" on write operations.'
+  parameters:
+    ProductId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+  schemas:
+    ProductInput:
+      type: object
+      required: [name, price, category, inStock]
+      properties:
+        name: { type: string, example: Trail Runner Shoe }
+        price: { type: number, minimum: 0 }
+        category: { type: string }
+        inStock: { type: boolean }
+    Product:
+      allOf:
+        - $ref: '#/components/schemas/ProductInput'
+        - type: object
+          required: [id, createdAt]
+          properties:
+            id: { type: integer, readOnly: true }
+            createdAt: { type: string, format: date-time, readOnly: true }
+
+paths:
+  /products:
+    get:
+      operationId: listProducts
+      summary: List products
+      responses:
+        '200':
+          description: All products
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Product' }
+    post:
+      operationId: createProduct
+      summary: Create a product
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: Authorization
+          in: header
+          required: true
+          schema: { type: string }
+          example: Bearer importer-secret-test-value
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductInput' }
+            example:
+              name: Trail Runner Shoe
+              price: 89.99
+              category: shoes
+              inStock: true
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Product' }
+        '400': { description: Validation failed }
+        '401': { description: Missing or wrong token }
+
+  /products/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ProductId'
+    get:
+      operationId: getProduct
+      summary: Get one product
+      responses:
+        '200':
+          description: The product
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Product' }
+        '404': { description: Not found }
+    put:
+      operationId: updateProduct
+      summary: Replace a product
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductInput' }
+            examples:
+              v2:
+                summary: Second version of the shoe
+                value:
+                  name: Trail Runner Shoe V2
+                  price: 99.5
+                  category: shoes
+                  inStock: false
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Product' }
+    delete:
+      operationId: deleteProduct
+      summary: Delete a product
+      security:
+        - bearerAuth: []
+      responses:
+        '204': { description: Deleted }
+        '401': { description: Missing or wrong token }

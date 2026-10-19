@@ -36,7 +36,30 @@ npm run ui            # then open http://localhost:3000
 ```
 
 - **Saved API** tab: pick an input file from `input/` (or edit its JSON) and click **Generate tests**. The log streams live, then the page shows the findings, the generated code, **Open Playwright report**, and **Download framework (.zip)**.
-- **Custom API** tab: enter a name, base URL, optional auth header, and endpoints in a form. The auth value is passed to that one run through an environment variable and is never written to disk. **Save as input file** stores the config (without any auth value) in `input/<name>.json`.
+- **Custom API** tab: enter a name, base URL, optional auth header, and endpoints in a form. The auth value is passed to that one run through an environment variable and is never written to disk. **Save as input file** stores the config (without any auth value) in `input/<name>.json`. Or pick another **Source** to import the endpoints (see Importers).
+
+## Importers
+
+Instead of writing the input file by hand, import the endpoints from something you already have. In the UI: **Custom API** tab, **Source**. From the terminal (prints `{ input, skipped, warnings }` as JSON; save `input` as an input file):
+
+```
+npm run -s import postman < collection.json
+```
+
+| Type | Source |
+|---|---|
+| `postman` | Postman collection v2.0 or v2.1: nested folders, collection variables, auth blocks |
+| `openapi` | OpenAPI 3.x or Swagger 2.0, JSON or YAML. The body comes from the example, else from the schema's required fields |
+| `curl` | One or more curl commands pasted together |
+| `har` | A browser network capture (Save all as HAR). Requests are grouped by method and path, ids become `{id}` |
+| `text` | A Jira ticket or Confluence page. Claude extracts the endpoints (at most 2 calls, not counted in the run budget) |
+
+- **Nothing is dropped silently.** Every request becomes an endpoint or a skipped entry with a reason: another origin than the base URL (the most common origin), an unresolved variable in the URL (`{{baseUrl}}` with no value, `$VAR`), a non-JSON body, or a method other than GET, POST, PUT, PATCH, DELETE. In a HAR file, static assets, analytics and other origins are counted in one "filtered: not an API call" entry. From text, a base URL, path or body field that is not in the text is dropped.
+- **Auth.** Every credential is removed: Authorization, Cookie, any header whose name contains auth, token, key, secret or session, Postman auth blocks, curl `-u` and `-b`, credential query parameters, and `user:password@` in URLs. Those endpoints get `requiresAuth: true`, and the input gets `auth: { header, valueEnv: "CUSTOM_API_AUTH" }`. Enter the value in the auth field before running. Credential values never appear in the output, warnings or errors.
+- Ids are slugs of the method and path (`get-products-id`). Path params (`:id`, `{{id}}`, `{id}`) become `{id}`. A path with a placeholder gets `setup` from the POST on its parent path; check its `idField`.
+- A missing or relative base URL leaves `baseUrl` empty, and Generate stays disabled until you fill it in.
+- **Keep a run to 12 endpoints or fewer.** Each endpoint costs about 2 Claude calls of the 30-call budget. The preview checks the first 12 and warns above that.
+- Acceptance criteria in a ticket are not turned into tests yet.
 
 ## What you get
 
@@ -116,3 +139,5 @@ A failed test is a **suspected API finding** when the API returned a 5xx, or ret
 | `npm run test:generated` | Rerun the generated tests (`INPUT_FILE=<input>` picks the API) |
 | `npm run api:local:fixed` | Local shop API with the bugs fixed |
 | `npx tsx agent/try-one.ts <input> <endpointId>` | Plan and generate one endpoint |
+| `npm run -s import <type> < file` | Import endpoints from Postman, OpenAPI, cURL, HAR or text (see Importers) |
+| `npm run test:importers` | Importer tests against `test-fixtures/importers/` (makes 2 live Claude calls) |

@@ -305,6 +305,32 @@
   }
   .fw-steps code { font: 13.5px var(--mono); background: #f1f5f9; padding: 3px 7px; border-radius: 6px; word-break: break-all; }
 
+  /* Phase card: some endpoints failed in this phase */
+  .step.mixed { border-color: #fde68a; background: var(--warn-soft); }
+  .step.mixed .ic { background: var(--warn); color: #fff; }
+
+  /* Import (Custom API tab) */
+  .imp-file { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+  .imp-file label { cursor: pointer; }
+  .imp-warnings { list-style: none; margin: 4px 0 14px; padding: 0; display: grid; gap: 6px; }
+  .imp-warnings li, .imp-budget {
+    padding: 8px 10px; border-radius: 10px; background: var(--warn-soft); color: var(--warn); border: 1px solid #fde68a; font-size: 13px;
+  }
+  .imp-budget { margin-bottom: 8px; }
+  .imp-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+  .imp-row {
+    display: grid; grid-template-columns: 18px 64px 1fr; gap: 8px; align-items: center; padding: 8px 10px;
+    border: 1px solid var(--line); border-radius: 10px; margin-bottom: 6px; background: #fff; cursor: pointer;
+  }
+  .imp-row input { accent-color: var(--accent); }
+  .imp-row .path { font-family: var(--mono); font-size: 13.5px; word-break: break-all; }
+  .imp-row .lock { color: var(--muted); display: inline-flex; vertical-align: -2px; margin-left: 6px; }
+  .imp-row .setup { display: block; font: 12px var(--mono); color: var(--muted); margin-top: 2px; }
+  .imp-skipped { margin-top: 10px; font-size: 13px; }
+  .imp-skipped summary { cursor: pointer; font-weight: 600; color: var(--ink-2); }
+  .imp-skipped ul { margin: 6px 0 0; padding-left: 18px; color: var(--muted); }
+  .imp-skipped li { margin-bottom: 4px; word-break: break-word; }
+
 </style>
 </head>
 <body>
@@ -345,9 +371,26 @@
           <div class="legend">Squares show Probe, Plan, Generate for each endpoint</div>
           <textarea id="jsonBox" class="hidden" spellcheck="false"></textarea>
           <div id="jsonErr" class="json-err hidden"></div>
+          <div id="impSaved" class="custom-links hidden">
+            <span class="hint">Imported endpoints, not saved yet</span>
+            <button id="impSave" class="link-btn" type="button">Save as input file</button>
+          </div>
+          <div id="impSaveMsg"></div>
         </div>
 
         <div id="customPane" class="hidden">
+          <div class="field">
+            <label class="lbl" for="cSource">Source</label>
+            <select id="cSource">
+              <option value="manual">Manual</option>
+              <option value="postman">Postman collection</option>
+              <option value="openapi">OpenAPI / Swagger</option>
+              <option value="curl">cURL commands</option>
+              <option value="har">HAR (browser capture)</option>
+              <option value="text">Jira / Confluence text</option>
+            </select>
+          </div>
+          <div id="manualPane">
           <div class="field">
             <label class="lbl" for="cName">API name</label>
             <input id="cName" class="txt" placeholder="orders-api" autocomplete="off">
@@ -378,6 +421,35 @@
             <button id="cSave" class="link-btn" type="button">Save as input file</button>
           </div>
           <div id="cMsg"></div>
+          </div>
+
+          <div id="importPane" class="hidden">
+            <div id="impHint" class="hint"></div>
+            <textarea id="impText" spellcheck="false"></textarea>
+            <div class="imp-file">
+              <label id="impFileWrap" class="link-btn">Upload a file<input id="impFile" type="file" class="hidden"></label>
+              <span id="impFileName" class="hint"></span>
+            </div>
+            <button id="impBtn" class="btn btn-ghost" type="button" style="width:100%;margin-top:12px">Import endpoints</button>
+            <div id="impMsg"></div>
+            <div id="impPreview" class="hidden" style="margin-top:16px">
+              <div class="field">
+                <label class="lbl" for="impName">API name</label>
+                <input id="impName" class="txt" placeholder="orders-api" autocomplete="off">
+              </div>
+              <div class="field">
+                <label class="lbl" for="impBase">Base URL</label>
+                <input id="impBase" class="txt" placeholder="https://api.example.com" autocomplete="off" spellcheck="false">
+                <div id="impBaseHint" class="bad-msg hidden">Enter the base URL. Generate stays disabled until it is set.</div>
+              </div>
+              <ul id="impWarnings" class="imp-warnings"></ul>
+              <div class="imp-head"><label class="lbl">Endpoints</label><span id="impCount" class="hint"></span></div>
+              <div id="impBudget" class="imp-budget hidden"></div>
+              <div id="impList"></div>
+              <details id="impSkipped" class="imp-skipped hidden"><summary></summary><ul></ul></details>
+              <button id="impUse" class="btn btn-primary" type="button" style="width:100%;margin-top:14px">Use these endpoints</button>
+            </div>
+          </div>
         </div>
 
         <div class="actions">
@@ -388,6 +460,7 @@
           <button id="stopBtn" class="btn btn-danger hidden">Stop run</button>
           <button id="lastBtn" class="btn btn-ghost">Load last run</button>
         </div>
+        <div id="runHint" class="hint hidden" style="margin-top:8px;text-align:center"></div>
         <div id="runErr" class="err-box hidden"></div>
       </div>
     </section>
@@ -491,11 +564,15 @@
 
   let config = null;
   let phaseIdx = -1;
+  let reachedRun = false; // the RUNNING TESTS phase started (it does not when no spec was written)
   let epState = {};
   let timerStart = null, timerHandle = null;
   let es = null;
   let termHasContent = false;
   let lastSpec = "";
+  let running = false;
+  const IMPORTED = "__imported__";
+  let importedJson = null; // the last "Use these endpoints" result, until it is saved
 
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
@@ -510,12 +587,18 @@
     const files = await res.json();
     const sel = $("inputSel");
     sel.innerHTML = files.map((f) => `<option value="${esc(f)}">${esc(f.replace(/\.json$/, ""))}</option>`).join("");
+    if (importedJson) ensureImportedOption();
     const pref = files.find((f) => f === "local-shop.json") || files[0];
     if (pref) { sel.value = pref; await loadInput(pref); }
     else $("baseUrl").textContent = "No input files found in input/";
   }
 
   async function loadInput(name) {
+    if (name === IMPORTED) {
+      $("jsonBox").value = importedJson || "";
+      parseConfig();
+      return;
+    }
     const res = await fetch("/api/input?name=" + encodeURIComponent(name));
     const data = await res.json();
     $("jsonBox").value = data.content;
@@ -528,6 +611,7 @@
       $("jsonErr").classList.add("hidden");
       $("savedTokenWrap").classList.toggle("hidden", config?.auth?.valueEnv !== "CUSTOM_API_AUTH");
       renderEndpoints();
+      updateRunButton();
       return true;
     } catch (e) {
       $("jsonErr").textContent = "JSON error: " + e.message;
@@ -565,8 +649,16 @@
     }).join("");
   }
 
-  $("inputSel").addEventListener("change", (e) => { epState = {}; loadInput(e.target.value); });
-  $("jsonBox").addEventListener("input", () => parseConfig());
+  $("inputSel").addEventListener("change", (e) => {
+    epState = {};
+    $("impSaveMsg").textContent = "";
+    loadInput(e.target.value);
+    updateImportedUi();
+  });
+  $("jsonBox").addEventListener("input", () => {
+    if ($("inputSel").value === IMPORTED) importedJson = $("jsonBox").value;
+    parseConfig();
+  });
   $("toggleJson").addEventListener("click", () => {
     const box = $("jsonBox");
     box.classList.toggle("hidden");
@@ -576,9 +668,10 @@
   // ---------- Pipeline ----------
   function setPhase(i) {
     phaseIdx = i;
+    if (i === 3) reachedRun = true;
     document.querySelectorAll(".step").forEach((el, idx) => {
-      el.classList.remove("active", "done", "failed");
-      if (i >= 4 || idx < i) el.classList.add("done");
+      el.classList.remove("active", "done", "failed", "mixed");
+      if ((i >= 4 || idx < i) && !(idx === 3 && !reachedRun)) el.classList.add("done");
       else if (idx === i) el.classList.add("active");
     });
     if (i >= 1 && i <= 3) {
@@ -595,12 +688,27 @@
     }
     if (i >= 3) for (const id in epState) for (const k of PHASE_KEY) if (epState[id][k] === "active") epState[id][k] = "";
     renderEndpoints();
+    markPhaseOutcomes();
+  }
+
+  // A finished Probe, Plan or Generate card turns red when every endpoint failed in it, amber when some did.
+  function markPhaseOutcomes() {
+    const eps = config?.endpoints || [];
+    document.querySelectorAll(".step").forEach((el, i) => {
+      if (i > 2 || !eps.length || !el.classList.contains("done")) return;
+      let ok = 0, fail = 0;
+      for (const e of eps) { const v = epState[e.id]?.[PHASE_KEY[i]]; if (v === "ok") ok++; if (v === "fail") fail++; }
+      if (!fail) return;
+      el.classList.remove("done");
+      el.classList.add(ok ? "mixed" : "failed");
+    });
   }
 
   function resetPipeline() {
     phaseIdx = -1;
+    reachedRun = false;
     epState = {};
-    document.querySelectorAll(".step").forEach((el) => el.classList.remove("active", "done", "failed"));
+    document.querySelectorAll(".step").forEach((el) => el.classList.remove("active", "done", "failed", "mixed"));
     renderEndpoints();
   }
 
@@ -651,14 +759,30 @@
   }
 
   // ---------- Run ----------
+  // Why Generate cannot run right now, or "" when it can.
+  function runBlocker() {
+    if (mode === "custom" && source !== "manual") return "Import, review, then click Use these endpoints.";
+    if (mode === "saved" && config && typeof config.baseUrl === "string" && !config.baseUrl.trim()) return "Enter the base URL before running.";
+    return "";
+  }
+
+  function updateRunButton() {
+    const why = running ? "" : runBlocker();
+    $("runBtn").disabled = running || !!why;
+    $("runHint").textContent = why;
+    $("runHint").classList.toggle("hidden", !why);
+  }
+
   function setRunning(on) {
-    $("runBtn").disabled = on;
+    running = on;
+    updateRunButton();
     $("stopBtn").classList.toggle("hidden", !on);
     $("inputSel").disabled = on;
     $("jsonBox").readOnly = on;
     $("tabSaved").disabled = on;
     $("tabCustom").disabled = on;
     document.querySelectorAll("#customPane input, #customPane select, #customPane textarea, #customPane button").forEach((el) => (el.disabled = on));
+    if (!on) updateImportCount();
   }
 
   async function startRun() {
@@ -676,18 +800,26 @@
       if (needsToken && !tok) { showRunErr("This API needs an auth header value. Enter it above."); return; }
       payload = { json: $("jsonBox").value, authValue: needsToken ? tok : undefined };
     }
+    // Clear the previous result and log before the new run starts.
+    $("results").style.display = "none";
+    $("codeCard").style.display = "none";
+    resetPipeline();
+    stopTimer();
+    $("timer").textContent = "00:00";
+    $("term").innerHTML = '<span class="empty">Starting the agent...</span>';
+    termHasContent = false;
+    setPill("", "Starting");
     const res = await fetch("/api/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
-    });
-    if (res.status !== 202) {
-      const body = await res.json().catch(() => ({}));
-      showRunErr(body.error || "Could not start the run (" + res.status + ")");
-      return;
+    }).catch(() => null);
+    if (!res || res.status !== 202) {
+      const body = res ? await res.json().catch(() => ({})) : {};
+      showRunErr(body.error || (res ? "Could not start the run (" + res.status + ")" : "Could not reach the UI server."));
+      $("term").innerHTML = '<span class="empty">The run did not start.</span>';
+      setPill("error", "Run not started");
     }
-    $("results").style.display = "none";
-    $("codeCard").style.display = "none";
   }
 
   function showRunErr(msg) {
@@ -702,6 +834,8 @@
       const { startedAt } = JSON.parse(ev.data);
       resetPipeline();
       clearLog();
+      $("results").style.display = "none";
+      $("codeCard").style.display = "none";
       setRunning(true);
       setPill("running", "Agent running");
       startTimer(startedAt);
@@ -734,6 +868,7 @@
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       if (!afterRun) showRunErr(body.error || "No previous run found.");
+      else showRunErr("The run ended before writing a summary. See the log above.");
       return;
     }
     $("runErr").classList.add("hidden");
@@ -825,8 +960,7 @@
     // Meta
     const meta = [];
     if (s.inputFile) {
-      const shown = /ui-run\.json$/.test(s.inputFile) ? `${$("inputSel").value} (via UI)` : s.inputFile;
-      meta.push(`Input <b>${esc(shown)}</b>`);
+      meta.push(`Input <b>${esc(s.inputFile)}</b>`);
     }
     if (s.baseUrl) meta.push(`Base URL <b>${esc(s.baseUrl)}</b>`);
     if (s.durationSec != null) meta.push(`Duration <b>${esc(s.durationSec)}s</b>`);
@@ -849,6 +983,7 @@
 
     renderFramework(s.framework);
     $("allureBtn").classList.toggle("hidden", !s.allureReport);
+    $("reportBtn").classList.toggle("hidden", !((t.testsGenerated ?? 0) > 0));
     $("results").style.display = "block";
     $("codeCard").style.display = "none";
     $("results").scrollIntoView({ behavior: "smooth", block: "start" });
@@ -982,6 +1117,8 @@
     $("runErr").classList.add("hidden");
     if (m === "custom" && !cEps.length) addEp();
     if (m === "saved") parseConfig();
+    updateImportedUi();
+    updateRunButton();
   }
   $("tabSaved").addEventListener("click", () => setMode("saved"));
   $("tabCustom").addEventListener("click", () => setMode("custom"));
@@ -1124,6 +1261,193 @@
     const keep = $("inputSel").value;
     await loadInputs();
     if (keep && keep !== $("inputSel").value) { $("inputSel").value = keep; await loadInput(keep); }
+  });
+
+  // ---------- Import (Custom API tab) ----------
+  let source = "manual";
+  let imp = null; // last import result plus which endpoints are checked
+  let impFile = null; // an uploaded file, used instead of the paste box
+  const MAX_IMPORT_BYTES = 5 * 1024 * 1024;
+  const IMPORT_INFO = {
+    postman: { hint: "Paste a Postman collection (v2.0 or v2.1 JSON), or upload the exported file.", accept: ".json,application/json", placeholder: '{ "info": { "name": "Orders API" }, "item": [ ... ] }' },
+    openapi: { hint: "Paste an OpenAPI 3.x or Swagger 2.0 document (JSON or YAML), or upload it.", accept: ".json,.yaml,.yml", placeholder: "openapi: 3.0.3\ninfo: ...\nservers: ...\npaths: ..." },
+    curl: { hint: "Paste one or more curl commands. Line continuations are fine.", accept: ".txt,.sh", placeholder: "curl -X POST https://api.example.com/orders -H 'Content-Type: application/json' -d '{\"sku\": \"A1\"}'" },
+    har: { hint: "Upload a HAR file from the browser network tab (Save all as HAR). Only API calls are kept.", accept: ".har,.json", placeholder: "Paste HAR JSON, or upload the .har file" },
+    text: { hint: "Paste a Jira ticket or Confluence page that describes the endpoints. Claude reads it (up to 2 calls, not counted in the run budget) and keeps only what the text states.", accept: "", placeholder: "GET /orders lists orders. POST /orders creates one with sku and quantity (needs a token)..." },
+  };
+
+  function formatSize(bytes) {
+    return bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  }
+
+  function impMessage(kind, text) {
+    $("impMsg").className = kind === "ok" ? "ok-msg" : kind === "bad" ? "bad-msg" : "hint";
+    $("impMsg").style.marginTop = "8px";
+    $("impMsg").textContent = text;
+  }
+
+  function setSource(s) {
+    source = s;
+    $("manualPane").classList.toggle("hidden", s !== "manual");
+    $("importPane").classList.toggle("hidden", s === "manual");
+    if (s !== "manual") {
+      const info = IMPORT_INFO[s];
+      $("impHint").textContent = info.hint;
+      $("impText").placeholder = info.placeholder;
+      $("impFileWrap").classList.toggle("hidden", !info.accept);
+      $("impFile").accept = info.accept;
+      imp = null;
+      impFile = null;
+      $("impFileName").textContent = "";
+      impMessage("", "");
+      renderImport();
+    }
+    $("runErr").classList.add("hidden");
+    updateRunButton();
+  }
+  $("cSource").addEventListener("change", () => setSource($("cSource").value));
+
+  $("impFile").addEventListener("change", async () => {
+    const f = $("impFile").files[0];
+    $("impFile").value = "";
+    if (!f) return;
+    if (f.size > MAX_IMPORT_BYTES) { impMessage("bad", `${f.name} is larger than 5 MB.`); return; }
+    impFile = { name: f.name, content: await f.text() };
+    $("impText").value = "";
+    $("impFileName").textContent = `Using ${f.name} (${formatSize(f.size)}). Paste text instead to use that.`;
+    impMessage("", "");
+  });
+  $("impText").addEventListener("input", () => {
+    if (impFile && $("impText").value) { impFile = null; $("impFileName").textContent = ""; }
+  });
+
+  $("impBtn").addEventListener("click", async () => {
+    const content = impFile ? impFile.content : $("impText").value;
+    if (!content.trim()) { impMessage("bad", "Paste something or upload a file first."); return; }
+    if (new Blob([content]).size > MAX_IMPORT_BYTES) { impMessage("bad", "The content is larger than 5 MB."); return; }
+    $("impBtn").disabled = true;
+    imp = null;
+    renderImport();
+    impMessage("", source === "text" ? "Claude is reading the text (up to 2 calls, not counted in the run budget)..." : "Importing...");
+    try {
+      const res = await fetch("/api/import", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type: source, content }) });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) { impMessage("bad", body.error || `Import failed (${res.status})`); return; }
+      imp = { ...body, checked: body.input.endpoints.map((_, i) => i < 12) };
+      $("impName").value = body.input.name || "";
+      $("impBase").value = body.input.baseUrl || "";
+      renderImport();
+      const n = body.input.endpoints.length;
+      impMessage("ok", `Imported ${n} endpoint${n === 1 ? "" : "s"}${body.skipped.length ? `, ${body.skipped.length} skipped` : ""}. Review them below.`);
+    } catch {
+      impMessage("bad", "Could not reach the UI server.");
+    } finally {
+      $("impBtn").disabled = running;
+    }
+  });
+
+  function renderImport() {
+    $("impPreview").classList.toggle("hidden", !imp);
+    if (!imp) return;
+    $("impWarnings").innerHTML = imp.warnings.map((w) => `<li>${esc(w)}</li>`).join("");
+    $("impList").innerHTML = imp.input.endpoints.map((e, i) => `
+      <label class="imp-row">
+        <input type="checkbox" data-i="${i}" ${imp.checked[i] ? "checked" : ""}>
+        <span class="m ${esc(e.method)}">${esc(e.method)}</span>
+        <span><span class="path">${esc(e.path)}${e.requiresAuth ? `<span class="lock" title="Requires auth">${lockSvg}</span>` : ""}</span>
+          ${e.setup ? `<span class="setup">setup: ${esc(e.setup.endpointId)}, id from "${esc(e.setup.idField)}"</span>` : ""}</span>
+      </label>`).join("");
+    const skipped = imp.skipped;
+    $("impSkipped").classList.toggle("hidden", !skipped.length);
+    $("impSkipped").querySelector("summary").textContent = `Skipped (${skipped.length})`;
+    $("impSkipped").querySelector("ul").innerHTML = skipped.map((x) => `<li><b>${esc(x.item)}</b>: ${esc(x.reason)}</li>`).join("");
+    updateImportCount();
+  }
+
+  function updateImportCount() {
+    if (!imp) return;
+    const n = imp.checked.filter(Boolean).length;
+    $("impCount").textContent = `${n} of ${imp.input.endpoints.length} selected`;
+    $("impBudget").classList.toggle("hidden", n <= 12);
+    $("impBudget").textContent = `${n} endpoints selected. Each endpoint costs about 2 Claude calls of the 30-call budget, so this needs about ${n * 2} calls and the run may stop early. 12 or fewer is safe.`;
+    $("impBaseHint").classList.toggle("hidden", !!$("impBase").value.trim());
+    $("impUse").disabled = running || n === 0;
+  }
+  $("impList").addEventListener("change", (ev) => {
+    const i = ev.target.dataset.i;
+    if (imp && i !== undefined) { imp.checked[+i] = ev.target.checked; updateImportCount(); }
+  });
+  $("impBase").addEventListener("input", updateImportCount);
+
+  function importedName() {
+    try { return JSON.parse(importedJson || "{}").name; } catch { return undefined; }
+  }
+  function ensureImportedOption() {
+    let opt = $("inputSel").querySelector(`option[value="${IMPORTED}"]`);
+    if (!opt) {
+      opt = document.createElement("option");
+      opt.value = IMPORTED;
+      $("inputSel").prepend(opt);
+    }
+    opt.textContent = `imported: ${importedName() || "custom-api"} (not saved)`;
+  }
+  function updateImportedUi() {
+    $("impSaved").classList.toggle("hidden", mode !== "saved" || $("inputSel").value !== IMPORTED);
+  }
+
+  // Puts the checked endpoints into the Saved API JSON editor. The run and the save then go through
+  // the existing routes, with the existing auth field.
+  $("impUse").addEventListener("click", () => {
+    if (!imp) return;
+    const all = imp.input.endpoints;
+    const ids = new Set(all.filter((_, i) => imp.checked[i]).map((e) => e.id));
+    const added = [];
+    for (let grew = true; grew; ) {
+      grew = false;
+      for (const e of all) {
+        if (ids.has(e.id) && e.setup && !ids.has(e.setup.endpointId) && all.some((x) => x.id === e.setup.endpointId)) {
+          ids.add(e.setup.endpointId);
+          added.push(`${e.setup.endpointId} (setup for ${e.id})`);
+          grew = true;
+        }
+      }
+    }
+    const endpoints = all.filter((e) => ids.has(e.id));
+    const name = slug($("impName").value);
+    const cfg = {
+      ...(name ? { name } : {}),
+      baseUrl: $("impBase").value.trim().replace(/\/+$/, ""),
+      defaultHeaders: imp.input.defaultHeaders,
+      ...(imp.input.auth && endpoints.some((e) => e.requiresAuth) ? { auth: imp.input.auth } : {}),
+      endpoints,
+    };
+    importedJson = JSON.stringify(cfg, null, 2);
+    ensureImportedOption();
+    $("inputSel").value = IMPORTED;
+    $("jsonBox").value = importedJson;
+    $("jsonBox").classList.remove("hidden");
+    $("toggleJson").textContent = "Hide JSON";
+    epState = {};
+    setMode("saved");
+    $("impSaveMsg").className = added.length ? "hint" : "";
+    $("impSaveMsg").textContent = added.length ? `Also added ${added.join(", ")}.` : "";
+  });
+
+  $("impSave").addEventListener("click", async () => {
+    const msg = $("impSaveMsg");
+    if (!parseConfig()) return;
+    const name = config?.name || "";
+    if (!name) { msg.className = "bad-msg"; msg.textContent = 'Add a "name" to the JSON (lowercase letters, numbers and dashes) to save it.'; return; }
+    const res = await fetch("/api/inputs/save", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, json: $("jsonBox").value }) });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { msg.className = "bad-msg"; msg.textContent = body.error || "Could not save."; return; }
+    importedJson = null;
+    await loadInputs();
+    $("inputSel").value = body.file;
+    await loadInput(body.file);
+    updateImportedUi();
+    msg.className = "ok-msg";
+    msg.textContent = `Saved as input/${body.file}. The auth value was not saved.`;
   });
 
   // ---------- Boot ----------

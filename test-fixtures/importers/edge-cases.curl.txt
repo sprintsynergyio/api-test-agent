@@ -1,0 +1,33 @@
+# Edge cases for the cURL importer. Test fixture.
+
+# Duplicate ids: two GETs on /products
+curl http://localhost:4000/products
+curl 'http://localhost:4000/products?sort=price' -sSL --compressed
+
+# Unresolved shell variable in the URL
+curl "$BASE_URL/products"
+
+# Second origin
+curl -X POST https://analytics.example.com/track -H 'Content-Type: application/json' -d '{"event":"view"}'
+
+# Non-JSON body (form)
+curl -X POST http://localhost:4000/products -d 'name=Shoe&price=10'
+
+# Basic auth with -u, JSON body with -d and no Content-Type header
+curl -u admin:importer-secret-test-value http://localhost:4000/products -d '{"name":"Edge Shoe","price":10,"category":"shoes","inStock":true}'
+
+# Cookie with -b; short options clustered with the method
+curl -sXDELETE -b 'session=importer-secret-test-value' http://localhost:4000/products/{id}
+
+# -G turns data into the query; the token parameter is a credential
+curl -G http://localhost:4000/products --data-urlencode 'q=trail shoe' -d 'access_token=importer-secret-test-value'
+
+# Line continuations, $'...' quoting, an extra header, an unknown option
+curl 'http://localhost:4000/products/:id' \
+  -X PUT \
+  -H 'authorization: Bearer importer-secret-test-value' \
+  -H 'X-Request-Id: 42' \
+  --data-raw $'{"name":"Rock\'s Shoe","price":12.5,"category":"shoes","inStock":true}' \
+  --retry 3 --frobnicate
+
+echo "done"

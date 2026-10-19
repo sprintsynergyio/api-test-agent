@@ -15,7 +15,7 @@ const EndpointSchema = z.object({
   setup: SetupSchema.optional(),
 });
 
-const ConfigSchema = z.object({
+export const ConfigSchema = z.object({
   name: z.string().regex(/^[a-z0-9-]+$/, 'must use lowercase letters, numbers and dashes only').optional(),
   baseUrl: z.url(),
   defaultHeaders: z.record(z.string(), z.string()),
@@ -52,6 +52,33 @@ function fieldName(path: PropertyKey[]): string {
   }, '') || '(root)';
 }
 
+// Rules zod cannot express, in the order loadConfig reports them. Shared with the importers.
+export function configProblems(config: Config): string[] {
+  const problems: string[] = [];
+  const ids = new Set<string>();
+  config.endpoints.forEach((ep, i) => {
+    if (ids.has(ep.id)) problems.push(`field "endpoints[${i}].id" duplicate id "${ep.id}"`);
+    ids.add(ep.id);
+  });
+  config.endpoints.forEach((ep, i) => {
+    if (ep.requiresAuth && !config.auth) {
+      problems.push(`field "endpoints[${i}].requiresAuth" endpoint "${ep.id}" requires auth but the input has no auth section`);
+    }
+  });
+  config.endpoints.forEach((ep, i) => {
+    if (!ep.setup) return;
+    if (!config.endpoints.some((e) => e.id === ep.setup!.endpointId)) {
+      problems.push(`field "endpoints[${i}].setup.endpointId" references unknown endpoint "${ep.setup.endpointId}"`);
+    }
+    if (!PATH_PARAM.test(ep.path)) problems.push(`field "endpoints[${i}].path" has setup but no {id} placeholder`);
+  });
+  return problems;
+}
+
+export function zodProblems(error: z.ZodError): string[] {
+  return error.issues.map((issue) => `field "${fieldName(issue.path)}" ${issue.message}`);
+}
+
 export function loadConfig(path: string): Config {
   let raw: unknown;
   try {
@@ -61,38 +88,9 @@ export function loadConfig(path: string): Config {
   }
 
   const result = ConfigSchema.safeParse(raw);
-  if (!result.success) {
-    const issue = result.error.issues[0];
-    throw new Error(`Invalid input file ${path}: field "${fieldName(issue.path)}" ${issue.message}`);
-  }
+  if (!result.success) throw new Error(`Invalid input file ${path}: ${zodProblems(result.error)[0]}`);
   const config = result.data;
-
-  const ids = new Set<string>();
-  config.endpoints.forEach((ep, i) => {
-    if (ids.has(ep.id)) {
-      throw new Error(`Invalid input file ${path}: field "endpoints[${i}].id" duplicate id "${ep.id}"`);
-    }
-    ids.add(ep.id);
-  });
-  config.endpoints.forEach((ep, i) => {
-    if (ep.requiresAuth && !config.auth) {
-      throw new Error(
-        `Invalid input file ${path}: field "endpoints[${i}].requiresAuth" endpoint "${ep.id}" requires auth but the input has no auth section`,
-      );
-    }
-  });
-  config.endpoints.forEach((ep, i) => {
-    if (!ep.setup) return;
-    const target = config.endpoints.find((e) => e.id === ep.setup!.endpointId);
-    if (!target) {
-      throw new Error(
-        `Invalid input file ${path}: field "endpoints[${i}].setup.endpointId" references unknown endpoint "${ep.setup.endpointId}"`,
-      );
-    }
-    if (!PATH_PARAM.test(ep.path)) {
-      throw new Error(`Invalid input file ${path}: field "endpoints[${i}].path" has setup but no {id} placeholder`);
-    }
-  });
-
+  const problems = configProblems(config);
+  if (problems.length) throw new Error(`Invalid input file ${path}: ${problems[0]}`);
   return config;
 }

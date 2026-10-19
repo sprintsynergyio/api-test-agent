@@ -1,0 +1,83 @@
+{
+  "swagger": "2.0",
+  "info": { "title": "Edge Swagger", "version": "1.0", "description": "Swagger 2.0 cases the OpenAPI importer must handle. Test fixture." },
+  "host": "api.example.test",
+  "basePath": "/v2/",
+  "schemes": ["https", "http"],
+  "consumes": ["application/json"],
+  "securityDefinitions": {
+    "key": { "type": "apiKey", "in": "query", "name": "api_key" },
+    "basic": { "type": "basic" }
+  },
+  "security": [{ "key": [] }],
+  "paths": {
+    "/pets": {
+      "get": {
+        "operationId": "listPets",
+        "security": [{}, { "key": [] }],
+        "parameters": [{ "name": "limit", "in": "query", "required": true, "type": "integer" }],
+        "responses": { "200": { "description": "ok" } }
+      },
+      "post": {
+        "operationId": "createPet",
+        "parameters": [{ "name": "body", "in": "body", "required": true, "schema": { "$ref": "#/definitions/NewPet" } }],
+        "responses": { "201": { "description": "created" } }
+      }
+    },
+    "/pets/{petId}": {
+      "get": {
+        "operationId": "getPet",
+        "parameters": [{ "name": "petId", "in": "path", "required": true, "type": "integer" }],
+        "responses": { "200": { "description": "ok" } }
+      },
+      "delete": {
+        "operationId": "deletePet",
+        "security": [{ "basic": [] }],
+        "parameters": [
+          { "name": "petId", "in": "path", "required": true, "type": "integer" },
+          { "name": "X-Request-Id", "in": "header", "required": true, "type": "string" }
+        ],
+        "responses": { "204": { "description": "deleted" } }
+      }
+    },
+    "/pets/{petId}/photo": {
+      "post": {
+        "operationId": "uploadPhoto",
+        "consumes": ["multipart/form-data"],
+        "parameters": [
+          { "name": "petId", "in": "path", "required": true, "type": "integer" },
+          { "name": "file", "in": "formData", "type": "file" }
+        ],
+        "responses": { "200": { "description": "ok" } }
+      }
+    },
+    "/stores/{storeId}/config": {
+      "put": {
+        "operationId": "putStoreConfig",
+        "consumes": ["application/xml"],
+        "parameters": [
+          { "name": "storeId", "in": "path", "required": true, "type": "string" },
+          { "name": "body", "in": "body", "schema": { "type": "object" } }
+        ],
+        "responses": { "200": { "description": "ok" } }
+      }
+    },
+    "/health": {
+      "head": { "operationId": "healthCheck", "responses": { "200": { "description": "ok" } } }
+    }
+  },
+  "definitions": {
+    "NewPet": {
+      "type": "object",
+      "required": ["id", "name", "kind", "owner", "tags"],
+      "properties": {
+        "id": { "type": "integer", "readOnly": true },
+        "name": { "type": "string" },
+        "kind": { "type": "string", "enum": ["dog", "cat"] },
+        "nickname": { "type": "string" },
+        "owner": { "type": "object", "required": ["email"], "properties": { "email": { "type": "string", "format": "email" } } },
+        "tags": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

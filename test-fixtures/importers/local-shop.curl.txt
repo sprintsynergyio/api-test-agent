@@ -1,0 +1,17 @@
+# The local shop demo API as curl commands: the same 5 endpoints as input/local-shop.json.
+# Test fixture for the cURL importer.
+
+curl http://localhost:4000/products -H 'Accept: application/json'
+
+curl -X POST 'http://localhost:4000/products' \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer importer-secret-test-value' \
+  --data-raw '{"name":"Trail Runner Shoe","price":89.99,"category":"shoes","inStock":true}'
+
+curl "http://localhost:4000/products/{id}"
+
+curl --request PUT http://localhost:4000/products/:id \
+  --header "Authorization: Bearer importer-secret-test-value" \
+  --json '{"name":"Trail Runner Shoe V2","price":99.5,"category":"shoes","inStock":false}'
+
+curl -X DELETE http://localhost:4000/products/{{id}} -H "Authorization: Bearer importer-secret-test-value"

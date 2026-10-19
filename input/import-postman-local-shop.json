@@ -1,0 +1,68 @@
+{
+  "name": "import-postman-local-shop",
+  "baseUrl": "http://localhost:4000",
+  "defaultHeaders": {
+    "Accept": "application/json",
+    "Content-Type": "application/json"
+  },
+  "auth": {
+    "header": "Authorization",
+    "valueEnv": "CUSTOM_API_AUTH"
+  },
+  "endpoints": [
+    {
+      "id": "get-products",
+      "method": "GET",
+      "path": "/products",
+      "requiresAuth": false
+    },
+    {
+      "id": "post-products",
+      "method": "POST",
+      "path": "/products",
+      "requiresAuth": true,
+      "body": {
+        "name": "Trail Runner Shoe",
+        "price": 89.99,
+        "category": "shoes",
+        "inStock": true
+      }
+    },
+    {
+      "id": "get-products-id",
+      "method": "GET",
+      "path": "/products/{id}",
+      "requiresAuth": false,
+      "setup": {
+        "endpointId": "post-products",
+        "idField": "id"
+      }
+    },
+    {
+      "id": "put-products-id",
+      "method": "PUT",
+      "path": "/products/{id}",
+      "requiresAuth": true,
+      "body": {
+        "name": "Trail Runner Shoe V2",
+        "price": 99.5,
+        "category": "shoes",
+        "inStock": false
+      },
+      "setup": {
+        "endpointId": "post-products",
+        "idField": "id"
+      }
+    },
+    {
+      "id": "delete-products-id",
+      "method": "DELETE",
+      "path": "/products/{id}",
+      "requiresAuth": true,
+      "setup": {
+        "endpointId": "post-products",
+        "idField": "id"
+      }
+    }
+  ]
+}

@@ -2,8 +2,8 @@ import 'dotenv/config';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join, sep } from 'node:path';
-import { BudgetExceeded, claudeBudget, claudeCallsUsed, redact } from './claude';
-import { apiName, loadConfig, type Endpoint } from './config';
+import { BudgetExceeded, claudeBudget, claudeCallsUsed, claudeEnv, redact } from './claude';
+import { apiName, loadConfig, type Config, type Endpoint } from './config';
 import { exportFramework, type FrameworkInfo } from './export';
 import { generateEndpoint } from './generate';
 import { planEndpoint, type Plan } from './plan';
@@ -17,6 +17,7 @@ const RESULTS_FILE = 'reports/results.json';
 const ALLURE_RESULTS = 'reports/allure-results';
 const ALLURE_REPORT = 'reports/allure-report';
 const SUMMARY_FILE = 'out/summary.json';
+const CLAUDE_NOT_FOUND = "claude CLI not found on PATH. Run 'which claude' in the terminal that starts the agent or UI.";
 
 type EndpointState = {
   endpoint: Endpoint;
@@ -37,6 +38,8 @@ type Finding = {
 };
 
 type TestOutcome = { endpointId: string; title: string; passed: boolean; actualStatus: number | null; error: string };
+
+type RunStatus = 'completed' | 'stopped-budget' | 'no-tests';
 
 let budgetHit = false;
 
@@ -206,6 +209,69 @@ function generateAllure(reportName: string, secrets: string[]): { dir: string | 
   return { dir: ALLURE_REPORT };
 }
 
+// Every plan and spec needs the claude CLI. Check that it starts, with the same child environment as
+// the real calls, before probing, so a missing CLI ends the run with one clear message.
+function claudeCliProblem(): string | null {
+  const res = spawnSync('claude', ['--version'], { env: claudeEnv(), encoding: 'utf8', timeout: 30_000 });
+  if ((res.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') return CLAUDE_NOT_FOUND;
+  if (res.error || res.status !== 0) {
+    const detail = res.error ? res.error.message : `exit code ${res.status}`;
+    return `claude CLI could not be started (${redact(detail)}). Run 'which claude' in the terminal that starts the agent or UI.`;
+  }
+  return null;
+}
+
+function writeSummary(o: {
+  status: RunStatus;
+  inputFile: string;
+  config: Config;
+  startedAt: Date;
+  states: EndpointState[];
+  outcomes: TestOutcome[];
+  findings: Finding[];
+  framework: FrameworkInfo | null;
+  allureReport: string | null;
+  secrets: string[];
+}) {
+  const { status, inputFile, config, startedAt, states, outcomes, findings, framework, allureReport, secrets } = o;
+  const summary = {
+    status,
+    inputFile,
+    baseUrl: config.baseUrl,
+    startedAt: startedAt.toISOString(),
+    durationSec: Math.round((Date.now() - startedAt.getTime()) / 1000),
+    claudeCalls: { used: claudeCallsUsed(), budget: claudeBudget() },
+    totals: {
+      endpoints: states.length,
+      testsGenerated: outcomes.length,
+      passed: outcomes.filter((o) => o.passed).length,
+      failed: outcomes.filter((o) => !o.passed).length,
+    },
+    endpoints: states.map((s) => {
+      const mine = outcomes.filter((o) => o.endpointId === s.endpoint.id);
+      return {
+        id: s.endpoint.id,
+        method: s.endpoint.method,
+        path: s.endpoint.path,
+        requiresAuth: s.endpoint.requiresAuth,
+        probeStatus: s.probe?.status ?? null,
+        casesPlanned: s.plan?.cases.length ?? 0,
+        specWritten: s.specFile !== null,
+        specFile: s.specFile,
+        passed: mine.filter((o) => o.passed).length,
+        failed: mine.filter((o) => !o.passed).length,
+        failureReason: s.failureReason === null ? null : cleanError(oneLine(s.failureReason), secrets),
+      };
+    }),
+    findings,
+    framework,
+    allureReport,
+  };
+  mkdirSync('out', { recursive: true });
+  writeFileSync(SUMMARY_FILE, JSON.stringify(summary, null, 2) + '\n');
+  return summary;
+}
+
 function classify(type: string, actual: number | null): Finding['classification'] {
   if (actual === null) return 'needs review';
   if (actual >= 500) return 'suspected API finding';
@@ -239,6 +305,28 @@ async function main() {
 
   for (const dir of ['generated', 'out', 'reports', 'test-results']) rmSync(dir, { recursive: true, force: true });
 
+  const claudeProblem = claudeCliProblem();
+  if (claudeProblem) {
+    console.log(claudeProblem);
+    const blocked: EndpointState[] = config.endpoints.map((endpoint) => ({ endpoint, specFile: null, failureReason: claudeProblem }));
+    writeSummary({
+      status: 'no-tests',
+      inputFile,
+      config,
+      startedAt,
+      states: blocked,
+      outcomes: [],
+      findings: [],
+      framework: null,
+      allureReport: null,
+      secrets,
+    });
+    console.log('NO TESTS GENERATED');
+    console.log(`Summary written to ${SUMMARY_FILE}`);
+    process.exitCode = 1;
+    return;
+  }
+
   console.log('=== PROBING ===');
   const probes = await probeAll(config, authValue);
   const states: EndpointState[] = config.endpoints.map((endpoint, i) => ({
@@ -260,7 +348,7 @@ async function main() {
   if (budgetHit) console.log('STOPPED: budget reached');
 
   const written = states.filter((s) => s.specFile);
-  let status: 'completed' | 'stopped-budget' | 'no-tests' = budgetHit ? 'stopped-budget' : 'completed';
+  let status: RunStatus = budgetHit ? 'stopped-budget' : 'completed';
   let outcomes: TestOutcome[] = [];
   let allureReport: string | null = null;
 
@@ -298,41 +386,7 @@ async function main() {
     });
   }
 
-  const summary = {
-    status,
-    inputFile,
-    baseUrl: config.baseUrl,
-    startedAt: startedAt.toISOString(),
-    durationSec: Math.round((Date.now() - startedAt.getTime()) / 1000),
-    claudeCalls: { used: claudeCallsUsed(), budget: claudeBudget() },
-    totals: {
-      endpoints: states.length,
-      testsGenerated: outcomes.length,
-      passed: outcomes.filter((o) => o.passed).length,
-      failed: outcomes.filter((o) => !o.passed).length,
-    },
-    endpoints: states.map((s) => {
-      const mine = outcomes.filter((o) => o.endpointId === s.endpoint.id);
-      return {
-        id: s.endpoint.id,
-        method: s.endpoint.method,
-        path: s.endpoint.path,
-        requiresAuth: s.endpoint.requiresAuth,
-        probeStatus: s.probe?.status ?? null,
-        casesPlanned: s.plan?.cases.length ?? 0,
-        specWritten: s.specFile !== null,
-        specFile: s.specFile,
-        passed: mine.filter((o) => o.passed).length,
-        failed: mine.filter((o) => !o.passed).length,
-        failureReason: s.failureReason === null ? null : cleanError(oneLine(s.failureReason), secrets),
-      };
-    }),
-    findings,
-    framework,
-    allureReport,
-  };
-  mkdirSync('out', { recursive: true });
-  writeFileSync(SUMMARY_FILE, JSON.stringify(summary, null, 2) + '\n');
+  const summary = writeSummary({ status, inputFile, config, startedAt, states, outcomes, findings, framework, allureReport, secrets });
 
   console.log('=== SUMMARY ===');
   if (status === 'no-tests') {
