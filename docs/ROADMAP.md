@@ -1,0 +1,198 @@
+# API Test Agent: Roadmap
+
+From a working hackathon agent to a complete API automation product that writes, runs and maintains API test suites in **Playwright** or **Pactum**, from any API description, safely.
+
+We work through the phases in order, one step at a time. A phase is done only when every line in its "Proof" list passes with raw output pasted. Each phase is one to three Claude Code prompts.
+
+---
+
+## Where we are today
+
+| Area | Status |
+|---|---|
+| Pipeline: probe, plan, generate, static gate, run, summary | Done, proven |
+| Findings: planted bugs caught, real bugs in Restful Booker, 0 false alarms with bugs fixed | Done, proven |
+| Standalone Playwright framework export + zip | Done, proven |
+| Playwright HTML + Allure reports with request/response evidence | Done, proven |
+| Web UI: saved APIs, custom API form, live pipeline, findings | Done, proven |
+| Importers: OpenAPI, Postman, cURL, HAR, Jira/Confluence text | Built, **not yet reviewed** |
+| Pactum output | Not started |
+| Safety guard against production hosts | **Missing** |
+
+---
+
+## Phase 0: Foundation check (Prompt 9, in progress)
+
+**Goal:** confirm the importer work is safe and correct, and bring CLAUDE.md up to date.
+
+**Deliverables**
+- Plain English report of what each importer does, plus its tests passing.
+- Importers never write auth values (headers, cookies, tokens) into input files; they drop them and warn.
+- An imported OpenAPI file gives the same results as the hand-written local-shop file.
+- CLAUDE.md updated: product name, branch `main`, importers section, rule against committing build output.
+
+**Proof**
+1. Importer tests pass.
+2. `grep` finds no real token in fixtures or generated input files.
+3. `npm run agent input/import-openapi-local-shop.json`: the same 2 findings as local-shop.
+4. Every CLAUDE.md verification step passes.
+
+---
+
+## Phase 1: Production safety guard
+
+**Goal:** the agent can never send write requests to a real system by accident. Importing a real spec makes this essential.
+
+**Deliverables**
+- Safe-host check: `localhost`, `127.0.0.1`, and hosts containing `dev`, `test`, `qa`, `staging`, `sandbox` count as safe. Anything else is treated as production.
+- On a production host the agent refuses to run unless the input has `"allowProduction": true`, and even then it runs in **read-only mode** by default (GET, HEAD, OPTIONS only) unless `"allowWrites": true` is also set.
+- UI: base URL shown and editable after import, a red warning for production hosts, a checkbox to confirm, and a read-only toggle.
+- Summary records the safety mode used for every run.
+
+**Proof**
+1. An input pointing at `https://api.example.com` is refused with a clear message and no request is sent (check with a request counter on a fake server).
+2. With `allowProduction` only: GET tests run, POST/PUT/PATCH/DELETE tests are skipped and listed as "skipped: read-only mode", never shown as passed.
+3. local-shop still gives the same 2 findings.
+
+---
+
+## Phase 2: Framework adapter + Pactum
+
+**Goal:** one agent, two output frameworks. The user picks Playwright or Pactum; everything else stays shared.
+
+**Design: shared vs per framework**
+
+| Shared (one copy) | Per framework (adapter) |
+|---|---|
+| Importers, probe, plan, status rules | Template test |
+| Finding classification | Generator instructions |
+| Summary contract, UI, safety guard | Static gate rules |
+| Auth value handling | Runner command + results parser |
+| | Exporter (standalone project skeleton) |
+| | Report wiring (HTML / Allure) |
+
+Every adapter must produce **normalized results**: test title, type tag, pass/fail, actual status, error, request/response evidence. The findings logic only reads normalized results, so it never needs to know which framework ran.
+
+**Pactum specifics**
+- Runner: Pactum with Mocha. Base URL and auth set once in a shared setup file, the Pactum equivalent of the ctx fixture.
+- Tests record the actual status for every request (through a small helper, the equivalent of the `actual-status` annotation).
+- Reports: Mocha JSON for the parser, Allure through the Allure Mocha reporter.
+- Static gate for Pactum: imports only from the shared setup file, no hardcoded hosts, no `process.env` in tests, no `.only` / `.skip`, type tags in titles, no expected status of 500 or more.
+- Exported Pactum framework is standalone, with `npm test` and Allure scripts.
+
+**UI:** a **Framework: Playwright / Pactum** toggle next to Generate tests. Subtitle becomes "From endpoints to a running API test suite". The framework card shows which framework was exported.
+
+**Proof**
+1. local-shop in **Playwright**: same 2 findings as today.
+2. local-shop in **Pactum**: the same 2 findings, every other test passing.
+3. Bugs fixed, both frameworks: 0 findings, 0 failures.
+4. Both exported frameworks run standalone in a temp folder with the same results.
+5. No auth value in any output of either framework.
+
+---
+
+## Phase 3: Eval harness (quality numbers you can quote)
+
+**Goal:** measure how good the agent is, and stop any later change from quietly making it worse.
+
+**Deliverables**
+- Three or four small local APIs with a catalog of planted bugs, each bug labelled by type: 5xx on bad input, missing auth check, wrong status code, schema drift, data not persisted, wrong field type, broken pagination.
+- `npm run eval`: runs the agent on every API in both frameworks, three times each, and reports:
+  - **detection rate**: planted bugs found / planted bugs
+  - **false alarm rate**: findings that are not planted bugs
+  - **flakiness**: results that differ between the three runs
+  - cost: Claude calls and duration
+- The eval score goes in the README, and every later phase must not lower it.
+
+**Proof**
+1. `npm run eval` prints the score table.
+2. Introducing a deliberate generator bug lowers the score (the harness catches regressions).
+
+**Pitch-ready after this phase:** "Import your spec, choose Playwright or Pactum, safe by default, catches X% of planted bugs with Y false alarms."
+
+---
+
+## Phase 4: Spec-driven depth
+
+**Goal:** use the information in OpenAPI specs to write stronger tests, not just status checks.
+
+**Deliverables**
+- Response schema validation against the spec (Playwright via a JSON schema validator, Pactum via its built-in JSON schema expectation).
+- Boundary tests from the spec: min/max length, min/max values, enums, required vs optional, formats (email, date, uuid).
+- Query parameter tests: pagination, filters, sorting.
+- A new `[contract]` test type: the response matches the documented schema.
+
+**Proof:** new planted bugs (schema drift, enum not enforced, max length not enforced) are caught; eval score does not drop.
+
+---
+
+## Phase 5: Real-world auth
+
+**Goal:** test the APIs real teams have, which rarely use a fixed header.
+
+**Deliverables**
+- Login flow: call a login endpoint, read the token from the response, use it for the run.
+- API key in a header or query parameter.
+- OAuth2 client credentials.
+- Roles: two users (for example admin and customer). New `[authz]` tests: a customer cannot read or change another customer's data, a customer cannot call admin endpoints.
+
+**Proof:** the local API gets a login endpoint and roles with planted access-control bugs; both are caught in both frameworks; no token appears in any output.
+
+---
+
+## Phase 6: Flow tests and test data
+
+**Goal:** test behaviour across endpoints, where the important bugs hide.
+
+**Deliverables**
+- `[flow]` tests: create, read, update, read again, delete, confirm it is gone.
+- Test data generation from the schema (realistic but fake values).
+- Cleanup: every resource a test creates is deleted afterwards, even when the test fails.
+- Environment profiles (dev, staging) with separate base URLs and auth variables.
+
+**Proof:** planted "update not persisted" and "delete does not delete" bugs are caught; after a run, the API has no leftover test data.
+
+---
+
+## Phase 7: CI and incremental updates
+
+**Goal:** the generated suite lives in the client's pipeline and stays current.
+
+**Deliverables**
+- Exported frameworks include CI files for GitHub Actions and Azure DevOps.
+- Update mode: given a new spec version, generate tests only for new or changed endpoints, and never overwrite tests a human has edited (generated files carry a marker; edited files lose it).
+- Findings exported as a Jira-ready bug draft with the request/response evidence.
+
+**Proof:** a spec with one new endpoint produces one new spec file and leaves the others untouched; the CI file runs green in a sample repository.
+
+---
+
+## Not in scope (for now)
+
+- Performance and load testing.
+- Consumer-driven contract testing (Pact broker style).
+- GraphQL and gRPC.
+- Running against production with writes enabled as a default.
+
+---
+
+## Pitch summary (for the client)
+
+**The problem:** API test coverage depends on how much time engineers have. Every endpoint needs the same baseline checks, and new endpoints often ship with few tests.
+
+**What the agent does:** give it your OpenAPI spec, Postman collection, cURL commands, HAR file or even a Jira description. It calls the real API, plans test cases, writes a complete test suite in **Playwright or Pactum**, runs it, and reports suspected bugs with request and response evidence. You keep a standalone test project you can commit and run in CI.
+
+**Why it is trustworthy:**
+1. Every generated file passes a static safety gate before it is saved.
+2. Bugs are only reported with clear evidence (a 500, or a success where a rejection was expected).
+3. Auth values are never written to any file or report.
+4. It refuses to write to production systems by default.
+5. Quality is measured on a catalog of planted bugs, and every change is checked against that score.
+
+**What to show:**
+1. Import a spec, pick a framework, run it, and watch it find bugs live.
+2. Real bugs it found in a public API nobody planted.
+3. The exported project running on its own.
+4. The eval score.
+
+**Before pitching:** agree with the client who owns the agent and the generated code, and how it may be used, since it was first built at the client's hackathon.
