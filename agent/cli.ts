@@ -8,6 +8,7 @@ import { exportFramework, type FrameworkInfo } from './export';
 import { generateEndpoint } from './generate';
 import { planEndpoint, type Plan } from './plan';
 import { probeAll, type ProbeResult } from './probe';
+import { assessSafety, endpointAllowed, PRODUCTION_WRITES_WARNING, READ_ONLY_SKIP, refusalMessage, type Safety } from './safety';
 
 // Full pipeline: probe, plan, generate, run tests, summarize.
 // Console output and out/summary.json follow ui/CONTRACT.md.
@@ -25,6 +26,7 @@ type EndpointState = {
   plan?: Plan;
   specFile: string | null;
   failureReason: string | null;
+  skippedReason: string | null; // READ_ONLY_SKIP: never planned, generated, run or counted as passed
 };
 
 type Finding = {
@@ -39,7 +41,7 @@ type Finding = {
 
 type TestOutcome = { endpointId: string; title: string; passed: boolean; actualStatus: number | null; error: string };
 
-type RunStatus = 'completed' | 'stopped-budget' | 'no-tests';
+type RunStatus = 'completed' | 'stopped-budget' | 'no-tests' | 'refused';
 
 let budgetHit = false;
 
@@ -58,6 +60,10 @@ function oneLine(text: string): string {
 async function planPhase(states: EndpointState[]) {
   await forEachLimited(states, CONCURRENCY, async (s) => {
     const id = s.endpoint.id;
+    if (s.skippedReason) {
+      console.log(`${id} SKIPPED read-only mode`);
+      return;
+    }
     if (budgetHit) {
       s.failureReason = 'skipped: budget reached';
       console.log(`${id} FAILED ${s.failureReason}`);
@@ -84,6 +90,10 @@ async function planPhase(states: EndpointState[]) {
 async function generatePhase(states: EndpointState[]) {
   await forEachLimited(states, CONCURRENCY, async (s) => {
     const id = s.endpoint.id;
+    if (s.skippedReason) {
+      console.log(`${id} SKIPPED read-only mode`);
+      return;
+    }
     if (!s.plan) {
       console.log(`${id} FAILED skipped: no plan (${oneLine(s.failureReason ?? 'unknown')})`);
       return;
@@ -149,14 +159,18 @@ type JsonSpec = {
   }[];
 };
 
-function readOutcomes(secrets: string[]): { outcomes: TestOutcome[]; loadErrors: string[] } {
+function readOutcomes(secrets: string[]): { outcomes: TestOutcome[]; loadErrors: string[]; requestsSent: number } {
   const report = JSON.parse(readFileSync(RESULTS_FILE, 'utf8')) as { suites?: JsonSuite[]; errors?: { message?: string }[] };
   const outcomes: TestOutcome[] = [];
+  let requestsSent = 0;
   const walk = (suite: JsonSuite) => {
     for (const spec of suite.specs ?? []) {
       for (const t of spec.tests) {
-        if (t.status === 'skipped') continue;
         const last = t.results[t.results.length - 1];
+        // The ctx fixture records how many requests each test sent (one annotation per test).
+        const sent = (last?.annotations ?? []).find((a) => a.type === 'requests-sent') ?? (t.annotations ?? []).find((a) => a.type === 'requests-sent');
+        if (sent?.description && /^\d+$/.test(sent.description)) requestsSent += Number(sent.description);
+        if (t.status === 'skipped') continue;
         const annotations = [...(t.annotations ?? []), ...(last?.annotations ?? [])];
         const statusNote = annotations.find((a) => a.type === 'actual-status')?.description;
         const actual = statusNote !== undefined && /^\d{3}$/.test(statusNote) ? Number(statusNote) : null;
@@ -174,7 +188,7 @@ function readOutcomes(secrets: string[]): { outcomes: TestOutcome[]; loadErrors:
   };
   (report.suites ?? []).forEach(walk);
   const loadErrors = (report.errors ?? []).map((e) => cleanError(e.message ?? '', secrets).split('\n')[0]);
-  return { outcomes, loadErrors };
+  return { outcomes, loadErrors, requestsSent };
 }
 
 function filesUnder(dir: string): string[] {
@@ -232,12 +246,16 @@ function writeSummary(o: {
   framework: FrameworkInfo | null;
   allureReport: string | null;
   secrets: string[];
+  safety: Safety;
+  requestsSent: number;
 }) {
-  const { status, inputFile, config, startedAt, states, outcomes, findings, framework, allureReport, secrets } = o;
+  const { status, inputFile, config, startedAt, states, outcomes, findings, framework, allureReport, secrets, safety, requestsSent } = o;
   const summary = {
     status,
     inputFile,
     baseUrl: config.baseUrl,
+    safety: { hostClass: safety.hostClass, mode: safety.mode, allowProduction: safety.allowProduction, allowWrites: safety.allowWrites },
+    requestsSent,
     startedAt: startedAt.toISOString(),
     durationSec: Math.round((Date.now() - startedAt.getTime()) / 1000),
     claudeCalls: { used: claudeCallsUsed(), budget: claudeBudget() },
@@ -261,6 +279,7 @@ function writeSummary(o: {
         passed: mine.filter((o) => o.passed).length,
         failed: mine.filter((o) => !o.passed).length,
         failureReason: s.failureReason === null ? null : cleanError(oneLine(s.failureReason), secrets),
+        skippedReason: s.skippedReason,
       };
     }),
     findings,
@@ -297,18 +316,45 @@ async function main() {
   const inputFile = process.argv[2] || 'input/endpoints.json';
   const startedAt = new Date();
   const config = loadConfig(inputFile);
+  for (const dir of ['generated', 'out', 'reports', 'test-results']) rmSync(dir, { recursive: true, force: true });
+
+  // Safety guard first: a refused run sends no request and needs neither an auth value nor Claude.
+  // AGENT_FORCE_PRODUCTION=1 (testing only) treats every host as production; it reaches the probe and,
+  // through the environment, the Playwright run.
+  const forceProduction = process.env.AGENT_FORCE_PRODUCTION === '1';
+  const safety = assessSafety(config, { forceProduction });
+  if (safety.mode === 'refused') {
+    const message = refusalMessage(safety);
+    console.log(message);
+    writeSummary({
+      status: 'refused',
+      inputFile,
+      config,
+      startedAt,
+      states: config.endpoints.map((endpoint) => ({ endpoint, specFile: null, failureReason: message, skippedReason: null })),
+      outcomes: [],
+      findings: [],
+      framework: null,
+      allureReport: null,
+      secrets: [],
+      safety,
+      requestsSent: 0,
+    });
+    console.log(`Summary written to ${SUMMARY_FILE}`);
+    process.exitCode = 1;
+    return;
+  }
+
   const authValue = config.auth ? process.env[config.auth.valueEnv] : undefined;
   if (config.auth && !authValue) {
     throw new Error(`Missing auth value: environment variable ${config.auth.valueEnv} is not set (required by ${inputFile}).`);
   }
   const secrets = authValue ? [authValue] : [];
 
-  for (const dir of ['generated', 'out', 'reports', 'test-results']) rmSync(dir, { recursive: true, force: true });
-
   const claudeProblem = claudeCliProblem();
   if (claudeProblem) {
     console.log(claudeProblem);
-    const blocked: EndpointState[] = config.endpoints.map((endpoint) => ({ endpoint, specFile: null, failureReason: claudeProblem }));
+    const blocked: EndpointState[] = config.endpoints.map((endpoint) => ({ endpoint, specFile: null, failureReason: claudeProblem, skippedReason: null }));
     writeSummary({
       status: 'no-tests',
       inputFile,
@@ -320,6 +366,8 @@ async function main() {
       framework: null,
       allureReport: null,
       secrets,
+      safety,
+      requestsSent: 0,
     });
     console.log('NO TESTS GENERATED');
     console.log(`Summary written to ${SUMMARY_FILE}`);
@@ -328,12 +376,16 @@ async function main() {
   }
 
   console.log('=== PROBING ===');
-  const probes = await probeAll(config, authValue);
-  const states: EndpointState[] = config.endpoints.map((endpoint, i) => ({
+  console.log(`safety: ${safety.hostClass} host, ${safety.mode} mode`);
+  if (safety.hostClass === 'production' && safety.mode === 'full') console.log(PRODUCTION_WRITES_WARNING);
+  const probeRun = await probeAll(config, authValue, { forceProduction });
+  let requestsSent = probeRun.requestsSent;
+  const states: EndpointState[] = config.endpoints.map((endpoint) => ({
     endpoint,
-    probe: probes[i],
+    probe: probeRun.results.get(endpoint.id),
     specFile: null,
     failureReason: null,
+    skippedReason: endpointAllowed(safety, endpoint) ? null : READ_ONLY_SKIP,
   }));
   for (const s of states) {
     if (s.probe && !s.probe.usable) s.failureReason = `probe not usable: ${s.probe.status ?? s.probe.error}`;
@@ -360,6 +412,7 @@ async function main() {
     if (!existsSync(RESULTS_FILE)) throw new Error(`Playwright did not write ${RESULTS_FILE}`);
     const read = readOutcomes(secrets);
     outcomes = read.outcomes;
+    requestsSent += read.requestsSent;
     for (const e of read.loadErrors) console.log(`Playwright error: ${e}`);
     for (const s of written) {
       if (!outcomes.some((o) => o.endpointId === s.endpoint.id)) {
@@ -381,17 +434,18 @@ async function main() {
       config,
       inputFile,
       authValue,
-      endpoints: states,
+      // The export README lists endpoints without a spec with their reason, read-only skips included.
+      endpoints: states.map((s) => ({ ...s, failureReason: s.failureReason ?? s.skippedReason })),
       findings: findings.filter((f) => f.classification === 'suspected API finding'),
     });
   }
 
-  const summary = writeSummary({ status, inputFile, config, startedAt, states, outcomes, findings, framework, allureReport, secrets });
+  const summary = writeSummary({ status, inputFile, config, startedAt, states, outcomes, findings, framework, allureReport, secrets, safety, requestsSent });
 
   console.log('=== SUMMARY ===');
   if (status === 'no-tests') {
     console.log('NO TESTS GENERATED');
-    for (const s of states) console.log(`  ${s.endpoint.id}: ${oneLine(s.failureReason ?? 'unknown')}`);
+    for (const s of states) console.log(`  ${s.endpoint.id}: ${oneLine(s.failureReason ?? s.skippedReason ?? 'unknown')}`);
     console.log(`Summary written to ${SUMMARY_FILE}`);
     process.exitCode = 1;
     return;
@@ -402,6 +456,8 @@ async function main() {
   console.log(`Status: ${status}`);
   console.log(`Endpoints: ${t.endpoints}, specs written: ${written.length}, tests: ${t.testsGenerated}, passed: ${t.passed}, failed: ${t.failed}`);
   console.log(`Claude calls: ${summary.claudeCalls.used}/${summary.claudeCalls.budget}, duration: ${summary.durationSec}s`);
+  console.log(`Safety: ${safety.hostClass} host, ${safety.mode} mode, requests sent: ${requestsSent}`);
+  for (const s of summary.endpoints.filter((e) => e.skippedReason)) console.log(`  skipped: ${s.id}: ${s.skippedReason}`);
   for (const s of summary.endpoints.filter((e) => e.failureReason)) console.log(`  not tested: ${s.id}: ${s.failureReason}`);
   console.log(`${api.length} suspected API finding${api.length === 1 ? '' : 's'}`);
   for (const f of api) console.log(`  - ${f.testTitle}: expected ${f.expectedStatus}, got ${f.actualStatus}`);

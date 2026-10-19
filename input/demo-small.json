@@ -1,5 +1,7 @@
 {
   "baseUrl": "https://restful-booker.herokuapp.com",
+  "allowProduction": true,
+  "allowWrites": true,
   "defaultHeaders": {
     "Accept": "application/json",
     "Content-Type": "application/json"

@@ -42,6 +42,8 @@ function httpSource(): string {
   baseUrl: string;
   defaultHeaders: Record<string, string>;
   auth?: { header: string; valueEnv: string };
+  allowProduction?: boolean;
+  allowWrites?: boolean;
   endpoints: {
     id: string;
     method: string;
@@ -54,6 +56,30 @@ function httpSource(): string {
     )
     .replace(/^\/\/ Shared HTTP logic for the ctx fixture and the agent\./m, '// HTTP clients and createResource for the ctx fixture.');
 }
+
+// agent/safety.ts has no imports, so it is copied as it is (src/http.ts imports it as ./safety).
+function safetySource(): string {
+  const src = readFileSync('agent/safety.ts', 'utf8');
+  if (/^\s*import\s/m.test(src)) throw new Error('framework export: agent/safety.ts must not import anything');
+  return src.replace(/^\/\/ No imports: the framework export[^\n]*\n\/\/[^\n]*\n\/\/[^\n]*\n/m, '');
+}
+
+// Runs once before any test. On a production host without allowProduction the run stops here,
+// before any request is sent.
+const GLOBAL_SETUP_SOURCE = `import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { assessSafety, refusalMessage } from './safety';
+
+const configFile = fileURLToPath(new URL('../config/api.json', import.meta.url));
+
+export default function globalSetup() {
+  const config = JSON.parse(readFileSync(configFile, 'utf8'));
+  // AGENT_FORCE_PRODUCTION=1 (testing only) treats every host as production.
+  const safety = assessSafety(config, { forceProduction: process.env.AGENT_FORCE_PRODUCTION === '1' });
+  if (safety.mode === 'refused') throw new Error(refusalMessage(safety));
+  console.log(\`safety: \${safety.hostClass} host, \${safety.mode} mode\`);
+}
+`;
 
 const CTX_SOURCE = `import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -68,8 +94,10 @@ import {
   reportLabels,
   type Config,
 } from '../../src/http';
+import { endpointAllowed, READ_ONLY_SKIP } from '../../src/safety';
 
-// The only file that reads process.env. The API config comes from config/api.json.
+// The only test-side file that reads process.env (src/global-setup.ts checks the host once before
+// the run). The API config comes from config/api.json.
 
 export type Ctx = {
   baseUrl: string;
@@ -94,8 +122,17 @@ export const test = base.extend<{ ctx: Ctx }>({
 
     await labels(...reportLabels(config.name ?? 'api', testInfo.titlePath, testInfo.file));
 
+    // The safety guard: refused on a production host without allowProduction, writes blocked in
+    // read-only mode. AGENT_FORCE_PRODUCTION=1 (testing only) treats every host as production.
+    const clients = await createClients(config, authValue, { forceProduction: process.env.AGENT_FORCE_PRODUCTION === '1' });
+    // A spec is named after its endpoint. In read-only mode a write endpoint's tests are skipped, never passed.
+    const endpoint = config.endpoints.find((e) => \`\${e.id}.spec.ts\` === testInfo.file.split(/[\\\\/]/).pop());
+    if (endpoint && !endpointAllowed(clients.safety, endpoint)) {
+      await disposeClients(clients);
+      testInfo.skip(true, READ_ONLY_SKIP);
+    }
+
     // Every request and response is attached to the test (Playwright report and Allure).
-    const clients = await createClients(config, authValue);
     const recordedClients = recordClients(config, clients, authValue, async (exchange) => {
       const { name, body } = formatExchange(config, exchange, authValue);
       await testInfo.attach(name, { body, contentType: 'application/json' });
@@ -120,6 +157,8 @@ import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
   testDir: 'tests',
+  // Production safety check, once before any test (see src/safety.ts and config/api.json).
+  globalSetup: './src/global-setup.ts',
   // The tests share one live API, so they run one at a time.
   workers: 1,
   timeout: 60_000,
@@ -188,6 +227,14 @@ ${envStep}
 4. \`npm run report\` to open the HTML report.
 
 The API config (base URL, headers, endpoints) is in \`config/api.json\`.
+
+## Production safety
+
+Before any test runs, the base URL is checked (\`src/safety.ts\`). \`localhost\`, private IP addresses and \`.local\` hosts are local; hosts with a part such as \`dev\`, \`test\`, \`qa\`, \`staging\`, \`stage\`, \`sandbox\`, \`uat\` or \`preprod\` are non-production; everything else is production.
+
+- Production host and \`allowProduction\` false in \`config/api.json\`: the run is refused and no request is sent.
+- \`allowProduction\` true: read-only mode. Only GET, HEAD and OPTIONS are sent; tests of other endpoints, and of endpoints that create a resource first, are skipped, never passed.
+- \`allowProduction\` and \`allowWrites\` both true: every request is sent. Only do this when changing real data is acceptable.
 
 ## Allure report
 
@@ -289,9 +336,15 @@ export function exportFramework(opts: {
   write('tsconfig.json', TSCONFIG);
   // The validated config holds only the env variable name, never an auth value.
   // name is set to the framework name so the fixture can use it as the Allure epic.
-  const { name: _inputName, ...configRest } = config;
-  write('config/api.json', JSON.stringify({ name, ...configRest }, null, 2) + '\n');
+  // The safety flags are always written, so a team can see and change them.
+  const { name: _inputName, allowProduction, allowWrites, ...configRest } = config;
+  write(
+    'config/api.json',
+    JSON.stringify({ name, ...configRest, allowProduction: allowProduction === true, allowWrites: allowWrites === true }, null, 2) + '\n',
+  );
   write('src/http.ts', httpSource());
+  write('src/safety.ts', safetySource());
+  write('src/global-setup.ts', GLOBAL_SETUP_SOURCE);
   write('tests/fixtures/ctx.ts', CTX_SOURCE);
   if (config.auth) write('.env.example', `${config.auth.valueEnv}=\n`);
   write('.gitignore', 'node_modules/\n.env\nplaywright-report/\ntest-results/\nallure-results/\nallure-report/\n');

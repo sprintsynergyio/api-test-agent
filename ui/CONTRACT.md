@@ -21,14 +21,30 @@ then OK or FAILED, then detail:
     create-product OK written generated/create-product.spec.ts
     update-product FAILED static gate: contains process.env
 
+In read-only mode (section 7) an endpoint that is not run prints, in each of the three phases:
+
+    create-product SKIPPED read-only mode
+
+Right after "=== PROBING ===" the agent prints the safety line, and for a production host with
+writes allowed a warning line:
+
+    safety: local host, full mode
+    WARNING: write requests enabled against a production host
+
+A refused run prints one line, no phase headers, and exits 1:
+
+    REFUSED: api.example.com looks like a production host. Set allowProduction to run read-only tests.
+
 Exit code 0 when the pipeline completed (even with failing tests), non-zero otherwise.
 
 ## 2. out/summary.json
 
     {
-      "status": "completed" | "stopped-budget" | "no-tests",
+      "status": "completed" | "stopped-budget" | "no-tests" | "refused",
       "inputFile": "input/local-shop.json",
       "baseUrl": "http://localhost:4000",
+      "safety": { "hostClass": "local", "mode": "full", "allowProduction": false, "allowWrites": false },
+      "requestsSent": 61,
       "startedAt": "2026-10-17T10:00:00.000Z",
       "durationSec": 74,
       "claudeCalls": { "used": 10, "budget": 30 },
@@ -37,7 +53,8 @@ Exit code 0 when the pipeline completed (even with failing tests), non-zero othe
         {
           "id": "create-product", "method": "POST", "path": "/products", "requiresAuth": true,
           "probeStatus": 201, "casesPlanned": 5, "specWritten": true,
-          "specFile": "create-product.spec.ts", "passed": 4, "failed": 1, "failureReason": null
+          "specFile": "create-product.spec.ts", "passed": 4, "failed": 1, "failureReason": null,
+          "skippedReason": null
         }
       ],
       "findings": [
@@ -53,6 +70,8 @@ Exit code 0 when the pipeline completed (even with failing tests), non-zero othe
 
 probeStatus is null when the probe failed. specFile is null when no spec was written.
 classification is "suspected API finding" or "needs review".
+skippedReason is null, or "skipped: read-only mode" for an endpoint the safety guard did not run (section 7).
+safety and requestsSent are described in section 7.
 
 ## 3. Files the UI reads
 
@@ -124,3 +143,43 @@ Responses:
 
 The Custom API tab shows the result as a preview; "Use these endpoints" puts the checked endpoints
 into the Saved API JSON editor, and the run goes through POST /api/run as before (section 4).
+
+## 7. Production safety guard
+
+Input files may set two optional booleans, both false when missing: "allowProduction" and "allowWrites".
+The base URL's host is classified by agent/safety.ts (ui/host-class.mjs has the same rules for the UI):
+
+- "local": localhost, 127.0.0.1, ::1, hosts ending in .local, host.docker.internal, 10.x, 172.16 to 172.31.x, 192.168.x
+- "non-production": the host split on "." and "-" has a part equal to dev, test, qa, staging, stage, sandbox, uat or preprod
+- "production": everything else (whole parts only, so latest.example.com and contest.io are production)
+
+| Host | allowProduction | allowWrites | safety.mode | What runs |
+|---|---|---|---|---|
+| local or non-production | any | any | "full" | everything |
+| production | false | any | "refused" | nothing; status "refused", requestsSent 0, exit 1 |
+| production | true | false | "read-only" | GET, HEAD and OPTIONS endpoints without setup; the rest are skipped |
+| production | true | true | "full" | everything, with the WARNING line |
+
+summary.json:
+
+- "safety": { "hostClass", "mode", "allowProduction", "allowWrites" }, on every run.
+- "requestsSent": the number of requests the shared HTTP layer sent during the run (probe, setup and tests).
+- "status" may be "refused". Then every endpoint has failureReason set to the refusal message,
+  totals are 0, framework and allureReport are null.
+- A skipped endpoint has skippedReason "skipped: read-only mode", probeStatus null, casesPlanned 0,
+  specWritten false, passed 0 and failed 0. It is never counted as passed.
+
+The guard is enforced in agent/http.ts, so it also covers createResource and the ctx fixture: in
+read-only mode a POST, PUT, PATCH or DELETE throws ReadOnlyBlocked before it is sent, and a refused
+config cannot create clients at all. AGENT_FORCE_PRODUCTION=1 (testing only) treats every host as
+production; nothing makes a production host count as local or non-production.
+
+UI server:
+
+- POST /api/run answers 400 { "error": "<refusal message>" } for a production host without
+  allowProduction true, before the agent is started.
+- POST /api/inputs/save removes allowProduction and allowWrites before writing: production consent is
+  given per run in the UI, never stored by the UI.
+- GET /host-class.mjs serves ui/host-class.mjs to the page.
+
+`npm run check:contract` checks out/summary.json against sections 2, 4, 5 and 7.

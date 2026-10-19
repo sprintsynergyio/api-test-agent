@@ -189,7 +189,9 @@ Both auth values are public demo credentials (Restful Booker's documented demo l
 | `npm run typecheck` | TypeScript check |
 | `npm run allure` | open the last Allure report |
 | `npm run -s import <type> < file` | import endpoints: postman, openapi, curl, har, text |
-| `npm run test:importers` | importer tests (21, two of them make live Claude calls) |
+| `npm run test:importers` | importer tests, offline (21; `RUN_LIVE_CLAUDE_TESTS=1` adds 2 live Claude tests) |
+| `npm run test:safety` | safety guard tests (47): host rules, modes, HTTP layer |
+| `npm run check:contract` | checks `out/summary.json` against `ui/CONTRACT.md` |
 
 ### The local shop API
 
@@ -243,7 +245,8 @@ Planted bugs: POST with price as text returns **500** (correct: 400); DELETE wor
 | 12. Importers stage 2: OpenAPI/Swagger, HAR | Done. OpenAPI 3.x and Swagger 2.0 (JSON or YAML), HAR with filtering and grouping; 16/16 `test:importers`. Imported OpenAPI fixture (`input/import-openapi-local-shop.json`): the same 2 findings as local-shop | 1b15836 |
 | 13. Importers stage 3: Jira / Confluence text | Done. Claude extracts endpoints (max 2 calls per import, outside the run budget, logged); credentials masked before sending; base URL, paths and fields not in the text are dropped. Jira fixture gives the 5 local-shop endpoints; 20/20 `test:importers`. Acceptance criteria are not turned into tests yet | faefb9d |
 | 14. Importers stage 4: UI | Done. `POST /api/import` (CONTRACT.md section 6); Custom API tab source picker, paste or upload, preview with checkboxes, 12-endpoint budget warning, skipped list, editable base URL (Generate disabled while empty), "Use these endpoints" into the JSON editor. Fixes: Generate clears the old result first; red/amber phase cards; no Playwright report button when no test ran | 6a0f792 |
-| 15. Importers review on `main` | Done. Reviewed all five importers. Fixtures hold only fake credentials; imported HAR and Postman configs contain only `auth.header` and `auth.valueEnv`. New warning names every dropped credential ("Credentials dropped from the import ...: Authorization header, Cookie header"); new test proves it for HAR, Postman and cURL (in process and through the CLI); 21/21 `test:importers`. `input/import-openapi-local-shop.json`: the same 2 findings as local-shop, 22/24 pass. CLAUDE.md updated for `main` (importers section, rule 10: no build output in git), package renamed `api-test-agent` | this commit ("review importers, harden auth stripping, update CLAUDE.md for main") |
+| 15. Importers review on `main` | Done. Reviewed all five importers. Fixtures hold only fake credentials; imported HAR and Postman configs contain only `auth.header` and `auth.valueEnv`. New warning names every dropped credential ("Credentials dropped from the import ...: Authorization header, Cookie header"); new test proves it for HAR, Postman and cURL (in process and through the CLI); 21/21 `test:importers`. `input/import-openapi-local-shop.json`: the same 2 findings as local-shop, 22/24 pass. CLAUDE.md updated for `main` (importers section, rule 10: no build output in git), package renamed `api-test-agent` | 80560d6 |
+| 16. Phase 1: production safety guard | Done. `agent/safety.ts` classifies the host (local, non-production, production); production is refused unless `allowProduction`, read-only (GET/HEAD/OPTIONS without setup, the rest "skipped: read-only mode") unless `allowWrites` too. Enforced in `agent/http.ts`, so probe, createResource, the ctx fixture and the exported framework (`src/safety.ts`, `src/global-setup.ts`, flags in `config/api.json`) all share it; the UI server refuses too. Summary: `safety`, `requestsSent`, `skippedReason`, status "refused". UI: base URL field with Local / Non-production / Production badge, consent checkboxes, import preview with endpoint count, auth field and warnings. `npm run check:contract`, `npm run test:safety` (47), importer tests offline by default (21 + 2 live). Restful Booker inputs set `allowProduction` and `allowWrites` | this commit ("Phase 1: production safety guard") |
 
 ### Results so far
 
@@ -314,7 +317,7 @@ npm ci
 6. Tab 2: `npm run ui`. Expected: `API Test Agent UI running on http://localhost:3000`
 7. Open http://localhost:3000, keep local-shop selected, click Generate tests. Expected: "2 API bugs found" in about 45 seconds, plus the framework card.
 
-If port 3000 or 4000 is already in use: `lsof -ti :3000 | xargs kill` (or `:4000`), then start again.
+If port 3000 or 4000 is already in use: `lsof -ti tcp:3000 -sTCP:LISTEN | xargs kill` (or `tcp:4000`), then start again. Without `-sTCP:LISTEN` it also kills clients connected to the port, such as the browser.
 
 ---
 
@@ -370,6 +373,6 @@ If the live run stalls: click "Load last run" or play the backup video.
 | Claude usage limit | Set `CLAUDE_MODEL` in .env to a lighter model; each run is about 10 calls |
 | Live run slow on stage | About 45 seconds; "Load last run"; backup video |
 | Allure report pings Google Analytics when opened | Harmless; offline it fails silently and the report still works |
-| Old UI server holding port 3000 | `lsof -ti :3000 \| xargs kill`, then `npm run ui` |
+| Old UI server holding port 3000 | `lsof -ti tcp:3000 -sTCP:LISTEN \| xargs kill`, then `npm run ui` |
 | Local API not running | UI shows "API not reachable"; start `npm run api:local` |
 | Venue network | Local shop API and UI need no internet; only the Claude calls do |

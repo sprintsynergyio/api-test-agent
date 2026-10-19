@@ -5,12 +5,14 @@
 //   BUG 1: POST /products with a non-number price returns 500 instead of 400.
 //   BUG 2: DELETE /products/:id does not check the auth token (anyone can delete).
 // Set FIXED=1 to turn both bugs off and show the suite going green.
+// Set LOG_REQUESTS=1 to print "<METHOD> <path>" for every request (used to prove the safety guard).
 
 import http from "node:http";
 
 const PORT = Number(process.env.PORT || 4000);
 const TOKEN = "Bearer hackathon-demo-token";
 const FIXED = process.env.FIXED === "1";
+const LOG_REQUESTS = process.env.LOG_REQUESTS === "1";
 
 let nextId = 1;
 const products = new Map();
@@ -64,6 +66,7 @@ function validate(b, { checkPriceType }) {
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
+  if (LOG_REQUESTS) console.log(`${req.method} ${url.pathname}`);
   const parts = url.pathname.split("/").filter(Boolean);
 
   if (parts[0] === "health" && parts.length === 1 && req.method === "GET") {
@@ -144,5 +147,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Local shop API running on http://localhost:${PORT}  (bugs ${FIXED ? "OFF" : "ON"})`);
+  console.log(`Local shop API running on http://localhost:${PORT}  (bugs ${FIXED ? "OFF" : "ON"})${LOG_REQUESTS ? "  (logging requests)" : ""}`);
 });

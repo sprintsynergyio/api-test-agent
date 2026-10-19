@@ -13,7 +13,9 @@
     "ui": "node ui/server.mjs",
     "allure": "allure open reports/allure-report",
     "import": "tsx agent/import.ts",
-    "test:importers": "tsx agent/importers/importers.test.ts"
+    "test:importers": "tsx agent/importers/importers.test.ts",
+    "test:safety": "tsx agent/safety.test.ts",
+    "check:contract": "tsx agent/check-contract.ts"
   },
   "keywords": [],
   "author": "",

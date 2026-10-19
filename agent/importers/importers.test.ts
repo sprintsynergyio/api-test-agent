@@ -7,10 +7,11 @@ import { importCurl } from './curl';
 import { importHar } from './har';
 import { importOpenApi } from './openapi';
 import { importPostman } from './postman';
-import { fromAnswer, importText, maskCredentials, type TextAnswer } from './text';
+import { fromAnswer, importCallLimit, importText, maskCredentials, type TextAnswer } from './text';
 
 // npm run test:importers: checks each importer against the fixtures in test-fixtures/importers/.
-// Plain node:assert, no test framework. The fixtures contain the fake credential below; it must
+// Plain node:assert, no test framework. Runs offline; the two tests that call Claude run only with
+// RUN_LIVE_CLAUDE_TESTS=1. The fixtures contain the fake credential below; it must
 // never appear in any importer output.
 
 const FIXTURES = 'test-fixtures/importers';
@@ -20,6 +21,16 @@ const localShop = loadConfig('input/local-shop.json');
 
 let failed = 0;
 let passed = 0;
+let skipped = 0;
+const LIVE = process.env.RUN_LIVE_CLAUDE_TESTS === '1';
+
+// A test that makes a real Claude call: skipped (and reported) unless RUN_LIVE_CLAUDE_TESTS=1.
+async function liveCheck(name: string, fn: () => void | Promise<void>) {
+  if (LIVE) return check(name, fn);
+  skipped++;
+  console.log(`skip  ${name} (set RUN_LIVE_CLAUDE_TESTS=1 to run)`);
+}
+
 async function check(name: string, fn: () => void | Promise<void>) {
   try {
     await fn();
@@ -325,6 +336,36 @@ async function main() {
   });
 
   console.log('HAR');
+  await check('body fields named pass, pwd and secret are masked; bypass and compass are not', () => {
+    const har = {
+      log: {
+        entries: [
+          {
+            request: {
+              method: 'POST',
+              url: 'http://localhost:4000/login',
+              headers: [],
+              postData: { mimeType: 'application/json', text: JSON.stringify({ user: 'qa', pass: SECRET, pwd: SECRET, secret: SECRET, nested: { client_secret: SECRET }, bypass: 'cache', compass: 'north' }) },
+            },
+            response: { status: 200, content: { mimeType: 'application/json', text: '{}' } },
+          },
+        ],
+      },
+    };
+    const r = importHar(JSON.stringify(har));
+    assert.deepEqual(r.input.endpoints[0].body, {
+      user: 'qa',
+      pass: '<removed>',
+      pwd: '<removed>',
+      secret: '<removed>',
+      nested: { client_secret: '<removed>' },
+      bypass: 'cache',
+      compass: 'north',
+    });
+    assert.match(r.warnings.join('\n'), /replaced with <removed>: POST \/login \(pass, pwd, secret, client_secret\)/);
+    assertNoSecret('import result', JSON.stringify(r));
+  });
+
   await check('mixed traffic: API calls grouped, the rest filtered and counted', () => {
     const r = importHar(fixture('local-shop.har'));
     assert.equal(r.input.baseUrl, 'http://localhost:4000');
@@ -354,6 +395,21 @@ async function main() {
   });
 
   console.log('Jira / Confluence text');
+  await check('the text import makes at most 2 calls, and never more than MAX_CLAUDE_CALLS', () => {
+    const saved = process.env.MAX_CLAUDE_CALLS;
+    try {
+      process.env.MAX_CLAUDE_CALLS = '1';
+      assert.equal(importCallLimit(), 1);
+      process.env.MAX_CLAUDE_CALLS = '30';
+      assert.equal(importCallLimit(), 2);
+      delete process.env.MAX_CLAUDE_CALLS;
+      assert.equal(importCallLimit(), 2);
+    } finally {
+      if (saved === undefined) delete process.env.MAX_CLAUDE_CALLS;
+      else process.env.MAX_CLAUDE_CALLS = saved;
+    }
+  });
+
   await check('credentials are masked before the text goes to Claude', () => {
     const { text, removed } = maskCredentials(fixture('local-shop.jira.txt'));
     assertNoSecret('masked text', text);
@@ -393,7 +449,7 @@ async function main() {
     assert.throws(() => fromAnswer({ ...answer, endpoints: [] }, text, []), /^Error: No endpoints found in the text$|No endpoints found in the text/);
   });
 
-  await check('Jira ticket gives the 5 local-shop endpoints (live Claude call)', async () => {
+  await liveCheck('Jira ticket gives the 5 local-shop endpoints (live Claude call)', async () => {
     const r = await importText(fixture('local-shop.jira.txt'));
     assert.deepEqual(
       r.input.endpoints.map((e) => `${e.method} ${e.path}`),
@@ -404,7 +460,7 @@ async function main() {
     console.log(`      requiresAuth: ${r.input.endpoints.map((e) => `${e.id}=${e.requiresAuth}`).join(', ')}`);
   });
 
-  await check('text without endpoints: exit 1 with "No endpoints found in the text" (live Claude call)', () => {
+  await liveCheck('text without endpoints: exit 1 with "No endpoints found in the text" (live Claude call)', () => {
     const res = runCli('text', 'Retro notes, sprint 12. We talked about the release date and the on-call rota. No action items.');
     assert.equal(res.code, 1, `exit code ${res.code}, stdout: ${res.stdout.slice(0, 200)}`);
     assert.equal(res.stdout, '');
@@ -450,7 +506,7 @@ async function main() {
     assert.match(empty.stderr, /stdin is empty/);
   });
 
-  console.log(`\n${passed} passed, ${failed} failed`);
+  console.log(`\n${passed} passed, ${failed} failed${skipped ? `, ${skipped} skipped (live Claude tests, RUN_LIVE_CLAUDE_TESTS=1 runs them)` : ''}`);
   if (failed) process.exitCode = 1;
 }
 

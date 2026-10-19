@@ -25,6 +25,9 @@ export const ConfigSchema = z.object({
       valueEnv: z.string().min(1),
     })
     .optional(),
+  // Safety guard (agent/safety.ts). Missing means false.
+  allowProduction: z.boolean().optional(),
+  allowWrites: z.boolean().optional(),
   endpoints: z.array(EndpointSchema).min(1),
 });
 

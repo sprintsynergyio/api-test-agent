@@ -7,7 +7,7 @@
   },
   "auth": {
     "header": "Authorization",
-    "valueEnv": "CUSTOM_API_AUTH"
+    "valueEnv": "LOCAL_API_AUTH_VALUE"
   },
   "endpoints": [
     {

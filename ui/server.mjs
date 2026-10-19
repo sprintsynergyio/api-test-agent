@@ -14,6 +14,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { classifyHost, refusalMessage } from "./host-class.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = Number(process.env.UI_PORT || 3000);
@@ -24,6 +25,7 @@ const GENERATED = path.join(ROOT, "generated");
 const REPORT_DIR = path.join(ROOT, "reports", "html");
 const ALLURE_DIR = path.join(ROOT, "reports", "allure-report");
 const INDEX = path.join(ROOT, "ui", "index.html");
+const HOST_CLASS = path.join(ROOT, "ui", "host-class.mjs");
 const FRAMEWORK_ZIP = path.join(ROOT, "out", "framework.zip");
 const PROTECTED_INPUTS = new Set(["endpoints.json", "demo-small.json", "local-shop.json"]);
 const IMPORT_TYPES = ["postman", "openapi", "curl", "har", "text"];
@@ -34,6 +36,7 @@ const IMPORT_TIMEOUT_MS = 7 * 60 * 1000;
 const MIME = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".json": "application/json; charset=utf-8",
   ".png": "image/png",
@@ -130,6 +133,9 @@ function checkInput(text) {
   if (cfg.auth !== undefined && (typeof cfg.auth !== "object" || typeof cfg.auth.header !== "string" || typeof cfg.auth.valueEnv !== "string")) {
     return "auth must have header and valueEnv";
   }
+  for (const flag of ["allowProduction", "allowWrites"]) {
+    if (cfg[flag] !== undefined && typeof cfg[flag] !== "boolean") return `${flag} must be true or false`;
+  }
   for (const [i, e] of cfg.endpoints.entries()) {
     if (!e || typeof e.id !== "string") return `endpoints[${i}].id is required`;
     if (e.requiresAuth === true && !cfg.auth) return `endpoints[${i}] requires auth but the input has no auth section`;
@@ -215,6 +221,7 @@ const server = http.createServer(async (req, res) => {
   const p = url.pathname;
 
   if (req.method === "GET" && (p === "/" || p === "/index.html")) return serveFile(res, INDEX);
+  if (req.method === "GET" && p === "/host-class.mjs") return serveFile(res, HOST_CLASS);
 
   if (req.method === "GET" && p === "/api/inputs") return json(res, 200, listInputs());
 
@@ -245,6 +252,13 @@ const server = http.createServer(async (req, res) => {
     if (problem) return json(res, 400, { error: problem });
     if (body.authValue !== undefined && typeof body.authValue !== "string") return json(res, 400, { error: "authValue must be a string" });
     const cfg = JSON.parse(body.json);
+    // The safety guard does not depend on the browser: a production host needs allowProduction.
+    // AGENT_FORCE_PRODUCTION=1 (testing only) treats every host as production, as in the agent.
+    const hostClass = process.env.AGENT_FORCE_PRODUCTION === "1" ? "production" : classifyHost(cfg.baseUrl);
+    if (hostClass === "production" && cfg.allowProduction !== true) {
+      console.log("UI: run refused, production host without allowProduction");
+      return json(res, 400, { error: refusalMessage(cfg.baseUrl) });
+    }
     if (cfg.auth && cfg.auth.valueEnv === "CUSTOM_API_AUTH" && !body.authValue) {
       return json(res, 400, { error: "This API needs an auth header value" });
     }
@@ -307,7 +321,15 @@ const server = http.createServer(async (req, res) => {
     const problem = checkInput(body.json);
     if (problem) return json(res, 400, { error: problem });
     if (/"(Bearer|Basic) [^"]+"/.test(body.json)) return json(res, 400, { error: "Input files must not contain auth values" });
-    fs.writeFileSync(path.join(INPUT_DIR, file), body.json);
+    // Production consent is given per run in the UI, never stored in an input file.
+    const cfg = JSON.parse(body.json);
+    let text = body.json;
+    if ("allowProduction" in cfg || "allowWrites" in cfg) {
+      delete cfg.allowProduction;
+      delete cfg.allowWrites;
+      text = JSON.stringify(cfg, null, 2) + "\n";
+    }
+    fs.writeFileSync(path.join(INPUT_DIR, file), text);
     return json(res, 200, { saved: true, file });
   }
 

@@ -14,12 +14,15 @@ An agent that takes a base URL and a list of API endpoints, probes the real API,
 | `npm run typecheck` | TypeScript check (must stay clean) |
 | `npm run allure` | open the last Allure report |
 | `npm run -s import <type> < file` | import endpoints from a source file (see Importers) |
-| `npm run test:importers` | importer tests (must stay all passed) |
+| `npm run test:importers` | importer tests, offline (must stay all passed; `RUN_LIVE_CLAUDE_TESTS=1` adds the 2 live Claude tests) |
+| `npm run test:safety` | safety guard tests: host rules, modes, HTTP layer (must stay all passed) |
+| `npm run check:contract` | checks `out/summary.json` against `ui/CONTRACT.md`, lists every problem, exit 1 on any |
 
 Claude is called through the Claude Code CLI in headless mode (`claude -p`) using the machine's login. There is no API key. `CLAUDE_MODEL` in `.env` optionally overrides the model; `MAX_CLAUDE_CALLS` caps calls per run.
 
 ## Pipeline
 
+0. `agent/safety.ts`: classifies the base URL's host and sets the safety mode (rule 11) before any request.
 1. `agent/probe.ts`: one real call per endpoint. Non-2xx is retried once, then the endpoint is marked unusable and skipped.
 2. `agent/plan.ts`: Claude returns JSON test cases, validated with zod and against the status rules below; one retry.
 3. `agent/generate.ts`: Claude writes one spec per endpoint, copying `tests/template/update-booking.spec.ts`.
@@ -41,6 +44,7 @@ Claude is called through the Claude Code CLI in headless mode (`claude -p`) usin
 8. The UI reads agent output exactly as described in `ui/CONTRACT.md` (console phase headers, per-endpoint OK/FAILED lines, `out/summary.json` shape). Any change to agent output must keep that contract. Do not restyle `ui/` unless asked.
 9. The exported framework must stay standalone: no imports from `agent/` or outside its own folder.
 10. Never commit `node_modules/`, `out/`, `reports/`, `generated/`, `test-results/`, `frameworks/*` (except `frameworks/.gitkeep`), `.env` or `.DS_Store`. `.gitignore` covers them. Run `git status` before every commit and confirm none of them are listed.
+11. Production safety guard (`agent/safety.ts`). The host is local (localhost, 127.0.0.1, ::1, `.local`, host.docker.internal, 10.x, 172.16 to 172.31.x, 192.168.x), non-production (a whole part, split on "." and "-", is dev, test, qa, staging, stage, sandbox, uat or preprod) or production (everything else). Local and non-production: mode "full". Production without `allowProduction`: "refused", no request is sent, status "refused", exit 1. Production with `allowProduction`: "read-only", only GET, HEAD and OPTIONS endpoints without setup run, the rest are "skipped: read-only mode" and never counted as passed. With `allowWrites` as well: "full" plus the WARNING line. The guard lives in the shared HTTP layer (`agent/http.ts` `createClients`), so it covers probe, `createResource`, the ctx fixture and the exported framework; never bypass it with a client made elsewhere. Nothing may make a production host count as local or non-production. `ui/host-class.mjs` must keep the same rules (checked by `npm run test:safety`).
 
 ## Static gate (agent/validate.ts) rejects a spec when
 
@@ -54,7 +58,7 @@ Claude is called through the Claude Code CLI in headless mode (`claude -p`) usin
 
 ## Input files
 
-`input/endpoints.json` and `input/demo-small.json` (Restful Booker), `input/local-shop.json` (local demo API). Shape: optional `name`, `baseUrl`, `defaultHeaders`, optional `auth { header, valueEnv }`, `endpoints[] { id, method, path, requiresAuth, body?, setup? { endpointId, idField } }`. Do not overwrite the three kit files. `input/import-openapi-local-shop.json` and `input/import-postman-local-shop.json` are imported from the local shop fixtures and must give the same results as `input/local-shop.json`.
+`input/endpoints.json` and `input/demo-small.json` (Restful Booker), `input/local-shop.json` (local demo API). Shape: optional `name`, `baseUrl`, `defaultHeaders`, optional `auth { header, valueEnv }`, optional `allowProduction` and `allowWrites` (booleans, false when missing, rule 11), `endpoints[] { id, method, path, requiresAuth, body?, setup? { endpointId, idField } }`. Do not overwrite the three kit files. The two Restful Booker files set `allowProduction` and `allowWrites` true: Restful Booker is a public sandbox meant for writes, but its host counts as production. `input/import-openapi-local-shop.json` and `input/import-postman-local-shop.json` are imported from the local shop fixtures (`auth.valueEnv` set to `LOCAL_API_AUTH_VALUE` so they run with `.env`) and must give the same results as `input/local-shop.json`.
 
 ## Importers
 
@@ -75,21 +79,26 @@ Claude is called through the Claude Code CLI in headless mode (`claude -p`) usin
 - Bodies: JSON objects only. Form, XML and other bodies are skipped with the reason. OpenAPI uses the example, else builds one from the schema's required fields.
 - Setup: a path with a placeholder gets `setup` from the POST on its parent path, with a warning to check `idField`.
 - Auth: credentials are dropped (Authorization, Cookie, any header with auth/token/key/secret/session in its name, Postman auth blocks, curl `-u`/`-b`, credential query params, URL userinfo). Those endpoints get `requiresAuth: true` and the input gets `auth { header, valueEnv: "CUSTOM_API_AUTH" }`. Nothing is dropped silently: every skipped item has a reason.
-- Tests: `npm run test:importers` (`agent/importers/importers.test.ts`, plain `node:assert` via tsx, no Playwright). Two tests make live Claude calls, so `claude` must be logged in. Fixtures are in `test-fixtures/importers/` and use only the fake credential `importer-secret-test-value`.
+- Body fields named like credentials (password, pass, pwd, secret, token, ...) are replaced with `<removed>`. The text importer makes at most 2 Claude calls, and never more than `MAX_CLAUDE_CALLS`.
+- Tests: `npm run test:importers` (`agent/importers/importers.test.ts`, plain `node:assert` via tsx, no Playwright). Runs offline; the two tests that make live Claude calls run only with `RUN_LIVE_CLAUDE_TESTS=1` (`claude` must be logged in). Fixtures are in `test-fixtures/importers/` and use only the fake credential `importer-secret-test-value`.
 
 ## How to verify any change
 
 1. `npm run typecheck`: no errors.
 2. `npm run test:template`: 4 passed.
-3. Tab 1 `npm run api:local`, then `npm run agent input/local-shop.json`: exactly 2 suspected API findings (create-product with a text price returns 500; delete-product without auth returns 204), every other test passes, contract check clean.
+3. Tab 1 `npm run api:local`, then `npm run agent input/local-shop.json`: the line `safety: local host, full mode`, exactly 2 suspected API findings (create-product with a text price returns 500; delete-product without auth returns 204), every other test passes, and `npm run check:contract` is clean.
 4. `npm run api:local:fixed`, same run: 0 findings, 0 failures.
 5. `grep -r "hackathon-demo-token\|YWRtaW46" out/ reports/ frameworks/ input/`: no matches.
-6. `npm run test:importers`: all passed, 0 failed.
-7. Paste raw command output in your reply, not a summary. Commit after each verified change on branch `main` (`git status` first, rule 10). Pushing to `origin main` is allowed. Never force push.
+6. `npm run test:importers` (offline) and `npm run test:safety`: all passed, 0 failed.
+7. Refused: `npm run agent` on a temp copy of `input/local-shop.json` with `baseUrl` `https://api.example.com`: `REFUSED: api.example.com looks like a production host. ...`, status "refused", `requestsSent` 0, exit 1.
+8. Read-only: Tab 1 `LOG_REQUESTS=1 npm run api:local`, then `AGENT_FORCE_PRODUCTION=1 npm run agent` on a temp copy of `input/local-shop.json` with `"allowProduction": true`: only list-products runs, the other 4 print `SKIPPED read-only mode` and have `skippedReason`, the API log shows no POST, PUT, PATCH or DELETE, and `requestsSent` equals the number of requests in the log.
+9. Paste raw command output in your reply, not a summary. Commit after each verified change on branch `main` (`git status` first, rule 10). Pushing to `origin main` is allowed. Never force push.
 
 ## Known environment notes
 
 - macOS assumed: `npm run api:local:fixed` uses `FIXED=1 node ...` and Allure 3 uses macOS's `mdls`. On Windows, Allure may not generate (the run continues with `allureReport: null`).
-- If port 3000 or 4000 is busy: `lsof -ti :3000 | xargs kill`.
+- If port 3000 or 4000 is busy: `lsof -ti tcp:3000 -sTCP:LISTEN | xargs kill` (or `tcp:4000`). Without `-sTCP:LISTEN`, lsof also lists clients connected to the port, such as a browser, and kills them too.
+- `AGENT_FORCE_PRODUCTION=1` (testing only) makes every host count as production in the agent, the ctx fixture, the exported framework and the UI server. It can only make the guard stricter.
+- `LOG_REQUESTS=1 npm run api:local` prints `<METHOD> <path>` for every request the local API receives, to prove what the guard let through.
 - If `tsx` fails with "The service was stopped", macOS killed a quarantined esbuild binary (folder copied from a zip or download). Fix: `npm ci`.
 - Restful Booker is a shared public server that resets its data; a random 404 there is not a code bug.

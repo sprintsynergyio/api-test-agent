@@ -68,11 +68,11 @@ export function isCredentialHeader(name: string): boolean {
 }
 
 const SECRET_WORDS = new Set([
-  'auth', 'authorization', 'token', 'secret', 'password', 'passwd', 'pwd', 'apikey', 'session', 'sessionid',
+  'auth', 'authorization', 'token', 'secret', 'password', 'passwd', 'pass', 'pwd', 'apikey', 'session', 'sessionid',
   'sid', 'cookie', 'jwt', 'bearer', 'credential', 'credentials', 'signature', 'sig',
 ]);
 
-// Names like token, apiKey, access_token, client_secret, sessionId. Not author, keyword or monkey.
+// Names like token, apiKey, access_token, client_secret, sessionId, pass, pwd. Not author, keyword, monkey or bypass.
 export function looksLikeSecretName(name: string): boolean {
   const n = name.toLowerCase();
   if (n.split(/[^a-z0-9]+/).some((part) => SECRET_WORDS.has(part))) return true;

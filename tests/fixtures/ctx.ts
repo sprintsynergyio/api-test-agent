@@ -3,6 +3,7 @@ import { test as base, expect, type APIRequestContext } from '@playwright/test';
 import { labels } from 'allure-js-commons';
 import { apiName, loadConfig } from '../../agent/config';
 import { createClients, createResource, disposeClients, formatExchange, recordClients, reportLabels } from '../../agent/http';
+import { endpointAllowed, READ_ONLY_SKIP } from '../../agent/safety';
 
 export type Ctx = {
   baseUrl: string;
@@ -27,8 +28,17 @@ export const test = base.extend<{ ctx: Ctx }>({
 
     await labels(...reportLabels(apiName(config, inputFile), testInfo.titlePath, testInfo.file));
 
+    // The safety guard: refused on a production host without allowProduction, writes blocked in
+    // read-only mode. AGENT_FORCE_PRODUCTION=1 (testing only) treats every host as production.
+    const clients = await createClients(config, authValue, { forceProduction: process.env.AGENT_FORCE_PRODUCTION === '1' });
+    // A spec is named after its endpoint. In read-only mode a write endpoint's tests are skipped, never passed.
+    const endpoint = config.endpoints.find((e) => `${e.id}.spec.ts` === testInfo.file.split(/[\\/]/).pop());
+    if (endpoint && !endpointAllowed(clients.safety, endpoint)) {
+      await disposeClients(clients);
+      testInfo.skip(true, READ_ONLY_SKIP);
+    }
+
     // Every request and response is attached to the test (Playwright report and Allure).
-    const clients = await createClients(config, authValue);
     const recordedClients = recordClients(config, clients, authValue, async (exchange) => {
       const { name, body } = formatExchange(config, exchange, authValue);
       await testInfo.attach(name, { body, contentType: 'application/json' });
@@ -41,6 +51,8 @@ export const test = base.extend<{ ctx: Ctx }>({
       createResource: (endpointId) => createResource(config, recordedClients, endpointId),
     });
 
+    // The agent adds these up into requestsSent in out/summary.json.
+    testInfo.annotations.push({ type: 'requests-sent', description: String(clients.counter.sent) });
     await disposeClients(clients);
   },
 });

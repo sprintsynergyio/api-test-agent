@@ -15,13 +15,13 @@ We work through the phases in order, one step at a time. A phase is done only wh
 | Standalone Playwright framework export + zip | Done, proven |
 | Playwright HTML + Allure reports with request/response evidence | Done, proven |
 | Web UI: saved APIs, custom API form, live pipeline, findings | Done, proven |
-| Importers: OpenAPI, Postman, cURL, HAR, Jira/Confluence text | Built, **not yet reviewed** |
+| Importers: OpenAPI, Postman, cURL, HAR, Jira/Confluence text | Done, reviewed (Phase 0) |
 | Pactum output | Not started |
-| Safety guard against production hosts | **Missing** |
+| Safety guard against production hosts | Done, proven (Phase 1) |
 
 ---
 
-## Phase 0: Foundation check (Prompt 9, in progress)
+## Phase 0: Foundation check (done, commit 80560d6)
 
 **Goal:** confirm the importer work is safe and correct, and bring CLAUDE.md up to date.
 
@@ -39,12 +39,13 @@ We work through the phases in order, one step at a time. A phase is done only wh
 
 ---
 
-## Phase 1: Production safety guard
+## Phase 1: Production safety guard (done, commit "Phase 1: production safety guard")
 
 **Goal:** the agent can never send write requests to a real system by accident. Importing a real spec makes this essential.
 
 **Deliverables**
 - Safe-host check: `localhost`, `127.0.0.1`, and hosts containing `dev`, `test`, `qa`, `staging`, `sandbox` count as safe. Anything else is treated as production.
+  - As built (CLAUDE.md rule 11): local also covers `::1`, `.local`, `host.docker.internal` and private IPv4 ranges; non-production also covers `stage`, `uat` and `preprod`, and matches whole host parts only (split on `.` and `-`), so `latest.example.com` and `contest.io` are production.
 - On a production host the agent refuses to run unless the input has `"allowProduction": true`, and even then it runs in **read-only mode** by default (GET, HEAD, OPTIONS only) unless `"allowWrites": true` is also set.
 - UI: base URL shown and editable after import, a red warning for production hosts, a checkbox to confirm, and a read-only toggle.
 - Summary records the safety mode used for every run.

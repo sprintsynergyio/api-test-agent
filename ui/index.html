@@ -91,6 +91,17 @@
   .pd.ok { background: var(--ok); }
   .pd.fail { background: var(--bad); }
   .pd.active { background: var(--accent); animation: blink 1s infinite; }
+  .pd.skip { background: var(--muted); opacity: .45; }
+  /* Production safety: host badge next to every base URL, and the consent box */
+  .host-row { display: flex; align-items: center; gap: 8px; }
+  .host-row .txt { flex: 1; }
+  .host-badge { font-size: 12px; font-weight: 700; padding: 4px 9px; border-radius: 999px; white-space: nowrap; }
+  .host-badge.local { background: var(--ok-soft); color: var(--ok); }
+  .host-badge.non-production { background: var(--warn-soft); color: var(--warn); }
+  .host-badge.production { background: var(--bad-soft); color: var(--bad); }
+  .prod-box { margin-top: 14px; padding: 12px 14px; border-radius: 10px; background: var(--bad-soft); color: var(--bad); border: 1px solid #fecaca; font-size: 13.5px; font-weight: 600; }
+  .prod-box label { display: flex; gap: 8px; align-items: center; margin-top: 8px; color: var(--ink); font-weight: 600; cursor: pointer; }
+  .skip-note { font-size: 13px; color: var(--muted); }
   @keyframes blink { 50% { opacity: .35; } }
   .m {
     font-family: var(--mono); font-size: 12px; font-weight: 700; text-align: center; padding: 3px 0;
@@ -361,7 +372,10 @@
         <div id="savedPane">
           <label class="lbl" for="inputSel">API to test</label>
           <select id="inputSel"></select>
-          <div id="baseUrl" class="base-url">Loading...</div>
+          <div class="field" style="margin:14px 0 0">
+            <label class="lbl" for="savedBase">Base URL</label>
+            <div class="host-row"><input id="savedBase" class="txt" placeholder="Loading..." autocomplete="off" spellcheck="false"><span id="savedBadge" class="host-badge hidden"></span></div>
+          </div>
           <div id="savedTokenWrap" class="field hidden" style="margin-top:14px">
             <label class="lbl" for="savedToken">Auth header value for this API</label>
             <input id="savedToken" class="txt" type="password" placeholder="Bearer ..." autocomplete="off">
@@ -397,7 +411,7 @@
           </div>
           <div class="field">
             <label class="lbl" for="cBase">Base URL</label>
-            <input id="cBase" class="txt" placeholder="https://api.example.com" autocomplete="off" spellcheck="false">
+            <div class="host-row"><input id="cBase" class="txt" placeholder="https://api.example.com" autocomplete="off" spellcheck="false"><span id="cBadge" class="host-badge hidden"></span></div>
           </div>
           <div class="field">
             <label class="lbl" for="cAuth">Auth</label>
@@ -439,8 +453,13 @@
               </div>
               <div class="field">
                 <label class="lbl" for="impBase">Base URL</label>
-                <input id="impBase" class="txt" placeholder="https://api.example.com" autocomplete="off" spellcheck="false">
+                <div class="host-row"><input id="impBase" class="txt" placeholder="https://api.example.com" autocomplete="off" spellcheck="false"><span id="impBadge" class="host-badge hidden"></span></div>
                 <div id="impBaseHint" class="bad-msg hidden">Enter the base URL. Generate stays disabled until it is set.</div>
+              </div>
+              <div id="impTokenWrap" class="field hidden">
+                <label class="lbl" for="impToken">Auth header value (<span id="impAuthHeader">Authorization</span>)</label>
+                <input id="impToken" class="txt" type="password" placeholder="Bearer ..." autocomplete="off">
+                <div class="hint" style="margin-top:4px">Some endpoints need auth. Used for this run only. Never written to disk.</div>
               </div>
               <ul id="impWarnings" class="imp-warnings"></ul>
               <div class="imp-head"><label class="lbl">Endpoints</label><span id="impCount" class="hint"></span></div>
@@ -450,6 +469,13 @@
               <button id="impUse" class="btn btn-primary" type="button" style="width:100%;margin-top:14px">Use these endpoints</button>
             </div>
           </div>
+        </div>
+
+        <div id="prodBox" class="prod-box hidden">
+          <div>This looks like a production host. POST, PUT, PATCH and DELETE calls would change real data.</div>
+          <label><input id="prodOk" type="checkbox"> I understand this is a production host</label>
+          <label><input id="prodWrites" type="checkbox"> Allow write requests</label>
+          <div class="hint" style="margin-top:6px;font-weight:400">Without write requests the run is read-only: only GET endpoints without setup are tested, the rest are skipped.</div>
         </div>
 
         <div class="actions">
@@ -571,6 +597,7 @@
   let termHasContent = false;
   let lastSpec = "";
   let running = false;
+  let lastStatus = null; // status of the last summary shown
   const IMPORTED = "__imported__";
   let importedJson = null; // the last "Use these endpoints" result, until it is saved
 
@@ -590,7 +617,7 @@
     if (importedJson) ensureImportedOption();
     const pref = files.find((f) => f === "local-shop.json") || files[0];
     if (pref) { sel.value = pref; await loadInput(pref); }
-    else $("baseUrl").textContent = "No input files found in input/";
+    else $("savedBase").placeholder = "No input files found in input/";
   }
 
   async function loadInput(name) {
@@ -627,16 +654,18 @@
       const sEl = el.querySelector(".s");
       if (i > 2 || !eps.length) { sEl.textContent = STEP_LABELS[i]; return; }
       const key = PHASE_KEY[i];
-      let ok = 0, fail = 0;
-      for (const e of eps) { const v = epState[e.id]?.[key]; if (v === "ok") ok++; if (v === "fail") fail++; }
-      if (!ok && !fail) { sEl.textContent = STEP_LABELS[i]; return; }
-      sEl.textContent = `${ok} of ${eps.length} done` + (fail ? `, ${fail} failed` : "");
+      let ok = 0, fail = 0, skip = 0;
+      for (const e of eps) { const v = epState[e.id]?.[key]; if (v === "ok") ok++; if (v === "fail") fail++; if (v === "skip") skip++; }
+      if (!ok && !fail && !skip) { sEl.textContent = STEP_LABELS[i]; return; }
+      sEl.textContent = `${ok} of ${eps.length} done` + (fail ? `, ${fail} failed` : "") + (skip ? `, ${skip} skipped` : "");
     });
   }
 
   function renderEndpoints() {
     updateStepText();
-    $("baseUrl").textContent = config?.baseUrl || "No baseUrl";
+    // Do not overwrite the field while the user is typing in it.
+    if (document.activeElement !== $("savedBase")) $("savedBase").value = typeof config?.baseUrl === "string" ? config.baseUrl : "";
+    updateSafety();
     const eps = Array.isArray(config?.endpoints) ? config.endpoints : [];
     $("epList").innerHTML = eps.map((e) => {
       const st = epState[e.id] || {};
@@ -658,6 +687,14 @@
   $("jsonBox").addEventListener("input", () => {
     if ($("inputSel").value === IMPORTED) importedJson = $("jsonBox").value;
     parseConfig();
+  });
+  // Editing the base URL edits the JSON, so the run and Save use the new value.
+  $("savedBase").addEventListener("input", () => {
+    if (!config || typeof config !== "object") return;
+    config.baseUrl = $("savedBase").value.trim();
+    $("jsonBox").value = JSON.stringify(config, null, 2);
+    if ($("inputSel").value === IMPORTED) importedJson = $("jsonBox").value;
+    updateSafety();
   });
   $("toggleJson").addEventListener("click", () => {
     const box = $("jsonBox");
@@ -735,19 +772,22 @@
       div.className = "h";
       const idx = PHASES.indexOf(h[1].toUpperCase());
       if (idx >= 0) setPhase(idx);
-    } else if (/\b(FAILED|Error|error:|✘|failed)\b/.test(line)) div.className = "fail";
+    } else if (/^\S+ SKIPPED\b/.test(line)) div.className = "dim";
+    else if (/^(REFUSED|WARNING):/.test(line)) div.className = "fail";
+    else if (/\b(FAILED|Error|error:|✘|failed)\b/.test(line)) div.className = "fail";
     else if (/\b(OK|passed|✓)\b/.test(line)) div.className = "ok";
     else if (/^\s*$/.test(line)) div.className = "dim";
     div.textContent = line || " ";
     term.appendChild(div);
     if (atBottom) term.scrollTop = term.scrollHeight;
 
-    // per endpoint status lines: "<endpointId> OK ..." or "<endpointId> FAILED ..."
+    // per endpoint status lines: "<endpointId> OK ...", "<endpointId> FAILED ..." or "<endpointId> SKIPPED read-only mode"
     if (phaseIdx >= 0 && phaseIdx < 3) {
-      const m = line.match(/([a-z0-9][a-z0-9-]*)\s+(OK|FAILED)\b/i);
+      const m = line.match(/([a-z0-9][a-z0-9-]*)\s+(OK|FAILED|SKIPPED)\b/i);
       if (m && (config?.endpoints || []).some((e) => e.id === m[1])) {
         epState[m[1]] = epState[m[1]] || {};
-        epState[m[1]][PHASE_KEY[phaseIdx]] = m[2].toUpperCase() === "OK" ? "ok" : "fail";
+        const word = m[2].toUpperCase();
+        epState[m[1]][PHASE_KEY[phaseIdx]] = word === "OK" ? "ok" : word === "SKIPPED" ? "skip" : "fail";
         renderEndpoints();
       }
     }
@@ -763,8 +803,54 @@
   function runBlocker() {
     if (mode === "custom" && source !== "manual") return "Import, review, then click Use these endpoints.";
     if (mode === "saved" && config && typeof config.baseUrl === "string" && !config.baseUrl.trim()) return "Enter the base URL before running.";
+    if (activeIsProduction() && !$("prodOk").checked) return 'Production host: tick "I understand this is a production host" to run.';
     return "";
   }
+
+  // ---------- Production safety (same rules as agent/safety.ts, from /host-class.mjs) ----------
+  // Until the rules have loaded, every host counts as production: the strict side.
+  let classifyHost = () => "production";
+  const BADGE = { local: "Local", "non-production": "Non-production", production: "Production" };
+  let consentHost = null; // the consent checkboxes are reset whenever the host changes
+
+  function hostKey(url) { try { return new URL(url).host.toLowerCase(); } catch { return ""; } }
+  function activeBaseUrl() {
+    if (mode === "saved") return typeof config?.baseUrl === "string" ? config.baseUrl.trim() : "";
+    if (source === "manual") return $("cBase").value.trim();
+    return imp ? $("impBase").value.trim() : "";
+  }
+  function activeIsProduction() {
+    const url = activeBaseUrl();
+    return /^https?:\/\/\S+/.test(url) && classifyHost(url) === "production";
+  }
+  function updateSafety() {
+    for (const [inputId, badgeId] of [["savedBase", "savedBadge"], ["cBase", "cBadge"], ["impBase", "impBadge"]]) {
+      const url = $(inputId).value.trim();
+      const badge = $(badgeId);
+      if (!/^https?:\/\/\S+/.test(url)) { badge.className = "host-badge hidden"; continue; }
+      const c = classifyHost(url);
+      badge.className = "host-badge " + c;
+      badge.textContent = BADGE[c];
+    }
+    const prod = activeIsProduction();
+    const host = prod ? hostKey(activeBaseUrl()) : null;
+    if (host !== consentHost) { $("prodOk").checked = false; $("prodWrites").checked = false; consentHost = host; }
+    $("prodBox").classList.toggle("hidden", !prod);
+    updateRunButton();
+  }
+  // The checkboxes decide allowProduction and allowWrites for this run, whatever the JSON says.
+  function withSafetyFlags(cfg) {
+    const out = { ...cfg };
+    delete out.allowProduction;
+    delete out.allowWrites;
+    if (activeIsProduction()) {
+      out.allowProduction = $("prodOk").checked;
+      if ($("prodWrites").checked) out.allowWrites = true;
+    }
+    return out;
+  }
+  $("prodOk").addEventListener("change", updateRunButton);
+  ["cBase", "impBase"].forEach((id) => $(id).addEventListener("input", updateSafety));
 
   function updateRunButton() {
     const why = running ? "" : runBlocker();
@@ -791,14 +877,16 @@
     if (mode === "custom") {
       const built = buildCustomConfig();
       if (built.errors.length) { showRunErr(built.errors.join(" ")); return; }
-      config = built.config;
-      payload = { json: JSON.stringify(built.config, null, 2), authValue: built.authValue || undefined };
+      config = withSafetyFlags(built.config);
+      payload = { json: JSON.stringify(config, null, 2), authValue: built.authValue || undefined };
     } else {
       if (!parseConfig()) { showRunErr("Fix the JSON before running."); return; }
       const needsToken = config?.auth?.valueEnv === "CUSTOM_API_AUTH";
       const tok = $("savedToken").value.trim();
       if (needsToken && !tok) { showRunErr("This API needs an auth header value. Enter it above."); return; }
-      payload = { json: $("jsonBox").value, authValue: needsToken ? tok : undefined };
+      // Unchanged text for a local or non-production host, so a saved API still runs from its own file.
+      const json = activeIsProduction() ? JSON.stringify(withSafetyFlags(config), null, 2) : $("jsonBox").value;
+      payload = { json, authValue: needsToken ? tok : undefined };
     }
     // Clear the previous result and log before the new run starts.
     $("results").style.display = "none";
@@ -853,6 +941,7 @@
         setPill("error", "Run ended with errors");
       }
       await loadSummary(true);
+      if (lastStatus === "refused") setPill("error", "Run refused");
     });
   }
 
@@ -872,7 +961,9 @@
       return;
     }
     $("runErr").classList.add("hidden");
-    renderSummary(await res.json());
+    const summary = await res.json();
+    lastStatus = summary.status;
+    renderSummary(summary);
   }
 
   function renderSummary(s) {
@@ -887,11 +978,21 @@
     banner.className = "banner hidden";
     if (s.status === "stopped-budget") { banner.textContent = "STOPPED: budget reached. Results below cover the tests generated before the limit."; banner.className = "banner warn"; }
     if (s.status === "no-tests") { banner.textContent = "NO TESTS GENERATED. Check the log for the reason."; banner.className = "banner bad"; }
+    if (s.status === "refused") {
+      banner.textContent = eps.find((e) => e.failureReason)?.failureReason || "REFUSED: production host. No request was sent.";
+      banner.className = "banner bad";
+    }
+    const skipped = eps.filter((e) => e.skippedReason);
+    const skipNote = skipped.length ? ` ${skipped.length} endpoint${skipped.length === 1 ? " was" : "s were"} skipped (read-only mode).` : "";
 
     // Hero
     const hero = $("hero");
     const connRefused = eps.length > 0 && eps.every((e) => /ECONNREFUSED|ENOTFOUND|connect /i.test(e.failureReason || ""));
-    if (s.status === "no-tests") {
+    if (s.status === "refused") {
+      hero.className = "hero bad";
+      $("heroBig").textContent = "Run refused";
+      $("heroSub").textContent = `${s.baseUrl || "The base URL"} looks like a production host. No request was sent (${s.requestsSent ?? 0} requests).`;
+    } else if (s.status === "no-tests") {
       hero.className = "hero bad";
       $("heroBig").textContent = connRefused ? "API not reachable" : "No tests generated";
       $("heroSub").textContent = connRefused
@@ -900,11 +1001,11 @@
     } else if (apiFindings.length) {
       hero.className = "hero bad";
       $("heroBig").textContent = `${apiFindings.length} API bug${apiFindings.length === 1 ? "" : "s"} found`;
-      $("heroSub").textContent = `The agent wrote ${t.testsGenerated ?? 0} tests across ${eps.length} endpoints and caught behavior that breaks REST rules.`;
+      $("heroSub").textContent = `The agent wrote ${t.testsGenerated ?? 0} tests across ${eps.length - skipped.length} endpoints and caught behavior that breaks REST rules.${skipNote}`;
     } else if ((t.failed ?? 0) === 0 && (t.testsGenerated ?? 0) > 0) {
       hero.className = "hero good";
       $("heroBig").textContent = "All checks passed";
-      $("heroSub").textContent = `${t.testsGenerated} generated tests ran green across ${eps.length} endpoints.`;
+      $("heroSub").textContent = `${t.testsGenerated} generated tests ran green across ${eps.length - skipped.length} endpoints.${skipNote}`;
     } else {
       hero.className = "hero bad";
       $("heroBig").textContent = `${t.failed ?? 0} test${t.failed === 1 ? "" : "s"} need review`;
@@ -940,7 +1041,9 @@
     // Endpoint table
     $("epTable").innerHTML = eps.map((e) => {
       const spec = e.specWritten ? `<span class="yes">Yes</span>` : `<span class="no">No</span>`;
-      const result = e.specWritten
+      const result = e.skippedReason
+        ? `<span class="skip-note">Skipped: read-only mode</span>`
+        : e.specWritten
         ? `<span class="p">${e.passed ?? 0} passed</span>${(e.failed ?? 0) ? ` <span class="f">· ${e.failed} failed</span>` : ""}`
         : `<span class="f">Not run</span>`;
       return `<tr data-spec="${esc(e.specFile || "")}">
@@ -963,6 +1066,8 @@
       meta.push(`Input <b>${esc(s.inputFile)}</b>`);
     }
     if (s.baseUrl) meta.push(`Base URL <b>${esc(s.baseUrl)}</b>`);
+    if (s.safety) meta.push(`Safety <b>${esc(s.safety.hostClass)} host, ${esc(s.safety.mode)} mode</b>`);
+    if (s.requestsSent != null) meta.push(`Requests sent <b>${esc(s.requestsSent)}</b>`);
     if (s.durationSec != null) meta.push(`Duration <b>${esc(s.durationSec)}s</b>`);
     if (s.claudeCalls) meta.push(`Claude calls <b>${esc(s.claudeCalls.used)} / ${esc(s.claudeCalls.budget)}</b>`);
     if (s.startedAt) meta.push(`Started <b>${esc(new Date(s.startedAt).toLocaleTimeString())}</b>`);
@@ -972,11 +1077,13 @@
     if (phaseIdx < 0) {
       epState = {};
       for (const e of eps) {
-        epState[e.id] = {
-          probe: e.probeStatus == null ? "fail" : "ok",
-          plan: (e.casesPlanned ?? 0) > 0 ? "ok" : "fail",
-          generate: e.specWritten ? "ok" : "fail",
-        };
+        epState[e.id] = e.skippedReason
+          ? { probe: "skip", plan: "skip", generate: "skip" }
+          : {
+              probe: e.probeStatus == null ? "fail" : "ok",
+              plan: (e.casesPlanned ?? 0) > 0 ? "ok" : "fail",
+              generate: e.specWritten ? "ok" : "fail",
+            };
       }
       renderEndpoints();
     }
@@ -1118,7 +1225,7 @@
     if (m === "custom" && !cEps.length) addEp();
     if (m === "saved") parseConfig();
     updateImportedUi();
-    updateRunButton();
+    updateSafety();
   }
   $("tabSaved").addEventListener("click", () => setMode("saved"));
   $("tabCustom").addEventListener("click", () => setMode("custom"));
@@ -1303,7 +1410,7 @@
       renderImport();
     }
     $("runErr").classList.add("hidden");
-    updateRunButton();
+    updateSafety();
   }
   $("cSource").addEventListener("change", () => setSource($("cSource").value));
 
@@ -1336,6 +1443,7 @@
       imp = { ...body, checked: body.input.endpoints.map((_, i) => i < 12) };
       $("impName").value = body.input.name || "";
       $("impBase").value = body.input.baseUrl || "";
+      $("impToken").value = "";
       renderImport();
       const n = body.input.endpoints.length;
       impMessage("ok", `Imported ${n} endpoint${n === 1 ? "" : "s"}${body.skipped.length ? `, ${body.skipped.length} skipped` : ""}. Review them below.`);
@@ -1348,7 +1456,11 @@
 
   function renderImport() {
     $("impPreview").classList.toggle("hidden", !imp);
+    updateSafety();
     if (!imp) return;
+    const needsAuth = imp.input.endpoints.some((e) => e.requiresAuth);
+    $("impTokenWrap").classList.toggle("hidden", !needsAuth);
+    $("impAuthHeader").textContent = imp.input.auth?.header || "Authorization";
     $("impWarnings").innerHTML = imp.warnings.map((w) => `<li>${esc(w)}</li>`).join("");
     $("impList").innerHTML = imp.input.endpoints.map((e, i) => `
       <label class="imp-row">
@@ -1367,7 +1479,8 @@
   function updateImportCount() {
     if (!imp) return;
     const n = imp.checked.filter(Boolean).length;
-    $("impCount").textContent = `${n} of ${imp.input.endpoints.length} selected`;
+    const found = imp.input.endpoints.length;
+    $("impCount").textContent = `${found} endpoint${found === 1 ? "" : "s"} found, ${n} selected`;
     $("impBudget").classList.toggle("hidden", n <= 12);
     $("impBudget").textContent = `${n} endpoints selected. Each endpoint costs about 2 Claude calls of the 30-call budget, so this needs about ${n * 2} calls and the run may stop early. 12 or fewer is safe.`;
     $("impBaseHint").classList.toggle("hidden", !!$("impBase").value.trim());
@@ -1425,6 +1538,8 @@
     ensureImportedOption();
     $("inputSel").value = IMPORTED;
     $("jsonBox").value = importedJson;
+    // The auth value typed in the preview goes to the run's auth field. It is never saved.
+    if (cfg.auth) $("savedToken").value = $("impToken").value.trim();
     $("jsonBox").classList.remove("hidden");
     $("toggleJson").textContent = "Hide JSON";
     epState = {};
@@ -1452,6 +1567,11 @@
 
   // ---------- Boot ----------
   (async () => {
+    try {
+      classifyHost = (await import("/host-class.mjs")).classifyHost;
+    } catch {
+      showRunErr("Could not load the host safety rules. Every host is treated as production.");
+    }
     await loadInputs();
     connectStream();
     try {

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { callClaudeOutsideBudget } from '../claude';
+import { callClaudeOutsideBudget, claudeBudget } from '../claude';
 import { ConfigSchema, zodProblems } from '../config';
 import { buildInput, ImportError, isCredentialHeader, isCredentialParam, type ImportResult, type RawRequest, type Skipped } from './core';
 
@@ -9,6 +9,11 @@ import { buildInput, ImportError, isCredentialHeader, isCredentialParam, type Im
 // Nothing Claude adds is trusted: a base URL, path or body field that is not in the text is dropped.
 
 const MAX_CALLS = 2;
+
+// At most 2 calls, and never more than MAX_CLAUDE_CALLS allows.
+export function importCallLimit(): number {
+  return Math.min(MAX_CALLS, claudeBudget());
+}
 const MAX_TEXT = 200_000;
 const REMOVED = '<removed>';
 
@@ -149,7 +154,8 @@ export async function importText(content: string): Promise<ImportResult> {
   const { text, removed } = maskCredentials(content);
   const prompt = buildPrompt(text);
   let errors: string[] = [];
-  for (let attempt = 1; attempt <= MAX_CALLS; attempt++) {
+  const maxCalls = importCallLimit();
+  for (let attempt = 1; attempt <= maxCalls; attempt++) {
     const user =
       attempt === 1 ? prompt : `${prompt}\n\nYOUR PREVIOUS ANSWER WAS REJECTED. Fix these problems and answer again with JSON only:\n- ${errors.join('\n- ')}`;
     let reply: string;
@@ -159,7 +165,7 @@ export async function importText(content: string): Promise<ImportResult> {
         'text',
         SYSTEM,
         user,
-        `import call ${attempt}/${MAX_CALLS}, not counted in the run budget`,
+        `import call ${attempt}/${maxCalls}, not counted in the run budget`,
       );
     } catch (err) {
       throw new ImportError(`Claude call failed: ${String((err as Error)?.message ?? err).split('\n')[0]}`);
@@ -179,5 +185,5 @@ export async function importText(content: string): Promise<ImportResult> {
     }
     return fromAnswer(parsed.data, content, removed);
   }
-  throw new ImportError(`Claude's answer was still invalid after ${MAX_CALLS} calls: ${errors.join('; ')}`);
+  throw new ImportError(`Claude's answer was still invalid after ${maxCalls} call${maxCalls === 1 ? '' : 's'}: ${errors.join('; ')}`);
 }

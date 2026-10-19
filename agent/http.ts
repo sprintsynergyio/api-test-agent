@@ -1,17 +1,60 @@
 import { request, type APIRequestContext, type APIResponse } from '@playwright/test';
 import type { Config } from './config';
+import { assessSafety, ProductionRefused, READ_METHODS, ReadOnlyBlocked, refusalMessage, type Safety } from './safety';
 
 // Shared HTTP logic for the ctx fixture and the agent. Never reads process.env or files:
 // callers pass the auth value in. Without an auth section, api and noAuthApi are the same.
+// The safety guard lives here, so it covers every request: probe, createResource and tests.
 
 const PATH_PARAM = /\{[^}]+\}/;
+
+export type RequestCounter = { sent: number };
 
 export type Clients = {
   api: APIRequestContext;
   noAuthApi: APIRequestContext;
+  safety: Safety;
+  counter: RequestCounter; // requests actually sent through api and noAuthApi
 };
 
-export async function createClients(config: Config, authValue: string | undefined, timeoutMs?: number): Promise<Clients> {
+export type ClientOptions = { timeoutMs?: number; forceProduction?: boolean };
+
+const REQUEST_METHODS = new Set(['get', 'post', 'put', 'patch', 'delete', 'head', 'fetch']);
+
+type RequestOptions = { method?: string; headers?: Record<string, string>; data?: unknown; form?: unknown; multipart?: unknown };
+type UrlOrRequest = string | { url(): string; method?(): string };
+
+function requestMethod(prop: string, urlOrRequest: UrlOrRequest, options: RequestOptions | undefined): string {
+  if (prop !== 'fetch') return prop.toUpperCase();
+  if (options?.method) return options.method.toUpperCase();
+  if (typeof urlOrRequest !== 'string' && typeof urlOrRequest.method === 'function') return urlOrRequest.method().toUpperCase();
+  return 'GET';
+}
+
+// Blocks writes in read-only mode before anything leaves the process, and counts what is sent.
+function guarded(context: APIRequestContext, safety: Safety, counter: RequestCounter): APIRequestContext {
+  return new Proxy(context, {
+    get(target, prop) {
+      const value = Reflect.get(target, prop, target);
+      if (typeof value !== 'function') return value;
+      if (typeof prop !== 'string' || !REQUEST_METHODS.has(prop)) return value.bind(target);
+      return async (urlOrRequest: UrlOrRequest, options?: RequestOptions): Promise<APIResponse> => {
+        const method = requestMethod(prop, urlOrRequest, options);
+        if (safety.mode !== 'full' && !READ_METHODS.has(method)) {
+          throw new ReadOnlyBlocked(method, typeof urlOrRequest === 'string' ? urlOrRequest : urlOrRequest.url());
+        }
+        counter.sent++;
+        return value.call(target, urlOrRequest, options);
+      };
+    },
+  });
+}
+
+// Throws ProductionRefused before any context exists when the host is production and the config
+// does not allow it. forceProduction can only make the guard stricter.
+export async function createClients(config: Config, authValue: string | undefined, opts: ClientOptions = {}): Promise<Clients> {
+  const safety = assessSafety(config, { forceProduction: opts.forceProduction });
+  if (safety.mode === 'refused') throw new ProductionRefused(refusalMessage(safety));
   if (config.auth && !authValue) {
     throw new Error(`Missing auth value for header ${config.auth.header} (environment variable ${config.auth.valueEnv})`);
   }
@@ -19,14 +62,15 @@ export async function createClients(config: Config, authValue: string | undefine
   const api = await request.newContext({
     baseURL: config.baseUrl,
     extraHTTPHeaders: { ...config.defaultHeaders, ...authHeaders },
-    timeout: timeoutMs,
+    timeout: opts.timeoutMs,
   });
   const noAuthApi = await request.newContext({
     baseURL: config.baseUrl,
     extraHTTPHeaders: { ...config.defaultHeaders },
-    timeout: timeoutMs,
+    timeout: opts.timeoutMs,
   });
-  return { api, noAuthApi };
+  const counter: RequestCounter = { sent: 0 };
+  return { api: guarded(api, safety, counter), noAuthApi: guarded(noAuthApi, safety, counter), safety, counter };
 }
 
 // Evidence: every request and response made through the clients, for test reports.
@@ -45,8 +89,6 @@ export type Exchange = {
 const RECORDED_METHODS = new Set(['get', 'post', 'put', 'patch', 'delete', 'head', 'fetch']);
 const MAX_BODY_CHARS = 5 * 1024;
 const REDACTED = '<redacted>';
-
-type RequestOptions = { method?: string; headers?: Record<string, string>; data?: unknown; form?: unknown; multipart?: unknown };
 
 function recorded(
   context: APIRequestContext,
@@ -93,6 +135,7 @@ export function recordClients(
 ): Clients {
   const authHeaders: Record<string, string> = config.auth && authValue ? { [config.auth.header]: authValue } : {};
   return {
+    ...clients,
     api: recorded(clients.api, { ...config.defaultHeaders, ...authHeaders }, onExchange),
     noAuthApi: recorded(clients.noAuthApi, { ...config.defaultHeaders }, onExchange),
   };

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { loadConfig, type Config, type Endpoint } from './config';
 import { createClients, createResource, disposeClients, resolvePath, type Clients } from './http';
+import { endpointAllowed } from './safety';
 
 const PROBE_DIR = 'out/probes';
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -90,14 +91,22 @@ async function probeEndpoint(config: Config, clients: Clients, endpoint: Endpoin
   return result;
 }
 
-export async function probeAll(config: Config, authValue: string | undefined): Promise<ProbeResult[]> {
+export type ProbeRun = { results: Map<string, ProbeResult>; requestsSent: number };
+
+// Endpoints the safety guard does not allow (read-only mode) are not probed: "<id> SKIPPED read-only mode".
+// createClients throws ProductionRefused before any request when the host is refused.
+export async function probeAll(config: Config, authValue: string | undefined, opts: { forceProduction?: boolean } = {}): Promise<ProbeRun> {
   rmSync(PROBE_DIR, { recursive: true, force: true });
   mkdirSync(PROBE_DIR, { recursive: true });
 
-  const clients = await createClients(config, authValue, REQUEST_TIMEOUT_MS);
-  const results: ProbeResult[] = [];
+  const clients = await createClients(config, authValue, { timeoutMs: REQUEST_TIMEOUT_MS, forceProduction: opts.forceProduction });
+  const results = new Map<string, ProbeResult>();
   try {
     for (const endpoint of config.endpoints) {
+      if (!endpointAllowed(clients.safety, endpoint)) {
+        console.log(`${endpoint.id} SKIPPED read-only mode`);
+        continue;
+      }
       let result = await probeEndpoint(config, clients, endpoint);
       // A non-2xx probe is not usable for planning. Retry once (setup runs again, so a fresh id).
       if (result.status !== null && !result.usable) {
@@ -107,12 +116,12 @@ export async function probeAll(config: Config, authValue: string | undefined): P
       if (result.status === null) console.log(`${endpoint.id} FAILED ${result.error}`);
       else if (!result.usable) console.log(`${endpoint.id} FAILED returned ${result.status} after retry`);
       else console.log(`${endpoint.id} OK ${result.status}`);
-      results.push(result);
+      results.set(endpoint.id, result);
     }
   } finally {
     await disposeClients(clients);
   }
-  return results;
+  return { results, requestsSent: clients.counter.sent };
 }
 
 async function main() {
@@ -122,7 +131,7 @@ async function main() {
   if (config.auth && !authValue) {
     throw new Error(`Missing auth value: environment variable ${config.auth.valueEnv} is not set (required by ${inputFile}).`);
   }
-  await probeAll(config, authValue);
+  await probeAll(config, authValue, { forceProduction: process.env.AGENT_FORCE_PRODUCTION === '1' });
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
