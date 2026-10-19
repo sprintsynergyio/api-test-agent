@@ -42,6 +42,7 @@ type Method = (typeof METHODS)[number];
 export const VALUE_ENV = 'CUSTOM_API_AUTH';
 export const AUTH_REMOVED = 'Auth value removed. Enter it in the auth field before running.';
 export const AUTH_NEEDED = 'This API needs auth. Enter the auth header value in the auth field before running.';
+export const CREDENTIALS_DROPPED = 'Credentials dropped from the import (values are never kept):';
 const NO_BASE_URL = 'No base URL in the source. Enter the base URL before running.';
 const REMOVED = '<removed>';
 const DEFAULT_HEADERS = { Accept: 'application/json', 'Content-Type': 'application/json' };
@@ -309,6 +310,13 @@ function scrub<T>(value: T, secrets: string[], where: string, hits: Set<string>)
   return value;
 }
 
+const canonical = (n: string) => ({ authorization: 'Authorization', cookie: 'Cookie' })[n.toLowerCase()] ?? n;
+
+// "Authorization header", "query parameter access_token": names only, never values.
+function credentialLabel(c: Credential): string {
+  return c.where === 'query' ? `query parameter ${c.name}` : `${canonical(c.name)} header`;
+}
+
 function countLabel(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? '' : 's'}`;
 }
@@ -338,6 +346,7 @@ export function buildInput(requests: RawRequest[], opts: BuildOptions = {}): Imp
   const warnings: string[] = [...(opts.warnings ?? [])];
   const secretSet = new Set<string>((opts.secrets ?? []).flatMap(secretVariants));
   const kept: Kept[] = [];
+  const dropped = new Set<string>();
 
   for (const r of requests) {
     // Credentials come out first, so nothing below (labels included) can contain one.
@@ -351,6 +360,8 @@ export function buildInput(requests: RawRequest[], opts: BuildOptions = {}): Imp
     }
     const url = cleanUrl(r.url, credentials);
     for (const c of credentials) if (c.value) for (const v of secretVariants(c.value)) secretSet.add(v);
+    // Named in a warning, skipped requests included. Declared ones (OpenAPI security) held no value.
+    for (const c of credentials) if (!c.declared) dropped.add(credentialLabel(c));
 
     const method = r.method.trim().toUpperCase();
     const label = `${r.item} (${method} ${url.display})`;
@@ -459,7 +470,6 @@ export function buildInput(requests: RawRequest[], opts: BuildOptions = {}): Imp
     }
     const ranked = [...names.values()].sort((a, b) => b.count - a.count);
     const chosen = ranked[0];
-    const canonical = (n: string) => ({ authorization: 'Authorization', cookie: 'Cookie' })[n.toLowerCase()] ?? n;
     const header = chosen ? canonical(chosen.name) : opts.authHeader ?? 'Authorization';
     auth = { header, valueEnv: VALUE_ENV };
     const removed = authUsers.some((k) => k.credentials.some((c) => !c.declared));
@@ -474,6 +484,7 @@ export function buildInput(requests: RawRequest[], opts: BuildOptions = {}): Imp
       warnings.push(`The credential was sent as the query parameter ${chosen.name}, but the agent sends auth as a header named ${header}. Check that the API accepts it as a header before running.`);
     }
   }
+  if (dropped.size) warnings.push(`${CREDENTIALS_DROPPED} ${[...dropped].sort().join(', ')}.`);
 
   const extra = new Map<string, string>();
   for (const k of onBase) for (const h of k.extraHeaders) if (!extra.has(h.toLowerCase())) extra.set(h.toLowerCase(), h);

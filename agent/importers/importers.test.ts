@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { ConfigSchema, configProblems, loadConfig } from '../config';
-import { AUTH_NEEDED, AUTH_REMOVED, type ImportResult } from './core';
+import { AUTH_NEEDED, AUTH_REMOVED, CREDENTIALS_DROPPED, type ImportResult } from './core';
 import { importCurl } from './curl';
 import { importHar } from './har';
 import { importOpenApi } from './openapi';
@@ -81,7 +81,77 @@ function assertLikeLocalShop(r: ImportResult) {
   assertNoSecret('import result', JSON.stringify(r));
 }
 
+// CLAUDE.md rule 6: the output holds auth.header and auth.valueEnv only, never a header value, cookie
+// or token, and a warning names every credential that was dropped.
+function assertCredentialsDropped(r: ImportResult, names: string[]) {
+  assertNoSecret('import result', JSON.stringify(r));
+  assert.deepEqual(r.input.defaultHeaders, { Accept: 'application/json', 'Content-Type': 'application/json' });
+  assert.deepEqual(Object.keys(r.input.auth ?? {}).sort(), ['header', 'valueEnv']);
+  assert.equal(r.input.auth?.valueEnv, 'CUSTOM_API_AUTH');
+  for (const e of r.input.endpoints) {
+    for (const key of Object.keys(e)) assert.ok(['id', 'method', 'path', 'requiresAuth', 'body', 'setup'].includes(key), `${e.id}: unexpected field ${key}`);
+  }
+  assert.ok(r.warnings.includes(`${CREDENTIALS_DROPPED} ${names.join(', ')}.`), `no warning naming ${names.join(', ')}: ${r.warnings.join(' | ')}`);
+}
+
 async function main() {
+  console.log('Auth stripping');
+  await check('HAR, Postman and cURL: header values, cookies and tokens are dropped and named in a warning', () => {
+    const har = {
+      log: {
+        entries: [
+          {
+            request: {
+              method: 'GET',
+              url: 'http://localhost:4000/orders',
+              headers: [
+                { name: 'Authorization', value: `Bearer ${SECRET}` },
+                { name: 'Cookie', value: `session=${SECRET}` },
+                { name: 'X-API-Key', value: SECRET },
+              ],
+              cookies: [{ name: 'session', value: SECRET }],
+            },
+            response: { status: 200, content: { mimeType: 'application/json', text: '[]' } },
+          },
+        ],
+      },
+    };
+    const postman = {
+      info: { name: 'Orders', schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json' },
+      item: [
+        {
+          name: 'List orders',
+          request: {
+            method: 'GET',
+            url: 'http://localhost:4000/orders',
+            header: [
+              { key: 'Authorization', value: `Bearer ${SECRET}` },
+              { key: 'Cookie', value: `session=${SECRET}` },
+              { key: 'X-API-Key', value: SECRET },
+            ],
+          },
+        },
+      ],
+    };
+    const curl = `curl http://localhost:4000/orders -H "Authorization: Bearer ${SECRET}" -H "Cookie: session=${SECRET}" -H "X-API-Key: ${SECRET}"`;
+    const all = ['Authorization header', 'Cookie header', 'X-API-Key header'];
+    const cases: [string, string, (content: string) => ImportResult, string[]][] = [
+      ['har', JSON.stringify(har), importHar, all],
+      ['postman', JSON.stringify(postman), importPostman, all],
+      ['curl', curl, importCurl, all],
+      ['har', fixture('local-shop.har'), importHar, ['Authorization header', 'Cookie header']],
+      ['postman', fixture('local-shop.postman.json'), importPostman, ['Authorization header']],
+      ['curl', fixture('local-shop.curl.txt'), importCurl, ['Authorization header']],
+    ];
+    for (const [type, content, importer, names] of cases) {
+      assertCredentialsDropped(importer(content), names);
+      const res = runCli(type, content);
+      assert.equal(res.code, 0, `${type}: exit code ${res.code}: ${res.stderr}`);
+      assertCredentialsDropped(JSON.parse(res.stdout) as ImportResult, names);
+      assertNoSecret(`${type} stderr`, res.stderr);
+    }
+  });
+
   console.log('Postman');
   await check('local shop collection gives the 5 local-shop endpoints', () => {
     const r = importPostman(fixture('local-shop.postman.json'));

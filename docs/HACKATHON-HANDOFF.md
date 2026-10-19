@@ -30,7 +30,7 @@ You are my engineering lead for this hackathon project. I run Claude Code on my 
 3. API and UI tests live in one framework (Playwright), with one config, one report and one CI pipeline.
 4. QA engineers review and add business rules instead of writing boilerplate.
 
-**Next steps after the hackathon (not built):** OpenAPI/Swagger import, login flows that fetch a token, CI integration, business-rule tests.
+**Next steps after the hackathon (not built):** login flows that fetch a token, CI integration, business-rule tests, turning ticket acceptance criteria into tests.
 
 ---
 
@@ -45,7 +45,7 @@ You are my engineering lead for this hackathon project. I run Claude Code on my 
 | Public API | Restful Booker | Proof on a real API. Not run live: shared server that resets its data |
 | Test types | happy, schema, invalid-input, auth | Baseline coverage that fits the build time |
 | Test runs | workers 1 | Generated tests share one live API; parallel runs made results flaky |
-| Git | Branch `hackathon`, commit after every prompt, no PRs | Rollback points without review overhead |
+| Git | Branch `main` on `sprintsynergyhq/api-test-agent`, commit after every verified change, push to `origin main`, never force push, no PRs | Rollback points without review overhead |
 
 ---
 
@@ -106,14 +106,32 @@ One retry with the reasons, then the endpoint is reported as failed. No file is 
 3. The Claude CLI child process receives no environment variable with AUTH in its name.
 4. Error text in the summary has no absolute paths.
 
+### Importers
+
+`npm run -s import <type> < file` (or Custom API tab, Source) turns an existing description of the API into the input file shape, validated with the same zod schema as input files. Output: `{ input, skipped, warnings }`; exit 1 with the reason on stderr when nothing can be imported. Code: `agent/import.ts`, `agent/importers/`. Fixtures: `test-fixtures/importers/`.
+
+| Type | Source |
+|---|---|
+| postman | Postman collection v2.0 / v2.1 |
+| openapi | OpenAPI 3.x or Swagger 2.0, JSON or YAML |
+| curl | one or more curl commands |
+| har | browser network capture; grouped by method + path, numeric and UUID ids become `{id}` |
+| text | Jira / Confluence text; Claude extracts it, max 2 calls per import, not counted in the run budget |
+
+1. **Skipped, never dropped silently:** other origins than the base URL (the most common origin), unresolved URL variables, non-JSON bodies, unsupported methods. HAR: static assets, analytics and other origins are one counted "filtered: not an API call" entry. Text: a base URL, path or field that is not in the text.
+2. **Auth:** credentials are dropped and a warning names each one (Authorization, Cookie, headers containing auth/token/key/secret/session, Postman auth blocks, curl -u/-b, credential query params, URL userinfo). Those endpoints get requiresAuth true; the input gets `auth { header, valueEnv: "CUSTOM_API_AUTH" }`. The value is typed into the auth field for the run. Values never reach the output, warnings or errors; text is masked before it goes to Claude.
+3. **Setup:** a path with a placeholder gets setup from the POST on its parent path (warning to check idField), or a warning that it needs setup.
+4. **12 endpoints:** each endpoint costs about 2 Claude calls of the 30-call budget, so the preview checks the first 12 and warns above that.
+5. Imported Postman and OpenAPI fixtures (`input/import-postman-local-shop.json`, `input/import-openapi-local-shop.json`) give the same 2 findings as local-shop. Acceptance criteria are not turned into tests yet.
+
 ---
 
 ## 4. Project layout
 
-The project lives at `~/Projects/qa-test-agent` on the Mac.
+The project lives at `~/Projects/api-test-agent` on the Mac (repo `sprintsynergyhq/api-test-agent`; the local folder name may differ).
 
 ```
-qa-test-agent/
+api-test-agent/
   .env                      auth values and settings (NOT in git, create it by hand)
   .env.example
   README.md
@@ -136,6 +154,9 @@ qa-test-agent/
     probe.ts  plan.ts  generate.ts  validate.ts  claude.ts
     export.ts               writes the standalone framework + zip
     cli.ts                  full pipeline (npm run agent)
+    import.ts               importer CLI (npm run -s import <type> < file)
+    importers/              core.ts + postman, openapi, curl, har, text; importers.test.ts
+  test-fixtures/importers/  importer fixtures (fake credential importer-secret-test-value)
   tests/
     fixtures/ctx.ts         ctx fixture, only test-side reader of env
     template/update-booking.spec.ts   hand-written template the generator copies
@@ -167,6 +188,8 @@ Both auth values are public demo credentials (Restful Booker's documented demo l
 | `npm run test:template` | runs the hand-written template (4 tests) |
 | `npm run typecheck` | TypeScript check |
 | `npm run allure` | open the last Allure report |
+| `npm run -s import <type> < file` | import endpoints: postman, openapi, curl, har, text |
+| `npm run test:importers` | importer tests (21, two of them make live Claude calls) |
 
 ### The local shop API
 
@@ -214,6 +237,13 @@ Planted bugs: POST with price as text returns **500** (correct: 400); DELETE wor
 | 6. Framework export + Custom API tab | Done. Exported framework runs standalone with the same results; auth never written to disk | 6272a7c |
 | 7. Demo polish, README, this doc | Done. JSONPlaceholder custom run works | 073fb98 |
 | 8. Allure reporting with request/response evidence | Done. Allure 3 (no Java), labels per test, request and response attached to every test with auth redacted, also in the exported framework | 58c9ebd |
+| 9. UI re-run bug fixed | Done. Root cause: a run that failed before the agent cleared out/ left the old summary.json, and the page rendered it after "done"; the server now deletes it before each run, and saved APIs run from their own file so inputFile matches | 656ee99 |
+| 10. Importers stage 0: claude CLI preflight | Done. Before PROBING the agent checks that `claude` starts; if not it prints "claude CLI not found on PATH...", writes a no-tests summary and exits 1. Child env keeps PATH, drops every AUTH variable (`claudeEnv()` in claude.ts) | fd52408 |
+| 11. Importers stage 1: core, Postman, cURL | Done. `npm run -s import postman\|curl < file` gives the input file shape plus skipped and warnings; credentials stripped; 10/10 `test:importers`. Imported Postman fixture (`input/import-postman-local-shop.json`): the same 2 findings as local-shop | 519fa0f |
+| 12. Importers stage 2: OpenAPI/Swagger, HAR | Done. OpenAPI 3.x and Swagger 2.0 (JSON or YAML), HAR with filtering and grouping; 16/16 `test:importers`. Imported OpenAPI fixture (`input/import-openapi-local-shop.json`): the same 2 findings as local-shop | 1b15836 |
+| 13. Importers stage 3: Jira / Confluence text | Done. Claude extracts endpoints (max 2 calls per import, outside the run budget, logged); credentials masked before sending; base URL, paths and fields not in the text are dropped. Jira fixture gives the 5 local-shop endpoints; 20/20 `test:importers`. Acceptance criteria are not turned into tests yet | faefb9d |
+| 14. Importers stage 4: UI | Done. `POST /api/import` (CONTRACT.md section 6); Custom API tab source picker, paste or upload, preview with checkboxes, 12-endpoint budget warning, skipped list, editable base URL (Generate disabled while empty), "Use these endpoints" into the JSON editor. Fixes: Generate clears the old result first; red/amber phase cards; no Playwright report button when no test ran | 6a0f792 |
+| 15. Importers review on `main` | Done. Reviewed all five importers. Fixtures hold only fake credentials; imported HAR and Postman configs contain only `auth.header` and `auth.valueEnv`. New warning names every dropped credential ("Credentials dropped from the import ...: Authorization header, Cookie header"); new test proves it for HAR, Postman and cURL (in process and through the CLI); 21/21 `test:importers`. `input/import-openapi-local-shop.json`: the same 2 findings as local-shop, 22/24 pass. CLAUDE.md updated for `main` (importers section, rule 10: no build output in git), package renamed `api-test-agent` | this commit ("review importers, harden auth stripping, update CLAUDE.md for main") |
 
 ### Results so far
 
@@ -236,7 +266,7 @@ The second laptop needs: macOS, Node 20 or higher, git, and Claude Code logged i
 
 On the Mac, first check everything is committed and pushed:
 ```
-cd ~/Projects/qa-test-agent
+cd ~/Projects/api-test-agent
 git status
 git push
 ```
@@ -245,9 +275,8 @@ Expected: `nothing to commit, working tree clean` and `Everything up-to-date` (o
 On the second laptop:
 ```
 mkdir -p ~/Projects && cd ~/Projects
-git clone https://github.com/sardar-usman/qa-test-agent.git
-cd qa-test-agent
-git checkout hackathon
+git clone https://github.com/sprintsynergyhq/api-test-agent.git
+cd api-test-agent
 npm install
 ```
 Expected: `npm install` ends with `added N packages`.
@@ -257,14 +286,14 @@ Expected: `npm install` ends with `added N packages`.
 On the Mac, make a zip without node_modules and generated output:
 ```
 cd ~/Projects
-zip -r ~/Desktop/qa-test-agent.zip qa-test-agent -x "qa-test-agent/node_modules/*" "qa-test-agent/out/*" "qa-test-agent/reports/*" "qa-test-agent/generated/*" "qa-test-agent/test-results/*" "qa-test-agent/frameworks/*/node_modules/*"
+zip -r ~/Desktop/api-test-agent.zip api-test-agent -x "api-test-agent/node_modules/*" "api-test-agent/out/*" "api-test-agent/reports/*" "api-test-agent/generated/*" "api-test-agent/test-results/*" "api-test-agent/frameworks/*/node_modules/*"
 ```
 The zip includes the `.git` folder (so history and rollback points come along) and the `.env` file. Move it with AirDrop or a USB drive. On the second laptop:
 ```
 mkdir -p ~/Projects && cd ~/Projects
-unzip ~/Downloads/qa-test-agent.zip
-cd qa-test-agent
-npm install
+unzip ~/Downloads/api-test-agent.zip
+cd api-test-agent
+npm ci
 ```
 
 ### Then, on the second laptop (both options)
@@ -329,7 +358,7 @@ If the live run stalls: click "Load last run" or play the backup video.
 2. **Those bugs are planted.** The local shop ones are. The three Restful Booker bugs are real and were reproduced outside the tool.
 3. **Why does the test count change?** Tests are generated fresh each run; the bugs found stay the same.
 4. **What do we keep?** A standalone Playwright project, proven to run without the agent.
-5. **Limits?** Fixed header auth only (no login flows), no OpenAPI import yet, baseline checks rather than business rules.
+5. **Limits?** Fixed header auth only (no login flows), baseline checks rather than business rules, acceptance criteria not turned into tests yet. Endpoints can be imported from Postman, OpenAPI, cURL, HAR or ticket text.
 
 ---
 
