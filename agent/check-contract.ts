@@ -32,6 +32,7 @@ try {
 
 // Top level
 field('summary', s, 'status', ['string'], ['completed', 'stopped-budget', 'no-tests', 'refused']);
+field('summary', s, 'testFramework', ['string'], ['playwright', 'pactum']);
 field('summary', s, 'inputFile', ['string']);
 field('summary', s, 'baseUrl', ['string']);
 field('summary', s, 'startedAt', ['string']);
@@ -42,6 +43,7 @@ field('summary', s, 'endpoints', ['array']);
 field('summary', s, 'findings', ['array']);
 field('summary', s, 'framework', ['object', 'null']);
 field('summary', s, 'allureReport', ['string', 'null'], ['reports/allure-report', null]);
+if (s.testFramework === 'pactum') need(s.allureReport === null, 'a pactum run has no Allure report yet, allureReport must be null');
 
 const claudeCalls = isObj(s.claudeCalls) ? s.claudeCalls : {};
 need(isObj(s.claudeCalls), 'summary.claudeCalls is missing');

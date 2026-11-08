@@ -1090,7 +1090,8 @@
 
     renderFramework(s.framework);
     $("allureBtn").classList.toggle("hidden", !s.allureReport);
-    $("reportBtn").classList.toggle("hidden", !((t.testsGenerated ?? 0) > 0));
+    // A Pactum run (summary.testFramework) has no Playwright HTML report.
+    $("reportBtn").classList.toggle("hidden", !((t.testsGenerated ?? 0) > 0) || s.testFramework === "pactum");
     $("results").style.display = "block";
     $("codeCard").style.display = "none";
     $("results").scrollIntoView({ behavior: "smooth", block: "start" });

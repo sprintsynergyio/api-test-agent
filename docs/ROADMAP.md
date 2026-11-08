@@ -16,7 +16,7 @@ We work through the phases in order, one step at a time. A phase is done only wh
 | Playwright HTML + Allure reports with request/response evidence | Done, proven |
 | Web UI: saved APIs, custom API form, live pipeline, findings | Done, proven |
 | Importers: OpenAPI, Postman, cURL, HAR, Jira/Confluence text | Done, reviewed (Phase 0) |
-| Pactum output | Not started |
+| Pactum output | Adapter built, proven offline against the local shop (Phase 2 PR); live agent run and UI toggle pending |
 | Safety guard against production hosts | Done, proven (Phase 1) |
 
 ---
@@ -57,7 +57,9 @@ We work through the phases in order, one step at a time. A phase is done only wh
 
 ---
 
-## Phase 2: Framework adapter + Pactum
+## Phase 2: Framework adapter + Pactum (in progress)
+
+Status: adapter interface, Pactum setup file with the guard, template, gate, runner, parser and exporter are built and proven offline (template green against the local shop, exported framework runs standalone, refusal works standalone). Still open: the first live agent run in Pactum mode (needs the Claude login), Allure for Pactum, and the UI framework toggle.
 
 **Goal:** one agent, two output frameworks. The user picks Playwright or Pactum; everything else stays shared.
 
