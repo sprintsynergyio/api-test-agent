@@ -15,6 +15,7 @@
     "import": "tsx agent/import.ts",
     "test:importers": "tsx agent/importers/importers.test.ts",
     "test:safety": "tsx agent/safety.test.ts",
+    "test:gate": "tsx agent/validate.test.ts",
     "check:contract": "tsx agent/check-contract.ts"
   },
   "keywords": [],
