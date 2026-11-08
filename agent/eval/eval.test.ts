@@ -48,7 +48,7 @@ const needsReview = (endpointId: string, type: string): SummaryFinding => ({
   classification: 'needs review',
 });
 
-// ---------- scorer ----------
+// Scorer
 
 await check('catalog has the 7 bugs, 5 detectable, default = the two demo bugs', () => {
   assert.equal(catalog.bugs.length, 7);
@@ -125,7 +125,7 @@ await check('findingKey ignores order and needs-review entries', () => {
   assert.equal(findingKey(a), 'create-product:invalid-input|delete-product:auth');
 });
 
-// ---------- the planted bugs, against the real server ----------
+// The planted bugs, against the real server
 
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {

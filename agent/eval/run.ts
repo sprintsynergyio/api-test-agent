@@ -219,7 +219,7 @@ async function main() {
 
       for (let run = 1; run <= args.runs; run++) {
         const label = `${set.label} run ${run}/${args.runs}`;
-        console.log(`--- ${label} ---`);
+        console.log(`=== ${label} ===`);
         const exitCode = await runAgent(inputFile, join(setDir, `run-${run}.log`));
         const record: RunRecord = { set: set.label, run, exitCode, score: null, key: null };
         if (!existsSync(SUMMARY_FILE)) {
