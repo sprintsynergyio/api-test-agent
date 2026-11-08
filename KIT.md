@@ -68,4 +68,4 @@ Data lives in memory and resets on every restart. Three products are seeded with
 | PUT /products/1 bad body | 400 |
 | DELETE /products/2 without token | 204 (BUG 2) |
 
-With FIXED=1: price "ten" gives 400, DELETE without token gives 401.
+With FIXED=1: price "ten" gives 400, DELETE without token gives 401. `BUGS=id,id` turns on exactly those planted bugs (catalog: local-api/bugs.json).

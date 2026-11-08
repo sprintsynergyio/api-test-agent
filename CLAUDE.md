@@ -7,7 +7,7 @@ An agent that takes a base URL and a list of API endpoints, probes the real API,
 | Command | What it does |
 |---|---|
 | `npm run agent <input file>` | full pipeline (probe, plan, generate, run, export, summary) |
-| `npm run api:local` / `npm run api:local:fixed` | local shop demo API on :4000, planted bugs on / off |
+| `npm run api:local` / `npm run api:local:fixed` | local shop demo API on :4000, planted bugs on (the two default ones) / off. `BUGS=id,id npm run api:local` turns on exactly those bugs from `local-api/bugs.json` |
 | `npm run ui` | demo UI on http://localhost:3000 |
 | `npm run probe <input file>` | probe only |
 | `npm run test:template` | hand-written template tests (must stay 4 passed) |
@@ -16,6 +16,8 @@ An agent that takes a base URL and a list of API endpoints, probes the real API,
 | `npm run -s import <type> < file` | import endpoints from a source file (see Importers) |
 | `npm run test:importers` | importer tests, offline (must stay all passed; `RUN_LIVE_CLAUDE_TESTS=1` adds the 2 live Claude tests) |
 | `npm run test:safety` | safety guard tests: host rules, modes, HTTP layer (must stay all passed) |
+| `npm run eval -- [--runs N] [--bugs all\|none\|id,id] [--dry-run]` | eval harness: runs the agent against every planted-bug set and prints detection, false alarm and flakiness rates (see Eval harness) |
+| `npm run test:eval` | eval harness tests, offline: the scorer, and every planted bug against a real local API (must stay all passed) |
 | `npm run check:contract` | checks `out/summary.json` against `ui/CONTRACT.md`, lists every problem, exit 1 on any |
 
 Claude is called through the Claude Code CLI in headless mode (`claude -p`) using the machine's login. There is no API key. `CLAUDE_MODEL` in `.env` optionally overrides the model; `MAX_CLAUDE_CALLS` caps calls per run.
@@ -56,6 +58,20 @@ Claude is called through the Claude Code CLI in headless mode (`claude -p`) usin
 - any assertion expects a status of 500 or higher
 - it has fewer tests than plan cases, or fails typecheck
 
+## Eval harness
+
+`local-api/bugs.json` is the catalog of planted bugs in the local shop API (id, description, endpointId, detectableBy). `local-api/server.mjs` reads its ids: `BUGS` unset turns on the catalog's `default` set (the two original demo bugs, so every existing verification step is unchanged), `FIXED=1` turns every bug off, `BUGS=id,id` turns on exactly those. Startup prints `bugs ON: <ids>` or `bugs OFF`. An unknown id exits 1.
+
+`npm run eval` (`agent/eval/run.ts`) starts the local API itself on a free port for each bug set (default matrix: all bugs, no bugs, each detectable bug alone), runs the agent N times (default 3) on a copy of `input/local-shop.json` pointed at that port, and scores every run with `agent/eval/score.ts`:
+
+- detected: a "suspected API finding" exists for the bug's endpoint with the bug's type (invalid-input bugs need an invalid-input finding, auth bugs an auth finding)
+- false alarm: a suspected finding no active bug explains
+- flaky: runs in the same bug set whose suspected finding sets differ
+- not-yet: bugs with `detectableBy: "none-yet"` (needs a test type the agent does not have); reported, never counted against detection
+- a run counts only when its status is `completed`; `no-tests`, `stopped-budget` or `refused` fails the eval (exit 1)
+
+Output goes to `eval-results/<timestamp>/` (gitignored; not under `out/`, which the agent deletes every run): per set `input.json`, `run-N.log`, `run-N.summary.json`, plus `score.json`. Adding a planted bug: add it to `bugs.json`, implement it in `server.mjs` behind `bug("<id>")`, add its probe to `agent/eval/eval.test.ts` (the test fails until every catalog bug has one).
+
 ## Input files
 
 `input/endpoints.json` and `input/demo-small.json` (Restful Booker), `input/local-shop.json` (local demo API). Shape: optional `name`, `baseUrl`, `defaultHeaders`, optional `auth { header, valueEnv }`, optional `allowProduction` and `allowWrites` (booleans, false when missing, rule 11), `endpoints[] { id, method, path, requiresAuth, body?, setup? { endpointId, idField } }`. Do not overwrite the three kit files. The two Restful Booker files set `allowProduction` and `allowWrites` true: Restful Booker is a public sandbox meant for writes, but its host counts as production. `input/import-openapi-local-shop.json` and `input/import-postman-local-shop.json` are imported from the local shop fixtures (`auth.valueEnv` set to `LOCAL_API_AUTH_VALUE` so they run with `.env`) and must give the same results as `input/local-shop.json`.
@@ -89,14 +105,14 @@ Claude is called through the Claude Code CLI in headless mode (`claude -p`) usin
 3. Tab 1 `npm run api:local`, then `npm run agent input/local-shop.json`: the line `safety: local host, full mode`, exactly 2 suspected API findings (create-product with a text price returns 500; delete-product without auth returns 204), every other test passes, and `npm run check:contract` is clean.
 4. `npm run api:local:fixed`, same run: 0 findings, 0 failures.
 5. `grep -r "hackathon-demo-token\|YWRtaW46" out/ reports/ frameworks/ input/`: no matches.
-6. `npm run test:importers` (offline) and `npm run test:safety`: all passed, 0 failed.
+6. `npm run test:importers` (offline), `npm run test:safety` and `npm run test:eval`: all passed, 0 failed.
 7. Refused: `npm run agent` on a temp copy of `input/local-shop.json` with `baseUrl` `https://api.example.com`: `REFUSED: api.example.com looks like a production host. ...`, status "refused", `requestsSent` 0, exit 1.
 8. Read-only: Tab 1 `LOG_REQUESTS=1 npm run api:local`, then `AGENT_FORCE_PRODUCTION=1 npm run agent` on a temp copy of `input/local-shop.json` with `"allowProduction": true`: only list-products runs, the other 4 print `SKIPPED read-only mode` and have `skippedReason`, the API log shows no POST, PUT, PATCH or DELETE, and `requestsSent` equals the number of requests in the log.
 9. Paste raw command output in your reply, not a summary. Commit after each verified change on branch `main` (`git status` first, rule 10). Pushing to `origin main` is allowed. Never force push.
 
 ## Known environment notes
 
-- macOS assumed: `npm run api:local:fixed` uses `FIXED=1 node ...` and Allure 3 uses macOS's `mdls`. On Windows, Allure may not generate (the run continues with `allureReport: null`).
+- macOS assumed: `npm run api:local:fixed` uses `FIXED=1 node ...` (on Windows use `BUGS=` through cross-env or set it in the shell) and Allure 3 uses macOS's `mdls`. On Windows, Allure may not generate (the run continues with `allureReport: null`).
 - If port 3000 or 4000 is busy: `lsof -ti tcp:3000 -sTCP:LISTEN | xargs kill` (or `tcp:4000`). Without `-sTCP:LISTEN`, lsof also lists clients connected to the port, such as a browser, and kills them too.
 - `AGENT_FORCE_PRODUCTION=1` (testing only) makes every host count as production in the agent, the ctx fixture, the exported framework and the UI server. It can only make the guard stricter.
 - `LOG_REQUESTS=1 npm run api:local` prints `<METHOD> <path>` for every request the local API receives, to prove what the guard let through.
