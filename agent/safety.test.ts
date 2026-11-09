@@ -72,6 +72,7 @@ const AUTH = 'Bearer safety-test-token';
 function config(baseUrl: string, flags: { allowProduction?: boolean; allowWrites?: boolean } = {}): Config {
   return {
     baseUrl,
+    selection: null,
     defaultHeaders: { Accept: 'application/json', 'Content-Type': 'application/json' },
     auth: { header: 'Authorization', valueEnv: 'SAFETY_TEST_AUTH' },
     ...flags,

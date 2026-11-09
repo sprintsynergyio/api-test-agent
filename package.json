@@ -16,6 +16,7 @@
     "test:importers": "tsx agent/importers/importers.test.ts",
     "test:safety": "tsx agent/safety.test.ts",
     "test:gate": "tsx agent/validate.test.ts",
+    "test:config": "tsx agent/config.test.ts",
     "test:gate:pactum": "tsx agent/frameworks/pactum.test.ts",
     "test:template:pactum": "mocha --config .mocharc.pactum.json tests-pactum/template/*.spec.ts",
     "test:generated:pactum": "mocha --config .mocharc.pactum.json 'generated/**/*.spec.ts'",

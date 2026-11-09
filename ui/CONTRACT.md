@@ -73,6 +73,12 @@ generated and ran the tests (the input file's optional "framework" field, defaul
 pactum run allureReport is null and there is no reports/html folder; the console says "framework: pactum"
 right after the safety line. Everything else in the summary has the same shape for both frameworks.
 
+Since Phase 4 the summary also has a top-level "selection": null | { "<dimension>": "<value>", ... }. It is
+null for an input file with a plain baseUrl (every UI run). For an input file with a profile block
+(environments, brands, regions) it is the selection the run used, and baseUrl is the resolved base URL
+for that selection; the console then prints "selection: env=staging, brand=alpha -> https://..." right
+after the framework line. The UI does not read it.
+
 probeStatus is null when the probe failed. specFile is null when no spec was written.
 classification is "suspected API finding" or "needs review".
 skippedReason is null, or "skipped: read-only mode" for an endpoint the safety guard did not run (section 7).
@@ -187,7 +193,7 @@ UI server:
   given per run in the UI, never stored by the UI.
 - GET /host-class.mjs serves ui/host-class.mjs to the page.
 
-`npm run check:contract` checks out/summary.json against sections 2, 4, 5 and 7, including testFramework.
+`npm run check:contract` checks out/summary.json against sections 2, 4, 5 and 7, including testFramework and selection.
 
 ## 8. Login and hosted mode (additive)
 

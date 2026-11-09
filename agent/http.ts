@@ -1,12 +1,11 @@
 import { request, type APIRequestContext, type APIResponse } from '@playwright/test';
 import type { Config } from './config';
+import { queryString, resolvePath, setupSteps } from './model';
 import { assessSafety, ProductionRefused, READ_METHODS, ReadOnlyBlocked, refusalMessage, type Safety } from './safety';
 
 // Shared HTTP logic for the ctx fixture and the agent. Never reads process.env or files:
 // callers pass the auth value in. Without an auth section, api and noAuthApi are the same.
 // The safety guard lives here, so it covers every request: probe, createResource and tests.
-
-const PATH_PARAM = /\{[^}]+\}/;
 
 export type RequestCounter = { sent: number };
 
@@ -21,7 +20,14 @@ export type ClientOptions = { timeoutMs?: number; forceProduction?: boolean; hos
 
 const REQUEST_METHODS = new Set(['get', 'post', 'put', 'patch', 'delete', 'head', 'fetch']);
 
-type RequestOptions = { method?: string; headers?: Record<string, string>; data?: unknown; form?: unknown; multipart?: unknown };
+type RequestOptions = {
+  method?: string;
+  headers?: Record<string, string>;
+  params?: Record<string, string | number | boolean>;
+  data?: unknown;
+  form?: unknown;
+  multipart?: unknown;
+};
 type UrlOrRequest = string | { url(): string; method?(): string };
 
 function requestMethod(prop: string, urlOrRequest: UrlOrRequest, options: RequestOptions | undefined): string {
@@ -103,7 +109,7 @@ function recorded(
       return async (urlOrRequest: string | { url(): string }, options: RequestOptions = {}): Promise<APIResponse> => {
         const exchange: Exchange = {
           method: (prop === 'fetch' ? options.method ?? 'GET' : prop).toUpperCase(),
-          path: typeof urlOrRequest === 'string' ? urlOrRequest : urlOrRequest.url(),
+          path: (typeof urlOrRequest === 'string' ? urlOrRequest : urlOrRequest.url()) + (options.params ? queryString(options.params) : ''),
           requestHeaders: { ...baseHeaders, ...(options.headers ?? {}) },
           requestBody: options.data ?? options.form ?? options.multipart ?? null,
           status: null,
@@ -187,25 +193,37 @@ export async function disposeClients(clients: Clients): Promise<void> {
   await clients.noAuthApi.dispose();
 }
 
-export function resolvePath(path: string, id: string): string {
-  return path.replace(PATH_PARAM, encodeURIComponent(id));
+export { resolvePath };
+
+// The idField for a setup endpoint: declared by the first setup step anywhere that references it.
+function declaredIdField(config: Config, endpointId: string): string | undefined {
+  for (const e of config.endpoints) {
+    const step = setupSteps(e).find((st) => st.endpointId === endpointId);
+    if (step) return step.idField;
+  }
+  return undefined;
 }
 
-// Calls endpointId with its sample body and returns the id read from idField.
+// Calls endpointId with its sample body, query and headers and returns the id read from idField.
 // idField defaults to the one declared by the first endpoint whose setup references endpointId.
+// params fills placeholders in the setup endpoint's own path (a nested resource such as
+// POST /products/{id}/reviews); a placeholder not in params is filled by that endpoint's own setup.
 export async function createResource(
   config: Config,
   clients: Clients,
   endpointId: string,
   idField?: string,
+  params: Record<string, string> = {},
 ): Promise<string> {
   const endpoint = config.endpoints.find((e) => e.id === endpointId);
   if (!endpoint) throw new Error(`createResource: unknown endpoint "${endpointId}"`);
-  const field = idField ?? config.endpoints.find((e) => e.setup?.endpointId === endpointId)?.setup?.idField;
+  const field = idField ?? declaredIdField(config, endpointId);
   if (!field) throw new Error(`createResource: no endpoint uses "${endpointId}" as setup, so idField is unknown`);
 
+  const own = await runSetup(config, clients, endpoint, params);
+  const path = resolvePath(endpoint.path, own);
   const client = endpoint.requiresAuth ? clients.api : clients.noAuthApi;
-  const response = await client.fetch(endpoint.path, { method: endpoint.method, data: endpoint.body });
+  const response = await client.fetch(path, { method: endpoint.method, data: endpoint.body, params: endpoint.query, headers: endpoint.headers });
   const text = await response.text();
   if (!response.ok()) {
     throw new Error(`createResource(${endpointId}) failed: status ${response.status()}, body: ${text}`);
@@ -220,4 +238,21 @@ export async function createResource(
     throw new Error(`createResource(${endpointId}) returned no "${field}": status ${response.status()}, body: ${text}`);
   }
   return String(id);
+}
+
+// Runs an endpoint's setup steps in order and returns every placeholder value, known ones included.
+// Each step sees the values collected so far, so a review is created under the product made one step
+// earlier rather than under a fresh one.
+export async function runSetup(
+  config: Config,
+  clients: Clients,
+  endpoint: Config['endpoints'][number],
+  known: Record<string, string> = {},
+): Promise<Record<string, string>> {
+  const params = { ...known };
+  for (const step of setupSteps(endpoint)) {
+    if (step.param! in params) continue;
+    params[step.param!] = await createResource(config, clients, step.endpointId, step.idField, params);
+  }
+  return params;
 }

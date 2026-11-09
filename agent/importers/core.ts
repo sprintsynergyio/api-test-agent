@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ConfigSchema, configProblems, zodProblems, type Config, type Endpoint } from '../config';
+import { ConfigSchema, configProblems, zodProblems, type Config, type Endpoint, type Setup } from '../config';
 
 // Shared importer logic. Each importer turns its source into RawRequest entries; buildInput turns them
 // into the input file shape (validated with the config schema), plus skipped items and warnings.
@@ -48,7 +48,7 @@ const REMOVED = '<removed>';
 const DEFAULT_HEADERS = { Accept: 'application/json', 'Content-Type': 'application/json' };
 
 // The import may leave baseUrl empty for the user to fill in; everything else is the config schema.
-const ImportSchema = ConfigSchema.extend({ baseUrl: z.union([z.literal(''), ConfigSchema.shape.baseUrl]) });
+const ImportSchema = ConfigSchema.extend({ baseUrl: z.union([z.literal(''), z.url()]) });
 
 // Headers that tools and browsers add on their own. Not part of the API, so not worth a warning.
 const TRANSPORT_HEADERS = new Set([
@@ -119,6 +119,17 @@ function safeDecode(text: string): string {
   } catch {
     return text;
   }
+}
+
+// "a=1&b=x%20y" to { a: "1", b: "x y" }. Credential parameters were removed by cleanUrl before this.
+function parseQuery(query: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const pair of query.split('&')) {
+    if (!pair) continue;
+    const eq = pair.indexOf('=');
+    out[safeDecode(eq >= 0 ? pair.slice(0, eq) : pair)] = eq >= 0 ? safeDecode(pair.slice(eq + 1)) : '';
+  }
+  return out;
 }
 
 // Line and column of a parse error, for messages that must not quote the source.
@@ -338,7 +349,7 @@ type Kept = {
   body?: Record<string, unknown>;
   requiresAuth: boolean;
   credentials: Credential[];
-  extraHeaders: string[];
+  extraHeaders: { name: string; value: string }[];
 };
 
 export function buildInput(requests: RawRequest[], opts: BuildOptions = {}): ImportResult {
@@ -351,12 +362,12 @@ export function buildInput(requests: RawRequest[], opts: BuildOptions = {}): Imp
   for (const r of requests) {
     // Credentials come out first, so nothing below (labels included) can contain one.
     const credentials: Credential[] = [...(r.credentials ?? [])];
-    const extraHeaders: string[] = [];
+    const extraHeaders: { name: string; value: string }[] = [];
     for (const h of r.headers ?? []) {
       // HTTP/2 pseudo-headers (:authority, :path) in browser captures are not request headers.
       if (!h.name || h.name.startsWith(':')) continue;
       if (isCredentialHeader(h.name)) credentials.push({ name: h.name, where: 'header', value: h.value });
-      else if (!TRANSPORT_HEADERS.has(h.name.toLowerCase()) && !/^sec-/i.test(h.name)) extraHeaders.push(h.name);
+      else if (!TRANSPORT_HEADERS.has(h.name.toLowerCase()) && !/^sec-/i.test(h.name)) extraHeaders.push({ name: h.name, value: h.value });
     }
     const url = cleanUrl(r.url, credentials);
     for (const c of credentials) if (c.value) for (const v of secretVariants(c.value)) secretSet.add(v);
@@ -417,34 +428,42 @@ export function buildInput(requests: RawRequest[], opts: BuildOptions = {}): Imp
     let id = base;
     for (let n = 2; used.has(id); n++) id = `${base}-${n}`;
     used.add(id);
+    const query = parseQuery(k.query);
+    const headers = Object.fromEntries(k.extraHeaders.map((h) => [h.name, h.value]));
     return {
       id,
       method: k.method,
-      path: k.query ? `${k.pathname}?${k.query}` : k.pathname,
+      path: k.pathname,
       requiresAuth: k.requiresAuth,
+      ...(Object.keys(query).length ? { query } : {}),
+      ...(Object.keys(headers).length ? { headers } : {}),
       ...(k.body ? { body: k.body } : {}),
     };
   });
 
-  // Setup: a path with a placeholder gets a resource from the POST on its parent collection path.
+  // Setup: each path placeholder gets a resource from the POST on its parent collection path
+  // (POST /products for {id} in /products/{id}, POST /products/{id}/reviews for {reviewId}).
   const setupUsers = new Map<string, string[]>();
   onBase.forEach((k, i) => {
     const segments = k.pathname.split('/');
-    const first = segments.findIndex((seg) => /\{[^}]+\}/.test(seg));
-    if (first < 0) return;
     const ep = endpoints[i];
-    if ((k.pathname.match(/\{[^}]+\}/g) ?? []).length > 1) {
-      warnings.push(`${ep.id}: path has more than one placeholder; setup fills only the first one.`);
-    }
-    const parent = segments.slice(0, first).join('/') || '/';
-    const creator = onBase.findIndex((c, j) => j !== i && c.method === 'POST' && c.pathname === parent);
-    if (creator < 0) {
-      warnings.push(`${ep.id} needs setup: its path has a placeholder but there is no POST ${parent} to create the resource first.`);
-      return;
-    }
-    const creatorId = endpoints[creator].id;
-    ep.setup = { endpointId: creatorId, idField: 'id' };
-    setupUsers.set(creatorId, [...(setupUsers.get(creatorId) ?? []), ep.id]);
+    const steps: Setup[] = [];
+    segments.forEach((seg, index) => {
+      const param = seg.match(/^\{([^}]+)\}$/)?.[1];
+      if (!param) return;
+      const parent = segments.slice(0, index).join('/') || '/';
+      const creator = onBase.findIndex((c, j) => j !== i && c.method === 'POST' && c.pathname === parent);
+      if (creator < 0) {
+        warnings.push(`${ep.id} needs setup for {${param}}: there is no POST ${parent} to create the resource first.`);
+        return;
+      }
+      const creatorId = endpoints[creator].id;
+      steps.push({ endpointId: creatorId, idField: 'id', param });
+      setupUsers.set(creatorId, [...(setupUsers.get(creatorId) ?? []), ep.id]);
+    });
+    if (!steps.length) return;
+    // One placeholder keeps the original single-object shape.
+    ep.setup = steps.length === 1 ? { endpointId: steps[0].endpointId, idField: steps[0].idField } : steps;
   });
   for (const [creatorId, users] of setupUsers) {
     warnings.push(
@@ -487,11 +506,9 @@ export function buildInput(requests: RawRequest[], opts: BuildOptions = {}): Imp
   if (dropped.size) warnings.push(`${CREDENTIALS_DROPPED} ${[...dropped].sort().join(', ')}.`);
 
   const extra = new Map<string, string>();
-  for (const k of onBase) for (const h of k.extraHeaders) if (!extra.has(h.toLowerCase())) extra.set(h.toLowerCase(), h);
+  for (const k of onBase) for (const h of k.extraHeaders) if (!extra.has(h.name.toLowerCase())) extra.set(h.name.toLowerCase(), h.name);
   if (extra.size) {
-    warnings.push(
-      `Headers not imported (input files only have default headers): ${[...extra.values()].join(', ')}. Add them to defaultHeaders in the JSON if the API needs them.`,
-    );
+    warnings.push(`Endpoint headers imported with the values seen in the source (check them): ${[...extra.values()].join(', ')}.`);
   }
   endpoints.forEach((ep) => {
     const vars = [...new Set([...JSON.stringify(ep.body ?? {}).matchAll(/\{\{\s*([^{}]+?)\s*\}\}/g)].map((m) => m[1]))];
