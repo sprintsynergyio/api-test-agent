@@ -17,6 +17,7 @@ We work through the phases in order, one step at a time. A phase is done only wh
 | Web UI: saved APIs, custom API form, live pipeline, findings | Done, proven |
 | Importers: OpenAPI, Postman, cURL, HAR, Jira/Confluence text | Done, reviewed (Phase 0) |
 | Pactum output | Adapter built, proven offline against the local shop (Phase 2 PR); live agent run and UI toggle pending |
+| Eval harness | In progress: harness built (`npm run eval`, 7 planted bugs, scorer + offline tests); score pending the first live run |
 | Safety guard against production hosts | Done, proven (Phase 1) |
 
 ---
@@ -94,7 +95,9 @@ Every adapter must produce **normalized results**: test title, type tag, pass/fa
 
 ---
 
-## Phase 3: Eval harness (quality numbers you can quote)
+## Phase 3: Eval harness (quality numbers you can quote). In progress: harness built, score pending first live run
+
+Built before Phase 2 so the Pactum proof can be "same eval score as Playwright", not just "same 2 findings". As built: one local API with a 7-bug catalog (`local-api/bugs.json`, 5 detectable today, 2 marked none-yet) instead of three or four APIs; `npm run eval` runs one framework (Playwright) until Phase 2 adds the adapter.
 
 **Goal:** measure how good the agent is, and stop any later change from quietly making it worse.
 

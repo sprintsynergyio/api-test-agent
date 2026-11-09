@@ -19,6 +19,8 @@
     "test:gate:pactum": "tsx agent/frameworks/pactum.test.ts",
     "test:template:pactum": "mocha --config .mocharc.pactum.json tests-pactum/template/*.spec.ts",
     "test:generated:pactum": "mocha --config .mocharc.pactum.json 'generated/**/*.spec.ts'",
+    "test:eval": "tsx agent/eval/eval.test.ts",
+    "eval": "tsx agent/eval/run.ts",
     "check:contract": "tsx agent/check-contract.ts"
   },
   "keywords": [],
