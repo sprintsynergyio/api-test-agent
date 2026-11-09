@@ -10,3 +10,4 @@ playwright-report/
 frameworks/*
 !frameworks/.gitkeep
 .DS_Store
+runs/

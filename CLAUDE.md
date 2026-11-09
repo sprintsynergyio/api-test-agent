@@ -8,7 +8,8 @@ An agent that takes a base URL and a list of API endpoints, probes the real API,
 |---|---|
 | `npm run agent <input file>` | full pipeline (probe, plan, generate, run, export, summary) |
 | `npm run api:local` / `npm run api:local:fixed` | local shop demo API on :4000, planted bugs on / off |
-| `npm run ui` | demo UI on http://localhost:3000 |
+| `npm run ui` | demo UI on http://localhost:3000 (with `UI_USERS` set: login required; with `HOSTED=1`: hosted mode, see below) |
+| `npm run ui:hash -- <password>` | prints a bcrypt hash for `UI_USERS` |
 | `npm run probe <input file>` | probe only |
 | `npm run test:template` | hand-written template tests (must stay 4 passed) |
 | `npm run typecheck` | TypeScript check (must stay clean) |
@@ -17,9 +18,10 @@ An agent that takes a base URL and a list of API endpoints, probes the real API,
 | `npm run test:importers` | importer tests, offline (must stay all passed; `RUN_LIVE_CLAUDE_TESTS=1` adds the 2 live Claude tests) |
 | `npm run test:safety` | safety guard tests: host rules, modes, HTTP layer (must stay all passed) |
 | `npm run test:gate` | static gate tests: per-type status rules, noAuthApi rule, per-type plan coverage (must stay all passed) |
+| `npm run test:claude-api` | Messages API path of `agent/claude.ts` with a fake fetch: request shape, error handling, key never leaks (must stay all passed) |
 | `npm run check:contract` | checks `out/summary.json` against `ui/CONTRACT.md`, lists every problem, exit 1 on any |
 
-Claude is called through the Claude Code CLI in headless mode (`claude -p`) using the machine's login. There is no API key. `CLAUDE_MODEL` in `.env` optionally overrides the model; `MAX_CLAUDE_CALLS` caps calls per run.
+Claude is called one of two ways. Without `ANTHROPIC_API_KEY`: the Claude Code CLI in headless mode (`claude -p`) with the machine's login. With `ANTHROPIC_API_KEY` in `.env`: the Messages API over HTTPS (`agent/claude.ts`), billed to that key; hosted mode requires this. `CLAUDE_MODEL` optionally overrides the model (API default `claude-sonnet-4-5`); `MAX_CLAUDE_CALLS` caps calls per run. The key is treated like an auth value: never in logs, summaries, exports or the Playwright child process.
 
 ## Pipeline
 
@@ -46,6 +48,33 @@ Claude is called through the Claude Code CLI in headless mode (`claude -p`) usin
 9. The exported framework must stay standalone: no imports from `agent/` or outside its own folder.
 10. Never commit `node_modules/`, `out/`, `reports/`, `generated/`, `test-results/`, `frameworks/*` (except `frameworks/.gitkeep`), `.env` or `.DS_Store`. `.gitignore` covers them. Run `git status` before every commit and confirm none of them are listed.
 11. Production safety guard (`agent/safety.ts`). The host is local (localhost, 127.0.0.1, ::1, `.local`, host.docker.internal, 10.x, 172.16 to 172.31.x, 192.168.x), non-production (a whole part, split on "." and "-", is dev, test, qa, staging, stage, sandbox, uat or preprod) or production (everything else). Local and non-production: mode "full". Production without `allowProduction`: "refused", no request is sent, status "refused", exit 1. Production with `allowProduction`: "read-only", only GET, HEAD and OPTIONS endpoints without setup run, the rest are "skipped: read-only mode" and never counted as passed. With `allowWrites` as well: "full" plus the WARNING line. The guard lives in the shared HTTP layer (`agent/http.ts` `createClients`), so it covers probe, `createResource`, the ctx fixture and the exported framework; never bypass it with a client made elsewhere. Nothing may make a production host count as local or non-production. `ui/host-class.mjs` must keep the same rules (checked by `npm run test:safety`).
+
+## Hosted mode (`HOSTED=1`)
+
+For the UI running on a shared server (the SprintSynergy VPS, `docs/HOSTING.md`). Every rule below can only make the agent stricter; without `HOSTED` and without `UI_USERS` nothing changes for the local demo.
+
+| Variable | Meaning |
+|---|---|
+| `HOSTED=1` | hosted mode on, for the UI server and the agent it spawns (the agent reads it too: `agent/safety.ts` `isHosted()`) |
+| `HOST` | bind address; anything but `127.0.0.1` or `localhost` needs `HOSTED=1`, otherwise the server exits 1. Behind Nginx keep the default |
+| `UI_PORT` | UI port (default 3000) |
+| `UI_USERS` | `name:bcryptHash,name2:bcryptHash` from `npm run ui:hash -- <password>`. Sets login on, hosted or not. Required with `HOSTED=1` |
+| `ANTHROPIC_API_KEY` | required with `HOSTED=1`: the shared server never uses a personal Claude login |
+| `HOSTED_RUNS_PER_HOUR` | runs per login per hour (default 5); over it `POST /api/run` is 429 |
+| `HOSTED_QUEUE` | runs waiting behind the one in progress (default 5); over it 429 |
+| `HOSTED_RUN_TTL_HOURS` | run folders older than this are deleted hourly (default 24) |
+
+Rules in hosted mode (`agent/safety.ts`, mirrored in `ui/host-class.mjs` `safetyMode`, tested by `npm run test:safety`):
+- a local or private host (rule 11's "local" class) is refused with `REFUSED: <host> is a local or private address; the hosted agent only tests public non-production hosts.` It would be the server's own network
+- a production host never gets full mode: `allowWrites` is ignored, `allowProduction` gives read-only as before
+- non-production hosts run in full mode as before
+- `HOSTED=1` in the environment applies everywhere (probe, ctx fixture, export, UI); `hosted: false` as an option cannot switch it off
+
+Login and isolation (`ui/server.mjs`), on whenever `UI_USERS` is set:
+- `POST /api/login` sets an HttpOnly, SameSite=Strict session cookie (Secure when Nginx sends `X-Forwarded-Proto: https`); sessions live in memory for 12 hours. Every `/api/*` route except session, login and logout, plus `/report` and `/allure`, is 401 without it. Static files stay public
+- each run gets `runs/<runId>/` (gitignored): its `input.json`, then a snapshot of `summary.json`, `framework.zip`, `html/`, `allure-report/` and `generated/` when it ends. `/api/summary`, `/api/spec`, `/api/framework/download`, `/report` and `/allure` serve the caller's latest run (or `?run=<id>` when it is theirs). The live stream and stop only reach the run's owner
+- runs still execute one at a time (the agent writes fixed paths); a second login's run is queued and starts automatically. One run in progress or queued per login
+- `POST /api/inputs/save` is 403 in hosted mode: saved APIs are shared by every login
 
 ## Static gate (agent/validate.ts) rejects a spec when
 
@@ -92,16 +121,18 @@ Claude is called through the Claude Code CLI in headless mode (`claude -p`) usin
 3. Tab 1 `npm run api:local`, then `npm run agent input/local-shop.json`: the line `safety: local host, full mode`, exactly 2 suspected API findings (create-product with a text price returns 500; delete-product without auth returns 204), every other test passes, and `npm run check:contract` is clean.
 4. `npm run api:local:fixed`, same run: 0 findings, 0 failures.
 5. `grep -r "hackathon-demo-token\|YWRtaW46" out/ reports/ frameworks/ input/`: no matches.
-6. `npm run test:importers` (offline), `npm run test:safety` and `npm run test:gate`: all passed, 0 failed.
+6. `npm run test:importers` (offline), `npm run test:safety`, `npm run test:gate` and `npm run test:claude-api`: all passed, 0 failed.
 7. Refused: `npm run agent` on a temp copy of `input/local-shop.json` with `baseUrl` `https://api.example.com`: `REFUSED: api.example.com looks like a production host. ...`, status "refused", `requestsSent` 0, exit 1.
 8. Read-only: Tab 1 `LOG_REQUESTS=1 npm run api:local`, then `AGENT_FORCE_PRODUCTION=1 npm run agent` on a temp copy of `input/local-shop.json` with `"allowProduction": true`: only list-products runs, the other 4 print `SKIPPED read-only mode` and have `skippedReason`, the API log shows no POST, PUT, PATCH or DELETE, and `requestsSent` equals the number of requests in the log.
-9. Paste raw command output in your reply, not a summary. Commit after each verified change on branch `main` (`git status` first, rule 10). Pushing to `origin main` is allowed. Never force push.
+9. Hosted: `HOSTED=1 UI_USERS=demo:<hash> ANTHROPIC_API_KEY=<key> npm run ui`, sign in, run `input/local-shop.json`: `REFUSED: localhost is a local or private address ...`, and `LOG_REQUESTS=1 npm run api:local` shows no request. Then a public non-production host runs; `HOST=0.0.0.0 npm run ui` without `HOSTED` exits 1.
+10. Paste raw command output in your reply, not a summary. Commit after each verified change on branch `main` (`git status` first, rule 10). Pushing to `origin main` is allowed. Never force push.
 
 ## Known environment notes
 
 - macOS assumed: `npm run api:local:fixed` uses `FIXED=1 node ...` and Allure 3 uses macOS's `mdls`. On Windows, Allure may not generate (the run continues with `allureReport: null`).
 - If port 3000 or 4000 is busy: `lsof -ti tcp:3000 -sTCP:LISTEN | xargs kill` (or `tcp:4000`). Without `-sTCP:LISTEN`, lsof also lists clients connected to the port, such as a browser, and kills them too.
 - `AGENT_FORCE_PRODUCTION=1` (testing only) makes every host count as production in the agent, the ctx fixture, the exported framework and the UI server. It can only make the guard stricter.
+- The UI server reads `.env` too (dotenv), so `HOSTED`, `UI_USERS` and `ANTHROPIC_API_KEY` can live there or in the systemd unit.
 - `LOG_REQUESTS=1 npm run api:local` prints `<METHOD> <path>` for every request the local API receives, to prove what the guard let through.
 - If `tsx` fails with "The service was stopped", macOS killed a quarantined esbuild binary (folder copied from a zip or download). Fix: `npm ci`.
 - Restful Booker is a shared public server that resets its data; a random 404 there is not a code bug.

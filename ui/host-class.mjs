@@ -31,3 +31,17 @@ export function classifyHost(baseUrl) {
 export function refusalMessage(baseUrl) {
   return `REFUSED: ${hostOf(baseUrl) || baseUrl} looks like a production host. Set allowProduction to run read-only tests.`;
 }
+
+export function localRefusalMessage(baseUrl) {
+  return `REFUSED: ${hostOf(baseUrl) || baseUrl} is a local or private address; the hosted agent only tests public non-production hosts.`;
+}
+
+// The mode the agent will pick, with the same rules as assessSafety in agent/safety.ts.
+// hosted: local hosts are refused and a production host never gets full mode.
+export function safetyMode(baseUrl, cfg, { forceProduction = false, hosted = false } = {}) {
+  const hostClass = forceProduction ? "production" : classifyHost(baseUrl);
+  let mode = "full";
+  if (hostClass === "production") mode = cfg.allowProduction !== true ? "refused" : cfg.allowWrites === true && !hosted ? "full" : "read-only";
+  if (hostClass === "local" && hosted) mode = "refused";
+  return { hostClass, mode };
+}

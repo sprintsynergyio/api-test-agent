@@ -16,6 +16,8 @@
     "test:importers": "tsx agent/importers/importers.test.ts",
     "test:safety": "tsx agent/safety.test.ts",
     "test:gate": "tsx agent/validate.test.ts",
+    "test:claude-api": "tsx agent/claude-api.test.ts",
+    "ui:hash": "node ui/hash-password.mjs",
     "check:contract": "tsx agent/check-contract.ts"
   },
   "keywords": [],
@@ -28,6 +30,7 @@
     "allure": "3.21.0",
     "allure-js-commons": "3.13.0",
     "allure-playwright": "3.13.0",
+    "bcryptjs": "^2.4.3",
     "dotenv": "^18.0.8",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",

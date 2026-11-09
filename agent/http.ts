@@ -17,7 +17,7 @@ export type Clients = {
   counter: RequestCounter; // requests actually sent through api and noAuthApi
 };
 
-export type ClientOptions = { timeoutMs?: number; forceProduction?: boolean };
+export type ClientOptions = { timeoutMs?: number; forceProduction?: boolean; hosted?: boolean };
 
 const REQUEST_METHODS = new Set(['get', 'post', 'put', 'patch', 'delete', 'head', 'fetch']);
 
@@ -53,7 +53,7 @@ function guarded(context: APIRequestContext, safety: Safety, counter: RequestCou
 // Throws ProductionRefused before any context exists when the host is production and the config
 // does not allow it. forceProduction can only make the guard stricter.
 export async function createClients(config: Config, authValue: string | undefined, opts: ClientOptions = {}): Promise<Clients> {
-  const safety = assessSafety(config, { forceProduction: opts.forceProduction });
+  const safety = assessSafety(config, { forceProduction: opts.forceProduction, hosted: opts.hosted });
   if (safety.mode === 'refused') throw new ProductionRefused(refusalMessage(safety));
   if (config.auth && !authValue) {
     throw new Error(`Missing auth value for header ${config.auth.header} (environment variable ${config.auth.valueEnv})`);

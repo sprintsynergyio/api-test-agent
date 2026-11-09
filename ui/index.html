@@ -356,10 +356,27 @@
         <p>From endpoints to a running Playwright suite, powered by Claude</p>
       </div>
     </div>
-    <div id="pill" class="status-pill"><span class="dot"></span><span id="pillText">Ready</span></div>
+    <div style="display:flex;align-items:center;gap:12px">
+      <span id="whoami" class="hint hidden"></span>
+      <button id="logoutBtn" class="link-btn hidden" type="button">Sign out</button>
+      <div id="pill" class="status-pill"><span class="dot"></span><span id="pillText">Ready</span></div>
+    </div>
   </header>
 
-  <div class="grid">
+  <!-- Login: shown only when the server says a login is required (UI_USERS set). -->
+  <section id="loginWrap" class="card hidden" style="max-width:420px;margin:0 auto 20px">
+    <div class="card-h"><h2>Sign in</h2></div>
+    <div class="card-b">
+      <label class="lbl" for="loginUser">User name</label>
+      <input id="loginUser" class="txt" type="text" autocomplete="username">
+      <label class="lbl" for="loginPass" style="margin-top:10px;display:block">Password</label>
+      <input id="loginPass" class="txt" type="password" autocomplete="current-password">
+      <button id="loginBtn" class="btn btn-primary" type="button" style="margin-top:14px">Sign in</button>
+      <div id="loginMsg" class="bad-msg hidden"></div>
+    </div>
+  </section>
+
+  <div id="mainGrid" class="grid">
     <!-- Input -->
     <section class="card">
       <div class="card-h"><h2>Input</h2><button id="toggleJson" class="link-btn">Edit JSON</button></div>
@@ -474,8 +491,9 @@
         <div id="prodBox" class="prod-box hidden">
           <div>This looks like a production host. POST, PUT, PATCH and DELETE calls would change real data.</div>
           <label><input id="prodOk" type="checkbox"> I understand this is a production host</label>
-          <label><input id="prodWrites" type="checkbox"> Allow write requests</label>
+          <label id="prodWritesLbl"><input id="prodWrites" type="checkbox"> Allow write requests</label>
           <div class="hint" style="margin-top:6px;font-weight:400">Without write requests the run is read-only: only GET endpoints without setup are tested, the rest are skipped.</div>
+          <div id="hostedNote" class="hint hidden" style="margin-top:6px;font-weight:400">Hosted server: production hosts run read-only, and local or private addresses are refused.</div>
         </div>
 
         <div class="actions">
@@ -904,11 +922,63 @@
     }).catch(() => null);
     if (!res || res.status !== 202) {
       const body = res ? await res.json().catch(() => ({})) : {};
+      if (res && res.status === 401) return showLogin();
       showRunErr(body.error || (res ? "Could not start the run (" + res.status + ")" : "Could not reach the UI server."));
       $("term").innerHTML = '<span class="empty">The run did not start.</span>';
       setPill("error", "Run not started");
+      return;
+    }
+    const started = await res.json().catch(() => ({}));
+    if (started.queued) {
+      $("term").innerHTML = '<span class="empty">Another run is in progress. Yours is queued at position ' + started.position + ' and starts automatically.</span>';
+      setPill("", "Queued");
     }
   }
+
+  // Login (only when the server has UI_USERS). The rest of the page waits until it succeeds.
+  function showLogin() {
+    $("loginWrap").classList.remove("hidden");
+    $("mainGrid").classList.add("hidden");
+    $("loginUser").focus();
+  }
+  function showApp(sessionInfo) {
+    $("loginWrap").classList.add("hidden");
+    $("mainGrid").classList.remove("hidden");
+    if (sessionInfo && sessionInfo.user) {
+      $("whoami").textContent = sessionInfo.user + (sessionInfo.hosted ? " (hosted, " + sessionInfo.runsPerHour + " runs/hour)" : "");
+      $("whoami").classList.remove("hidden");
+      $("logoutBtn").classList.remove("hidden");
+    }
+    if (sessionInfo && sessionInfo.hosted) {
+      $("prodWritesLbl").classList.add("hidden");
+      $("hostedNote").classList.remove("hidden");
+    }
+  }
+  async function login() {
+    const msg = $("loginMsg");
+    msg.classList.add("hidden");
+    const res = await fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user: $("loginUser").value.trim(), password: $("loginPass").value }),
+    }).catch(() => null);
+    const body = res ? await res.json().catch(() => ({})) : {};
+    if (!res || !res.ok) {
+      msg.textContent = body.error || "Could not sign in.";
+      msg.classList.remove("hidden");
+      return;
+    }
+    $("loginPass").value = "";
+    const info = await (await fetch("/api/session")).json();
+    showApp(info);
+    await startApp();
+  }
+  $("loginBtn").addEventListener("click", login);
+  $("loginPass").addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
+  $("logoutBtn").addEventListener("click", async () => {
+    await fetch("/api/logout", { method: "POST" }).catch(() => null);
+    window.location.reload();
+  });
 
   function showRunErr(msg) {
     $("runErr").textContent = msg;
@@ -1572,13 +1642,23 @@
     } catch {
       showRunErr("Could not load the host safety rules. Every host is treated as production.");
     }
+    let info = { loginRequired: false, user: null };
+    try {
+      info = await (await fetch("/api/session")).json();
+    } catch {}
+    if (info.loginRequired && !info.user) return showLogin();
+    showApp(info);
+    await startApp();
+  })();
+
+  async function startApp() {
     await loadInputs();
     connectStream();
     try {
       const st = await (await fetch("/api/state")).json();
       if (!st.running && st.hasSummary) $("lastBtn").textContent = "Load last run";
     } catch {}
-  })();
+  }
 })();
 </script>
 </body>

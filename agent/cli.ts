@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join, sep } from 'node:path';
-import { BudgetExceeded, claudeBudget, claudeCallsUsed, claudeEnv, redact } from './claude';
+import { BudgetExceeded, claudeBudget, claudeCallsUsed, claudeEnv, hostedWithoutApiKeyProblem, redact, usingApiKey } from './claude';
 import { apiName, loadConfig, type Config, type Endpoint } from './config';
 import { exportFramework, type FrameworkInfo } from './export';
 import { generateEndpoint } from './generate';
@@ -123,8 +123,11 @@ async function generatePhase(states: EndpointState[]) {
 
 function runPlaywright(inputFile: string): Promise<number | null> {
   return new Promise((resolve, reject) => {
+    // The tests get the auth value they need from .env through the ctx fixture; the API key never reaches them.
+    const env: NodeJS.ProcessEnv = { ...process.env, INPUT_FILE: inputFile };
+    delete env.ANTHROPIC_API_KEY;
     const child = spawn('node_modules/.bin/playwright', ['test', '-c', 'playwright.generated.config.ts'], {
-      env: { ...process.env, INPUT_FILE: inputFile },
+      env,
       stdio: ['ignore', 'inherit', 'inherit'],
     });
     child.on('error', reject);
@@ -226,6 +229,9 @@ function generateAllure(reportName: string, secrets: string[]): { dir: string | 
 // Every plan and spec needs the claude CLI. Check that it starts, with the same child environment as
 // the real calls, before probing, so a missing CLI ends the run with one clear message.
 function claudeCliProblem(): string | null {
+  const hosted = hostedWithoutApiKeyProblem();
+  if (hosted) return hosted;
+  if (usingApiKey()) return null;
   const res = spawnSync('claude', ['--version'], { env: claudeEnv(), encoding: 'utf8', timeout: 30_000 });
   if ((res.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') return CLAUDE_NOT_FOUND;
   if (res.error || res.status !== 0) {
