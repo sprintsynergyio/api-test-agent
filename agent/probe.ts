@@ -2,8 +2,9 @@ import 'dotenv/config';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { loadConfig, type Config, type Endpoint } from './config';
-import { createClients, createResource, disposeClients, resolvePath, type Clients } from './http';
+import { loadConfig, selectionLine, takeSelectFlag, type Config, type Endpoint } from './config';
+import { createClients, disposeClients, resolvePath, runSetup, type Clients } from './http';
+import { queryString, setupSteps } from './model';
 import { endpointAllowed } from './safety';
 
 const PROBE_DIR = 'out/probes';
@@ -14,6 +15,8 @@ export type ProbeResult = {
   method: string;
   path: string;
   requestBody: unknown;
+  query: Record<string, string | number | boolean> | null;
+  headers: Record<string, string> | null;
   status: number | null;
   contentType: string | null;
   body?: unknown;
@@ -53,6 +56,8 @@ async function probeEndpoint(config: Config, clients: Clients, endpoint: Endpoin
     method: endpoint.method,
     path: endpoint.path,
     requestBody: endpoint.body ?? null,
+    query: endpoint.query ?? null,
+    headers: endpoint.headers ?? null,
     status: null,
     contentType: null,
     durationMs: 0,
@@ -61,10 +66,11 @@ async function probeEndpoint(config: Config, clients: Clients, endpoint: Endpoin
 
   if (endpoint.setup) {
     try {
-      const id = await createResource(config, clients, endpoint.setup.endpointId, endpoint.setup.idField);
-      result.path = resolvePath(endpoint.path, id);
+      const params = await runSetup(config, clients, endpoint);
+      result.path = resolvePath(endpoint.path, params);
     } catch (err) {
-      result.error = `setup via ${endpoint.setup.endpointId} failed: ${firstLine(err)}`;
+      const via = setupSteps(endpoint).map((s) => s.endpointId).join(', ');
+      result.error = `setup via ${via} failed: ${firstLine(err)}`;
       return result;
     }
   }
@@ -72,7 +78,7 @@ async function probeEndpoint(config: Config, clients: Clients, endpoint: Endpoin
   const client = endpoint.requiresAuth ? clients.api : clients.noAuthApi;
   const started = Date.now();
   try {
-    const response = await client.fetch(result.path, { method: endpoint.method, data: endpoint.body });
+    const response = await client.fetch(result.path, { method: endpoint.method, data: endpoint.body, params: endpoint.query, headers: endpoint.headers });
     const text = await response.text();
     result.durationMs = Date.now() - started;
     result.status = response.status();
@@ -86,7 +92,7 @@ async function probeEndpoint(config: Config, clients: Clients, endpoint: Endpoin
     }
   } catch (err) {
     result.durationMs = Date.now() - started;
-    result.error = `request ${endpoint.method} ${result.path} failed: ${firstLine(err)}`;
+    result.error = `request ${endpoint.method} ${result.path}${queryString(endpoint.query)} failed: ${firstLine(err)}`;
   }
   return result;
 }
@@ -125,8 +131,10 @@ export async function probeAll(config: Config, authValue: string | undefined, op
 }
 
 async function main() {
-  const inputFile = process.argv[2] || 'input/endpoints.json';
+  const inputFile = takeSelectFlag(process.argv.slice(2))[0] || 'input/endpoints.json';
   const config = loadConfig(inputFile);
+  const line = selectionLine(config);
+  if (line) console.log(line);
   const authValue = config.auth ? process.env[config.auth.valueEnv] : undefined;
   if (config.auth && !authValue) {
     throw new Error(`Missing auth value: environment variable ${config.auth.valueEnv} is not set (required by ${inputFile}).`);

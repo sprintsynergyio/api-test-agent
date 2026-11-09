@@ -35,6 +35,10 @@ field('summary', s, 'status', ['string'], ['completed', 'stopped-budget', 'no-te
 field('summary', s, 'testFramework', ['string'], ['playwright', 'pactum']);
 field('summary', s, 'inputFile', ['string']);
 field('summary', s, 'baseUrl', ['string']);
+field('summary', s, 'selection', ['object', 'null']);
+if (isObj(s.selection)) {
+  for (const [k, v] of Object.entries(s.selection)) need(typeof v === 'string' && v.length > 0, `summary.selection.${k} must be a non-empty string`);
+}
 field('summary', s, 'startedAt', ['string']);
 need(typeof s.startedAt !== 'string' || !Number.isNaN(Date.parse(s.startedAt)), 'summary.startedAt is not a date');
 need(isInt(s.durationSec), `summary.durationSec is ${JSON.stringify(s.durationSec)}, expected a whole number of seconds`);

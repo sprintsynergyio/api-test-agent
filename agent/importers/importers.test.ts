@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { ConfigSchema, configProblems, loadConfig } from '../config';
+import { queryString, setupSteps } from '../model';
 import { AUTH_NEEDED, AUTH_REMOVED, CREDENTIALS_DROPPED, type ImportResult } from './core';
 import { importCurl } from './curl';
 import { importHar } from './har';
@@ -56,7 +57,8 @@ function skippedLines(r: ImportResult): string[] {
 // One line per endpoint, so a whole import can be compared at a glance.
 function lines(r: ImportResult): string[] {
   return r.input.endpoints.map(
-    (e) => `${e.id} ${e.method} ${e.path} auth=${e.requiresAuth}${e.setup ? ` setup=${e.setup.endpointId}/${e.setup.idField}` : ''}${e.body ? ' body' : ''}`,
+    (e) =>
+      `${e.id} ${e.method} ${e.path}${e.query ? queryString(e.query) : ''} auth=${e.requiresAuth}${e.setup ? ` setup=${setupSteps(e).map((s) => `${s.endpointId}/${s.idField}`).join('+')}` : ''}${e.body ? ' body' : ''}`,
   );
 }
 
@@ -100,7 +102,10 @@ function assertCredentialsDropped(r: ImportResult, names: string[]) {
   assert.deepEqual(Object.keys(r.input.auth ?? {}).sort(), ['header', 'valueEnv']);
   assert.equal(r.input.auth?.valueEnv, 'CUSTOM_API_AUTH');
   for (const e of r.input.endpoints) {
-    for (const key of Object.keys(e)) assert.ok(['id', 'method', 'path', 'requiresAuth', 'body', 'setup'].includes(key), `${e.id}: unexpected field ${key}`);
+    for (const key of Object.keys(e)) assert.ok(['id', 'method', 'path', 'requiresAuth', 'body', 'setup', 'query', 'headers'].includes(key), `${e.id}: unexpected field ${key}`);
+    // Imported per-endpoint headers and query parameters never carry a credential name.
+    for (const name of Object.keys(e.headers ?? {})) assert.ok(!/auth|token|key|secret|session|cookie/i.test(name), `${e.id}: credential header ${name} kept`);
+    for (const name of Object.keys(e.query ?? {})) assert.ok(!/auth|token|key|secret|session/i.test(name), `${e.id}: credential query parameter ${name} kept`);
   }
   assert.ok(r.warnings.includes(`${CREDENTIALS_DROPPED} ${names.join(', ')}.`), `no warning naming ${names.join(', ')}: ${r.warnings.join(' | ')}`);
 }
@@ -195,10 +200,11 @@ async function main() {
     );
     const w = r.warnings.join('\n');
     assert.ok(r.warnings.includes(AUTH_REMOVED));
-    assert.match(w, /get-reviews-reviewid needs setup: .*no POST \/reviews/);
+    assert.match(w, /get-reviews-reviewid needs setup for \{reviewId\}: .*no POST \/reviews/);
     assert.match(w, /Setup added: delete-products-id, put-products-id .* post-products .*idField/);
     assert.match(w, /more than one name \(X-API-Key, query parameter api_key, Cookie\)\. Kept X-API-Key/);
-    assert.match(w, /Headers not imported .*: X-Tenant-Id\./);
+    assert.match(w, /Endpoint headers imported .*: X-Tenant-Id\./);
+    assert.deepEqual(r.input.endpoints.find((e) => e.headers)?.headers, { 'X-Tenant-Id': 'acme' });
     assert.ok(!w.includes('X-Debug'), 'a disabled header was reported');
     assertNoSecret('import result', JSON.stringify(r));
   });
@@ -261,7 +267,7 @@ async function main() {
     assert.deepEqual(r.input.auth, { header: 'Authorization', valueEnv: 'CUSTOM_API_AUTH' });
     const w = r.warnings.join('\n');
     assert.match(w, /more than one name \(Authorization, Cookie, query parameter access_token\)\. Kept Authorization/);
-    assert.match(w, /Headers not imported .*: X-Request-Id\./);
+    assert.match(w, /Endpoint headers imported .*: X-Request-Id\./);
     assert.match(w, /curl options ignored: --frobnicate\./);
     assertNoSecret('import result', JSON.stringify(r));
   });
@@ -302,7 +308,7 @@ async function main() {
     assert.ok(!r.warnings.includes(AUTH_REMOVED), 'nothing was removed, the spec has no values');
     assert.match(w, /Sample body built from the schema .* for: createPet\./);
     assert.match(w, /query parameter api_key, but the agent sends auth as a header/);
-    assert.match(w, /Headers not imported .*: X-Request-Id\./);
+    assert.match(w, /Endpoint headers imported .*: X-Request-Id\./);
   });
 
   await check('OpenAPI 3.1: relative server means empty baseUrl and a warning', () => {
@@ -383,7 +389,7 @@ async function main() {
     assert.deepEqual(r.input.auth, { header: 'Authorization', valueEnv: 'CUSTOM_API_AUTH' });
     const w = r.warnings.join('\n');
     assert.match(w, /Grouped 10 API requests into 8 endpoints\./);
-    assert.match(w, /Query parameters not kept .*: GET \/products \(page\)\./);
+    assert.match(w, /Query parameters kept from one request per endpoint .*: GET \/products \(page\)\./);
     assert.match(w, /replaced with <removed>: POST \/session \(password\)/);
     assert.match(w, /Browsers send cookies with every request/);
     assertNoSecret('import result', JSON.stringify(r));
@@ -466,6 +472,81 @@ async function main() {
     assert.equal(res.stdout, '');
     assert.match(res.stderr, /import FAILED No endpoints found in the text/);
     assert.match(res.stderr, /\[claude\] import-text text .*\(import call 1\/2, not counted in the run budget\)/);
+  });
+
+  console.log('Query parameters and endpoint headers (Phase 4)');
+  await check('OpenAPI: required query always, optional only with an example or default; path keeps no query string', () => {
+    const spec = {
+      openapi: '3.0.0',
+      info: { title: 'q', version: '1' },
+      servers: [{ url: 'http://localhost:4000' }],
+      paths: {
+        '/products': {
+          get: {
+            parameters: [
+              { name: 'category', in: 'query', required: true, schema: { type: 'string', example: 'tops' } },
+              { name: 'limit', in: 'query', schema: { type: 'integer', default: 5 } },
+              { name: 'sort', in: 'query', schema: { type: 'string' } },
+              { name: 'api_key', in: 'query', schema: { type: 'string', example: SECRET } },
+              { name: 'X-Request-Source', in: 'header', schema: { type: 'string', example: 'docs' } },
+            ],
+            responses: { '200': { description: 'ok' } },
+          },
+        },
+      },
+    };
+    const r = importOpenApi(JSON.stringify(spec));
+    const ep = r.input.endpoints[0];
+    assert.equal(ep.path, '/products');
+    assert.deepEqual(ep.query, { category: 'tops', limit: '5' });
+    assert.deepEqual(ep.headers, { 'X-Request-Source': 'docs' });
+    assert.equal(ep.requiresAuth, true);
+    assertNoSecret('openapi query import', JSON.stringify(r));
+  });
+  await check('Postman: URL query becomes the query object, credential parameters dropped', () => {
+    const r = importPostman(fixture('edge-cases.postman.json'));
+    const shoes = r.input.endpoints.find((e) => e.id === 'get-products-2')!;
+    assert.deepEqual(shoes.query, { category: 'shoes' });
+    const page = r.input.endpoints.find((e) => e.id === 'get-products-3')!;
+    assert.deepEqual(page.query, { page: '2' });
+    assert.ok(!r.input.endpoints.some((e) => e.path.includes('?')), 'no path keeps a query string');
+  });
+  await check('cURL: ?a=b becomes the query object with decoded values', () => {
+    const r = importCurl(fixture('edge-cases.curl.txt'));
+    const q = r.input.endpoints.find((e) => e.id === 'get-products-3')!;
+    assert.deepEqual(q.query, { q: 'trail shoe' });
+    assert.equal(q.path, '/products');
+  });
+  await check('HAR: the query string becomes the query object', () => {
+    const har = {
+      log: {
+        entries: [
+          {
+            request: { method: 'GET', url: 'http://localhost:4000/products?category=tops&limit=5&token=' + SECRET, headers: [{ name: 'X-Request-Source', value: 'browser' }], queryString: [] },
+            response: { status: 200, content: { mimeType: 'application/json', text: '[]' } },
+          },
+        ],
+      },
+    };
+    const r = importHar(JSON.stringify(har));
+    const ep = r.input.endpoints[0];
+    assert.equal(ep.path, '/products');
+    assert.deepEqual(ep.query, { category: 'tops', limit: '5' });
+    assert.deepEqual(ep.headers, { 'X-Request-Source': 'browser' });
+    assertNoSecret('har query import', JSON.stringify(r));
+  });
+  await check('nested paths get one setup step per placeholder, in order', () => {
+    const curl = [
+      "curl -X POST http://localhost:4000/products -H 'Content-Type: application/json' -d '{\"name\":\"x\"}'",
+      "curl -X POST http://localhost:4000/products/{id}/reviews -H 'Content-Type: application/json' -d '{\"rating\":5}'",
+      'curl http://localhost:4000/products/{id}/reviews/{reviewId}',
+    ].join('\n');
+    const r = importCurl(curl);
+    const nested = r.input.endpoints.find((e) => e.path === '/products/{id}/reviews/{reviewId}')!;
+    assert.deepEqual(setupSteps(nested).map((s) => `${s.endpointId}->${s.param}`), ['post-products->id', 'post-products-id-reviews->reviewId']);
+    const review = r.input.endpoints.find((e) => e.path === '/products/{id}/reviews' && e.method === 'POST')!;
+    assert.deepEqual(review.setup, { endpointId: 'post-products', idField: 'id' });
+    assert.deepEqual(configProblems(r.input), []);
   });
 
   console.log('CLI (agent/import.ts)');

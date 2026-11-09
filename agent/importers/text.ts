@@ -21,7 +21,7 @@ const REMOVED = '<removed>';
 // optional defaultHeaders, empty baseUrl allowed, and an empty endpoint list meaning "none found".
 const AnswerSchema = ConfigSchema.extend({
   name: z.string().optional(),
-  baseUrl: z.union([z.literal(''), ConfigSchema.shape.baseUrl]),
+  baseUrl: z.union([z.literal(''), z.url()]),
   defaultHeaders: ConfigSchema.shape.defaultHeaders.optional(),
   endpoints: z.array(ConfigSchema.shape.endpoints.element),
 });

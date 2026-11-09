@@ -10,4 +10,6 @@ playwright-report/
 .tscheck/
 frameworks/*
 !frameworks/.gitkeep
+profiles/local/*
+!profiles/local/.gitkeep
 .DS_Store

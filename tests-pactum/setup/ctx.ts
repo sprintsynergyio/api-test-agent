@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import pactum from 'pactum';
 import { assessSafety, endpointAllowed, ProductionRefused, READ_METHODS, ReadOnlyBlocked, refusalMessage, type Safety } from '../../agent/safety';
+import { applyProfile, queryString, resolvePath, setupSteps, type Profile, type Query, type Selection, type Setup } from '../../agent/model';
 
 // The Pactum equivalent of tests/fixtures/ctx.ts: the ONLY Pactum test-side file that reads process.env
 // or the input file. Tests import { ctx, expect, recordStatus } from here and nothing from pactum.
@@ -18,11 +19,11 @@ const STATUS_FILE = join(REPORT_DIR, 'status.json');
 const EVIDENCE_DIR = join(REPORT_DIR, 'evidence');
 const MAX_BODY_CHARS = 5 * 1024;
 const REDACTED = '<redacted>';
-const PATH_PARAM = /\{[^}]+\}/;
-
 export type Config = {
   name?: string;
   baseUrl: string;
+  profile?: Profile;
+  selection: Selection | null;
   defaultHeaders: Record<string, string>;
   auth?: { header: string; valueEnv: string };
   allowProduction?: boolean;
@@ -33,10 +34,13 @@ export type Config = {
     path: string;
     requiresAuth: boolean;
     body?: Record<string, unknown>;
-    setup?: { endpointId: string; idField: string };
+    query?: Query;
+    headers?: Record<string, string>;
+    setup?: Setup | Setup[];
   }[];
 };
 
+// With a profile, AGENT_SELECT (env=staging,brand=alpha,...) picks the base URL and headers.
 function loadConfig(file: string): Config {
   let raw: unknown;
   try {
@@ -44,11 +48,15 @@ function loadConfig(file: string): Config {
   } catch (err) {
     throw new Error(`Cannot read input file ${file}: ${(err as Error).message}`);
   }
-  const c = raw as Config;
-  if (!c || typeof c !== 'object' || typeof c.baseUrl !== 'string' || !Array.isArray(c.endpoints) || !c.endpoints.length) {
-    throw new Error(`Invalid input file ${file}: needs baseUrl and a non-empty endpoints array`);
+  const c = raw as Omit<Config, 'baseUrl' | 'selection'> & { baseUrl?: string };
+  if (!c || typeof c !== 'object' || (typeof c.baseUrl !== 'string' && !c.profile) || !Array.isArray(c.endpoints) || !c.endpoints.length) {
+    throw new Error(`Invalid input file ${file}: needs baseUrl (or a profile) and a non-empty endpoints array`);
   }
-  return { ...c, defaultHeaders: c.defaultHeaders ?? {} };
+  try {
+    return applyProfile({ ...c, defaultHeaders: c.defaultHeaders ?? {} }, process.env.AGENT_SELECT) as Config;
+  } catch (err) {
+    throw new Error(`Invalid input file ${file}: ${(err as Error).message}`);
+  }
 }
 
 const config = loadConfig(INPUT_FILE);
@@ -73,13 +81,16 @@ export type ApiResponse = {
   json(): Promise<unknown>;
 };
 
+// params: query parameters, headers: extra request headers (same option names as Playwright's request API).
+export type RequestOptions = { params?: Query; headers?: Record<string, string> };
+
 export type Client = {
-  get(path: string): Promise<ApiResponse>;
-  delete(path: string): Promise<ApiResponse>;
-  post(path: string, body?: unknown): Promise<ApiResponse>;
-  put(path: string, body?: unknown): Promise<ApiResponse>;
-  patch(path: string, body?: unknown): Promise<ApiResponse>;
-  fetch(path: string, options?: { method?: string; data?: unknown }): Promise<ApiResponse>;
+  get(path: string, options?: RequestOptions): Promise<ApiResponse>;
+  delete(path: string, options?: RequestOptions): Promise<ApiResponse>;
+  post(path: string, body?: unknown, options?: RequestOptions): Promise<ApiResponse>;
+  put(path: string, body?: unknown, options?: RequestOptions): Promise<ApiResponse>;
+  patch(path: string, body?: unknown, options?: RequestOptions): Promise<ApiResponse>;
+  fetch(path: string, options?: RequestOptions & { method?: string; data?: unknown }): Promise<ApiResponse>;
 };
 
 export type Ctx = {
@@ -87,6 +98,9 @@ export type Ctx = {
   api: Client;
   noAuthApi: Client;
   createResource: (endpointId: string) => Promise<string>;
+  // Runs this spec's endpoint setup steps in order and returns every path placeholder value, for
+  // example { id: '4', reviewId: '7' } for /products/{id}/reviews/{reviewId}.
+  setup: () => Promise<Record<string, string>>;
 };
 
 const counter = { sent: 0 };
@@ -127,25 +141,26 @@ function writeEvidence(method: string, path: string, headers: Record<string, str
 
 // The one guarded request path. Blocks writes in read-only mode before anything is sent, counts what is
 // sent, and wraps Pactum's response.
-async function send(method: string, path: string, body: unknown, withAuth: boolean): Promise<ApiResponse> {
+async function send(method: string, path: string, body: unknown, withAuth: boolean, options: RequestOptions = {}): Promise<ApiResponse> {
   const m = method.toUpperCase();
-  if (safety.mode !== 'full' && !READ_METHODS.has(m)) throw new ReadOnlyBlocked(m, path);
-  const headers: Record<string, string> = { ...config.defaultHeaders };
+  const fullPath = path + queryString(options.params);
+  if (safety.mode !== 'full' && !READ_METHODS.has(m)) throw new ReadOnlyBlocked(m, fullPath);
+  const headers: Record<string, string> = { ...config.defaultHeaders, ...(options.headers ?? {}) };
   if (withAuth && config.auth && authValue) headers[config.auth.header] = authValue;
   counter.sent++;
 
-  let s = pactum.spec().withMethod(m).withPath(config.baseUrl + path).withHeaders(headers);
+  let s = pactum.spec().withMethod(m).withPath(config.baseUrl + fullPath).withHeaders(headers);
   if (body !== undefined) s = s.withJson(body as Record<string, unknown>);
   let res: PactumResponse;
   try {
     res = (await s.toss()) as unknown as PactumResponse;
   } catch (err) {
     const message = String((err as Error)?.message ?? err).split('\n')[0];
-    writeEvidence(m, path, headers, body, null, '', message);
-    throw new Error(`request ${m} ${path} failed: ${message}`);
+    writeEvidence(m, fullPath, headers, body, null, '', message);
+    throw new Error(`request ${m} ${fullPath} failed: ${message}`);
   }
   const text = typeof res.text === 'string' ? res.text : res.body === undefined || res.body === '' ? '' : JSON.stringify(res.body);
-  writeEvidence(m, path, headers, body, res.statusCode, text);
+  writeEvidence(m, fullPath, headers, body, res.statusCode, text);
   return {
     status: () => res.statusCode,
     ok: () => res.statusCode >= 200 && res.statusCode < 300,
@@ -157,12 +172,12 @@ async function send(method: string, path: string, body: unknown, withAuth: boole
 
 function client(withAuth: boolean): Client {
   return {
-    get: (path) => send('GET', path, undefined, withAuth),
-    delete: (path) => send('DELETE', path, undefined, withAuth),
-    post: (path, body) => send('POST', path, body, withAuth),
-    put: (path, body) => send('PUT', path, body, withAuth),
-    patch: (path, body) => send('PATCH', path, body, withAuth),
-    fetch: (path, options = {}) => send(options.method ?? 'GET', path, options.data, withAuth),
+    get: (path, options) => send('GET', path, undefined, withAuth, options),
+    delete: (path, options) => send('DELETE', path, undefined, withAuth, options),
+    post: (path, body, options) => send('POST', path, body, withAuth, options),
+    put: (path, body, options) => send('PUT', path, body, withAuth, options),
+    patch: (path, body, options) => send('PATCH', path, body, withAuth, options),
+    fetch: (path, options = {}) => send(options.method ?? 'GET', path, options.data, withAuth, options),
   };
 }
 
@@ -170,14 +185,30 @@ const api = client(true);
 // Without an auth section, api and noAuthApi are the same.
 const noAuthApi = config.auth ? client(false) : api;
 
-// Calls endpointId with its sample body and returns the id read from the idField declared by the first
-// endpoint whose setup references it. Goes through send(), so the guard covers it.
-async function createResource(endpointId: string): Promise<string> {
+// The idField for a setup endpoint: declared by the first setup step anywhere that references it.
+function declaredIdField(endpointId: string): string | undefined {
+  for (const e of config.endpoints) {
+    const step = setupSteps(e).find((st) => st.endpointId === endpointId);
+    if (step) return step.idField;
+  }
+  return undefined;
+}
+
+// Calls endpointId with its sample body, query and headers and returns the id read from idField. params
+// fills placeholders in the setup endpoint's own path; the rest come from its own setup. Goes through
+// send(), so the guard covers it.
+async function createResource(endpointId: string, idField?: string, params: Record<string, string> = {}): Promise<string> {
   const endpoint = config.endpoints.find((e) => e.id === endpointId);
   if (!endpoint) throw new Error(`createResource: unknown endpoint "${endpointId}"`);
-  const field = config.endpoints.find((e) => e.setup?.endpointId === endpointId)?.setup?.idField;
+  const field = idField ?? declaredIdField(endpointId);
   if (!field) throw new Error(`createResource: no endpoint uses "${endpointId}" as setup, so idField is unknown`);
-  const response = await (endpoint.requiresAuth ? api : noAuthApi).fetch(endpoint.path, { method: endpoint.method, data: endpoint.body });
+  const own = await runSetup(endpoint, params);
+  const response = await (endpoint.requiresAuth ? api : noAuthApi).fetch(resolvePath(endpoint.path, own), {
+    method: endpoint.method,
+    data: endpoint.body,
+    params: endpoint.query,
+    headers: endpoint.headers,
+  });
   const text = await response.text();
   if (!response.ok()) throw new Error(`createResource(${endpointId}) failed: status ${response.status()}, body: ${text}`);
   let id: unknown;
@@ -192,7 +223,23 @@ async function createResource(endpointId: string): Promise<string> {
   return String(id);
 }
 
-export const ctx: Ctx = { baseUrl: config.baseUrl, api, noAuthApi, createResource };
+// Runs an endpoint's setup steps in order; each step sees the values collected so far.
+async function runSetup(endpoint: Config['endpoints'][number], known: Record<string, string> = {}): Promise<Record<string, string>> {
+  const params = { ...known };
+  for (const step of setupSteps(endpoint)) {
+    if (step.param! in params) continue;
+    params[step.param!] = await createResource(step.endpointId, step.idField, params);
+  }
+  return params;
+}
+
+async function setup(): Promise<Record<string, string>> {
+  const endpoint = current ? config.endpoints.find((e) => `${e.id}.spec.ts` === current!.file) : undefined;
+  if (!endpoint) throw new Error('ctx.setup: no endpoint in the input is named after this spec file');
+  return runSetup(endpoint);
+}
+
+export const ctx: Ctx = { baseUrl: config.baseUrl, api, noAuthApi, createResource: (endpointId) => createResource(endpointId), setup };
 
 // Records the real status of the request under test. Call it before the first expect, like the
 // actual-status annotation in the Playwright tests. The finding rules only trust tests that record it.
@@ -323,4 +370,4 @@ export const mochaHooks = {
   },
 };
 
-export { safety, PATH_PARAM };
+export { safety };

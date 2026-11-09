@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { test as base, expect, type APIRequestContext } from '@playwright/test';
 import { labels } from 'allure-js-commons';
 import { apiName, loadConfig } from '../../agent/config';
-import { createClients, createResource, disposeClients, formatExchange, recordClients, reportLabels } from '../../agent/http';
+import { createClients, createResource, disposeClients, formatExchange, recordClients, reportLabels, runSetup } from '../../agent/http';
 import { endpointAllowed, READ_ONLY_SKIP } from '../../agent/safety';
 
 export type Ctx = {
@@ -10,6 +10,9 @@ export type Ctx = {
   api: APIRequestContext;
   noAuthApi: APIRequestContext;
   createResource: (endpointId: string) => Promise<string>;
+  // Runs this spec's endpoint setup steps in order and returns every path placeholder value, for
+  // example { id: '4', reviewId: '7' } for /products/{id}/reviews/{reviewId}.
+  setup: () => Promise<Record<string, string>>;
 };
 
 const inputFile = process.env.INPUT_FILE || 'input/endpoints.json';
@@ -49,6 +52,10 @@ export const test = base.extend<{ ctx: Ctx }>({
       api: recordedClients.api,
       noAuthApi: recordedClients.noAuthApi,
       createResource: (endpointId) => createResource(config, recordedClients, endpointId),
+      setup: async () => {
+        if (!endpoint) throw new Error(`ctx.setup: no endpoint in ${inputFile} is named after this spec file`);
+        return runSetup(config, recordedClients, endpoint);
+      },
     });
 
     // The agent adds these up into requestsSent in out/summary.json.

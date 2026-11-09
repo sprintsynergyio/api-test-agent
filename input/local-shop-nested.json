@@ -1,0 +1,64 @@
+{
+  "name": "local-shop-nested",
+  "baseUrl": "http://localhost:4000",
+  "defaultHeaders": {
+    "Accept": "application/json",
+    "Content-Type": "application/json"
+  },
+  "auth": {
+    "header": "Authorization",
+    "valueEnv": "LOCAL_API_AUTH_VALUE"
+  },
+  "endpoints": [
+    {
+      "id": "list-products-filtered",
+      "method": "GET",
+      "path": "/products",
+      "requiresAuth": false,
+      "query": { "category": "tops", "limit": 5 },
+      "headers": { "X-Request-Source": "api-test-agent" }
+    },
+    {
+      "id": "create-product",
+      "method": "POST",
+      "path": "/products",
+      "requiresAuth": true,
+      "body": { "name": "Trail Runner Shoe", "price": 89.99, "category": "shoes", "inStock": true }
+    },
+    {
+      "id": "create-review",
+      "method": "POST",
+      "path": "/products/{id}/reviews",
+      "requiresAuth": true,
+      "body": { "rating": 5, "text": "Light and comfortable" },
+      "setup": { "endpointId": "create-product", "idField": "id" }
+    },
+    {
+      "id": "list-reviews",
+      "method": "GET",
+      "path": "/products/{id}/reviews",
+      "requiresAuth": false,
+      "setup": { "endpointId": "create-product", "idField": "id" }
+    },
+    {
+      "id": "get-review",
+      "method": "GET",
+      "path": "/products/{id}/reviews/{reviewId}",
+      "requiresAuth": false,
+      "setup": [
+        { "endpointId": "create-product", "idField": "id", "param": "id" },
+        { "endpointId": "create-review", "idField": "id", "param": "reviewId" }
+      ]
+    },
+    {
+      "id": "delete-review",
+      "method": "DELETE",
+      "path": "/products/{id}/reviews/{reviewId}",
+      "requiresAuth": true,
+      "setup": [
+        { "endpointId": "create-product", "idField": "id", "param": "id" },
+        { "endpointId": "create-review", "idField": "id", "param": "reviewId" }
+      ]
+    }
+  ]
+}
