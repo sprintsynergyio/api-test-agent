@@ -1,6 +1,7 @@
 node_modules/
 .env
 out/
+eval-results/
 reports/
 test-results/
 generated/

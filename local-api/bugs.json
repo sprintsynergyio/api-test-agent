@@ -1,0 +1,47 @@
+{
+  "default": ["price-text-500", "delete-no-auth"],
+  "bugs": [
+    {
+      "id": "price-text-500",
+      "description": "POST /products with a non-number price returns 500 (correct: 400)",
+      "endpointId": "create-product",
+      "detectableBy": "invalid-input"
+    },
+    {
+      "id": "delete-no-auth",
+      "description": "DELETE /products/:id does not check the auth token (correct: 401)",
+      "endpointId": "delete-product",
+      "detectableBy": "auth"
+    },
+    {
+      "id": "update-no-auth",
+      "description": "PUT /products/:id does not check the auth token (correct: 401)",
+      "endpointId": "update-product",
+      "detectableBy": "auth"
+    },
+    {
+      "id": "create-accepts-missing-name",
+      "description": "POST /products without a name returns 201 (correct: 400)",
+      "endpointId": "create-product",
+      "detectableBy": "invalid-input"
+    },
+    {
+      "id": "get-bad-id-500",
+      "description": "GET /products/<not a number> returns 500 (correct: 400)",
+      "endpointId": "get-product",
+      "detectableBy": "invalid-input"
+    },
+    {
+      "id": "update-not-persisted",
+      "description": "PUT /products/:id returns 200 with the new values but does not save them (correct: a later GET returns the new values). Needs a [flow] test, not built yet",
+      "endpointId": "update-product",
+      "detectableBy": "none-yet"
+    },
+    {
+      "id": "list-wrong-type",
+      "description": "GET /products returns an object { items: [...] } instead of an array (correct: an array). The probe records the broken shape as normal, so today's [schema] tests cannot see it; needs a spec-driven [contract] test",
+      "endpointId": "list-products",
+      "detectableBy": "none-yet"
+    }
+  ]
+}
