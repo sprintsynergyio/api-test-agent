@@ -4,12 +4,148 @@ import { join } from 'node:path';
 
 // Static gate for a generated spec. No Claude call. Returns every reason, not just the first.
 
-const TAGS = ['[happy]', '[schema]', '[invalid-input]', '[auth]'];
+const TYPES = ['happy', 'schema', 'invalid-input', 'auth'] as const;
+type CaseType = (typeof TYPES)[number];
+const TAGS = TYPES.map((t) => `[${t}]`);
 // Generated specs live in generated/, one level below the root. tsc resolves imports relative
 // to the file, so the candidate is typechecked from a sibling folder at the same depth.
 const TSCHECK_DIR = '.tscheck';
 
 export type ValidationResult = { ok: boolean; reasons: string[] };
+
+export type ValidateOptions = {
+  name: string;
+  // The plan's case types, one entry per case. The file needs at least this many tests of each type.
+  planTypes: string[];
+  // The probe status. happy and schema tests must assert exactly this status.
+  probeStatus: number | null;
+};
+
+function matchingParen(code: string, open: number): number {
+  let depth = 0;
+  for (let i = open; i < code.length; i++) {
+    if (code[i] === '(') depth++;
+    else if (code[i] === ')' && --depth === 0) return i;
+  }
+  return code.length;
+}
+
+type ExpectCall = { arg: string; not: boolean; matcher: string; value: string; text: string };
+
+// Every expect(...) call with its first matcher, e.g. expect(a).not.toBe(b) gives arg "a", not true,
+// matcher "toBe", value "b". An expect without a matcher gets matcher "".
+function expectCalls(body: string): ExpectCall[] {
+  const calls: ExpectCall[] = [];
+  for (const m of body.matchAll(/\bexpect(?:\.soft)?\s*\(/g)) {
+    const open = m.index! + m[0].length - 1;
+    const close = matchingParen(body, open);
+    const arg = body.slice(open + 1, close).trim();
+    const rest = body.slice(close + 1);
+    const mm = rest.match(/^\s*(\.\s*not\s*)?\.\s*(\w+)\s*\(/);
+    if (!mm) {
+      calls.push({ arg, not: false, matcher: '', value: '', text: body.slice(m.index!, close + 1) });
+      continue;
+    }
+    const mOpen = close + 1 + mm[0].length - 1;
+    const mClose = matchingParen(body, mOpen);
+    calls.push({
+      arg,
+      not: Boolean(mm[1]),
+      matcher: mm[2],
+      value: body.slice(mOpen + 1, mClose).trim(),
+      text: body.slice(m.index!, mClose + 1).replace(/\s+/g, ' '),
+    });
+  }
+  return calls;
+}
+
+// Names of variables that hold a response status, e.g. const status = response.status();
+function statusVariables(code: string): string[] {
+  return [...code.matchAll(/\b(?:const|let|var)\s+(\w+)\s*=\s*[\w.]+\.status\(\)/g)].map((m) => m[1]);
+}
+
+function isStatusExpr(expr: string, statusVars: string[]): boolean {
+  const e = expr.trim();
+  return /^[\w.]+\.status\(\)$/.test(e) || statusVars.includes(e);
+}
+
+type StatusAssertion =
+  | { kind: 'exact'; code: number }
+  | { kind: 'min'; code: number }
+  | { kind: 'max'; code: number }
+  | { kind: 'oneOf'; codes: number[] }
+  | { kind: 'other' };
+
+// null: not a status assertion. Otherwise the form it has; anything unusual is "other".
+function statusAssertion(call: ExpectCall, statusVars: string[]): StatusAssertion | null {
+  const list = call.arg.match(/^\[([\d\s,]*)\]$/);
+  if (list && call.matcher === 'toContain' && isStatusExpr(call.value, statusVars)) {
+    const codes = list[1].split(',').map((n) => n.trim()).filter(Boolean).map(Number);
+    return call.not ? { kind: 'other' } : { kind: 'oneOf', codes };
+  }
+  if (!isStatusExpr(call.arg, statusVars)) return null;
+  const num = /^\d{3}$/.test(call.value) ? Number(call.value) : null;
+  if (call.not || num === null) return { kind: 'other' };
+  if (['toBe', 'toEqual', 'toStrictEqual'].includes(call.matcher)) return { kind: 'exact', code: num };
+  if (call.matcher === 'toBeGreaterThanOrEqual') return { kind: 'min', code: num };
+  if (call.matcher === 'toBeLessThanOrEqual') return { kind: 'max', code: num };
+  if (call.matcher === 'toBeLessThan') return { kind: 'max', code: num - 1 };
+  return { kind: 'other' };
+}
+
+// Per test type, the only status assertions allowed and the ones that must be there.
+// A test that checks something weaker, or the wrong thing, would pass against a broken API.
+function checkTypeRules(type: CaseType, title: string, body: string, code: string, probeStatus: number | null, reasons: string[]) {
+  const statusVars = statusVariables(code);
+  const found = expectCalls(body)
+    .map((call) => ({ call, a: statusAssertion(call, statusVars) }))
+    .filter((x): x is { call: ExpectCall; a: StatusAssertion } => x.a !== null);
+  const bad = (call: ExpectCall, why: string) => reasons.push(`[${type}] test "${title}": ${why}: ${call.text.slice(0, 120)}`);
+
+  if (type === 'happy' || type === 'schema') {
+    if (probeStatus === null) {
+      reasons.push(`[${type}] test "${title}": the probe status is unknown, so the expected status cannot be checked`);
+      return;
+    }
+    for (const { call, a } of found) {
+      if (a.kind !== 'exact' || a.code !== probeStatus) bad(call, `status assertion must be exactly toBe(${probeStatus}), the probe status`);
+    }
+    if (!found.some(({ a }) => a.kind === 'exact' && a.code === probeStatus)) {
+      reasons.push(`[${type}] test "${title}": must assert expect(response.status()).toBe(${probeStatus})`);
+    }
+  }
+
+  if (type === 'invalid-input') {
+    for (const { call, a } of found) {
+      const ok = (a.kind === 'min' && a.code === 400) || (a.kind === 'max' && a.code === 499);
+      if (!ok) bad(call, 'status assertion must be toBeGreaterThanOrEqual(400) or toBeLessThanOrEqual(499)');
+    }
+    const hasMin = found.some(({ a }) => a.kind === 'min' && a.code === 400);
+    const hasMax = found.some(({ a }) => a.kind === 'max' && a.code === 499);
+    if (!hasMin || !hasMax) {
+      reasons.push(`[${type}] test "${title}": must assert the status is between 400 and 499 (toBeGreaterThanOrEqual(400) and toBeLessThanOrEqual(499))`);
+    }
+  }
+
+  if (type === 'auth') {
+    const isAuthStatus = (a: StatusAssertion) =>
+      (a.kind === 'oneOf' && a.codes.length > 0 && a.codes.every((c) => c === 401 || c === 403)) ||
+      (a.kind === 'exact' && (a.code === 401 || a.code === 403));
+    for (const { call, a } of found) {
+      if (!isAuthStatus(a)) bad(call, 'status assertion must be expect([401, 403]).toContain(response.status())');
+    }
+    if (!found.some(({ a }) => isAuthStatus(a))) {
+      reasons.push(`[${type}] test "${title}": must assert expect([401, 403]).toContain(response.status())`);
+    }
+    // The request under test must go without the auth header.
+    if (/\bctx\s*\.\s*api\b/.test(body) || /\{[^}]*\bapi\b[^}]*\}\s*=\s*ctx\b/.test(body) || /\bctx\s*:\s*\{[^}]*\bapi\b/.test(body)) {
+      reasons.push(`[${type}] test "${title}": uses ctx.api, which sends the auth header; auth tests use ctx.noAuthApi only`);
+    }
+    if (!/\bctx\s*\.\s*noAuthApi\b/.test(body)) {
+      reasons.push(`[${type}] test "${title}": does not send its request with ctx.noAuthApi`);
+    }
+  }
+}
 
 function matchingBrace(code: string, open: number): number {
   let depth = 0;
@@ -97,7 +233,7 @@ function typecheck(code: string, name: string): string | null {
   }
 }
 
-export function validateSpec(code: string, opts: { planCaseCount: number; name: string }): ValidationResult {
+export function validateSpec(code: string, opts: ValidateOptions): ValidationResult {
   const reasons: string[] = [];
 
   const imp = code.match(/import\s*\{([^}]*)\}\s*from\s*['"](?:\.\.?\/)+(?:tests\/)?fixtures\/ctx(?:\.ts)?['"]/);
@@ -114,9 +250,15 @@ export function validateSpec(code: string, opts: { planCaseCount: number; name: 
 
   const tests = findTests(code);
   const helpers = annotationHelpers(code);
+  const testsPerType = new Map<string, number>();
   tests.forEach((t, i) => {
-    if (!TAGS.some((tag) => t.title.startsWith(tag))) reasons.push(`test title does not start with a type tag: "${t.title}"`);
+    const type = TYPES.find((ty) => t.title.startsWith(`[${ty}]`));
+    if (!type) reasons.push(`test title does not start with a type tag: "${t.title}"`);
     const body = code.slice(t.start, i + 1 < tests.length ? tests[i + 1].start : code.length);
+    if (type) {
+      testsPerType.set(type, (testsPerType.get(type) ?? 0) + 1);
+      checkTypeRules(type, t.title, body, code, opts.probeStatus, reasons);
+    }
     const annotationAt = Math.min(
       ...[body.indexOf('actual-status'), ...helpers.map((h) => body.search(new RegExp(`\\b${h}\\s*\\(`)))].filter((n) => n >= 0),
     );
@@ -127,8 +269,14 @@ export function validateSpec(code: string, opts: { planCaseCount: number; name: 
     }
   });
   checkStatusExpectations(code, reasons);
-  if (tests.length < opts.planCaseCount) {
-    reasons.push(`has ${tests.length} tests but the plan has ${opts.planCaseCount} cases`);
+  if (tests.length < opts.planTypes.length) {
+    reasons.push(`has ${tests.length} tests but the plan has ${opts.planTypes.length} cases`);
+  }
+  // Each plan case type needs its own tests: four [happy] tests do not replace an [auth] test.
+  for (const type of TYPES) {
+    const planned = opts.planTypes.filter((t) => t === type).length;
+    const written = testsPerType.get(type) ?? 0;
+    if (written < planned) reasons.push(`the plan has ${planned} [${type}] case(s) but the file has ${written} [${type}] test(s)`);
   }
 
   const tsErrors = typecheck(code, opts.name);

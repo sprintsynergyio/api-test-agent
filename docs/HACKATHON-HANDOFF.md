@@ -45,7 +45,7 @@ You are my engineering lead for this hackathon project. I run Claude Code on my 
 | Public API | Restful Booker | Proof on a real API. Not run live: shared server that resets its data |
 | Test types | happy, schema, invalid-input, auth | Baseline coverage that fits the build time |
 | Test runs | workers 1 | Generated tests share one live API; parallel runs made results flaky |
-| Git | Branch `main` on `sprintsynergyhq/api-test-agent`, commit after every verified change, push to `origin main`, never force push, no PRs | Rollback points without review overhead |
+| Git | Branch `main` on `sprintsynergyio/api-test-agent`, commit after every verified change, push to `origin main`, never force push, no PRs | Rollback points without review overhead |
 
 ---
 
@@ -128,7 +128,7 @@ One retry with the reasons, then the endpoint is reported as failed. No file is 
 
 ## 4. Project layout
 
-The project lives at `~/Projects/api-test-agent` on the Mac (repo `sprintsynergyhq/api-test-agent`; the local folder name may differ).
+The project lives at `~/Projects/api-test-agent` on the Mac (repo `sprintsynergyio/api-test-agent`; the local folder name may differ).
 
 ```
 api-test-agent/
@@ -278,7 +278,7 @@ Expected: `nothing to commit, working tree clean` and `Everything up-to-date` (o
 On the second laptop:
 ```
 mkdir -p ~/Projects && cd ~/Projects
-git clone https://github.com/sprintsynergyhq/api-test-agent.git
+git clone https://github.com/sprintsynergyio/api-test-agent.git
 cd api-test-agent
 npm install
 ```
