@@ -262,7 +262,8 @@ export function exportPactumFramework(opts: {
   findings: ExportFinding[];
 }): FrameworkInfo {
   const { config, inputFile, authValue, endpoints, findings } = opts;
-  const name = `${apiName(config, inputFile)}-pactum`;
+  const base = apiName(config, inputFile);
+  const name = base.endsWith('-pactum') ? base : `${base}-pactum`;
   const dir = join(FRAMEWORKS_DIR, name);
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(join(dir, 'tests'), { recursive: true });

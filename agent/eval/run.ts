@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { findingKey, loadCatalog, scoreRun, type BugCatalog, type Score, type Summary } from './score';
@@ -220,6 +220,8 @@ async function main() {
       for (let run = 1; run <= args.runs; run++) {
         const label = `${set.label} run ${run}/${args.runs}`;
         console.log(`=== ${label} ===`);
+        // Never score a summary left over from an earlier run if this one dies before writing its own.
+        rmSync(SUMMARY_FILE, { force: true });
         const exitCode = await runAgent(inputFile, join(setDir, `run-${run}.log`));
         const record: RunRecord = { set: set.label, run, exitCode, score: null, key: null };
         if (!existsSync(SUMMARY_FILE)) {
