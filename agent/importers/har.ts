@@ -127,10 +127,13 @@ export function importHar(content: string): ImportResult {
     } else if (postData?.text?.trim()) body = { text: postData.text, contentType: postData.mimeType };
     else if (postData?.params?.length) body = { unsupported: postData.mimeType || 'form data' };
 
+    // Requests are grouped by method and path; the query of the representative request is kept
+    // (credential parameters are removed by the shared URL cleaning).
+    const query = withBody.query.toString();
     requests.push({
       item: `${group.length} request${group.length === 1 ? '' : 's'}`,
       method: withBody.method,
-      url: `${withBody.origin}${withBody.path}`,
+      url: `${withBody.origin}${withBody.path}${query ? `?${query}` : ''}`,
       headers,
       body,
       credentials,
@@ -140,7 +143,7 @@ export function importHar(content: string): ImportResult {
   const skipped: Skipped[] = filtered ? [{ item: `${filtered} request${filtered === 1 ? '' : 's'}`, reason: 'filtered: not an API call' }] : [];
   const grouped = [...groups.values()].flat().length;
   const warnings: string[] = [`Grouped ${grouped} API request${grouped === 1 ? '' : 's'} into ${groups.size} endpoint${groups.size === 1 ? '' : 's'}.`];
-  if (queryNotes.length) warnings.push(`Query parameters not kept (requests are grouped by path): ${queryNotes.join('; ')}.`);
+  if (queryNotes.length) warnings.push(`Query parameters kept from one request per endpoint (requests are grouped by path): ${queryNotes.join('; ')}. Check the values.`);
   if (maskedNotes.length) warnings.push(`Body fields that look like credentials were replaced with <removed>: ${maskedNotes.join('; ')}. Put test values in before running.`);
   if (cookies) warnings.push('Browsers send cookies with every request, so an endpoint can be marked requiresAuth only because of a cookie. Check requiresAuth before running.');
   return buildInput(requests, { name: har.log?.pages?.[0]?.title, skipped, warnings, secrets, noEndpointsMessage: 'No API calls found in the HAR file' });

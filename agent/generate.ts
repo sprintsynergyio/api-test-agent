@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node
 import { join } from 'node:path';
 import { BudgetExceeded, callClaude } from './claude';
 import type { Endpoint } from './config';
+import { pathParams, setupSteps } from './model';
 import type { Plan } from './plan';
 import type { ProbeResult } from './probe';
 import type { FrameworkAdapter } from './frameworks/types';
@@ -17,9 +18,20 @@ function system(fw: FrameworkAdapter): string {
 
 function buildPrompt(fw: FrameworkAdapter, endpoint: Endpoint, plan: Plan, probe: ProbeResult): string {
   const read = (p: string) => readFileSync(p, 'utf8');
-  const setupLine = endpoint.setup
-    ? `- This endpoint has setup. Each test that needs an existing resource gets one with \`const id = await ctx.createResource('${endpoint.setup.endpointId}');\` (returns the id as a string) and puts it in the path.`
-    : '- This endpoint has no setup. Do not call ctx.createResource unless a test needs a resource.';
+  const steps = setupSteps(endpoint);
+  const params = pathParams(endpoint.path);
+  const setupLine =
+    steps.length > 1 || params.length > 1
+      ? `- This endpoint's path has ${params.length} placeholders (${params.map((p) => `{${p}}`).join(', ')}) filled by setup (${steps.map((s) => `${s.endpointId} fills {${s.param}}`).join('; ')}). Each test that needs an existing resource calls \`const p = await ctx.setup();\` and builds the path as \`${endpoint.path.replace(/\{([^}]+)\}/g, '${p.$1}')}\`. Do not call ctx.createResource for these placeholders.`
+      : steps.length === 1
+        ? `- This endpoint has setup. Each test that needs an existing resource gets one with \`const id = await ctx.createResource('${steps[0].endpointId}');\` (returns the id as a string) and puts it in the path.`
+        : '- This endpoint has no setup. Do not call ctx.createResource unless a test needs a resource.';
+  const queryLine = endpoint.query
+    ? `- This endpoint takes query parameters: ${JSON.stringify(endpoint.query)}. Send them with the \`params\` option, for example \`ctx.api.get(path, { params: ${JSON.stringify(endpoint.query)} })\`; invalid-input cases may send a wrong value or type for one of them instead of a body change.`
+    : '';
+  const headersLine = endpoint.headers
+    ? `- This endpoint needs extra headers: ${JSON.stringify(endpoint.headers)}. Send them on every request with the \`headers\` option, for example \`{ headers: ${JSON.stringify(endpoint.headers)} }\` (auth tests too; only the auth header is left out there).`
+    : '';
   const contextFiles = fw.contextFiles
     .map((f) => `FILE ${f} (shown for context, tests never import it):\n\`\`\`ts\n${read(f)}\n\`\`\`\n`)
     .join('\n');
@@ -46,8 +58,8 @@ ${read(fw.templateFile)}
 
 RULES:
 - The file lives in generated/, so import exactly: ${fw.importLine}
-${setupLine}
-- Paths are relative, for example \`${endpoint.path.replace(/\{[^}]+\}/, '${id}')}\`. The base URL comes from ctx.api. Never write http:// or https://.
+${setupLine}${queryLine ? `\n${queryLine}` : ''}${headersLine ? `\n${headersLine}` : ''}
+- Paths are relative, for example \`${params.length > 1 ? endpoint.path.replace(/\{([^}]+)\}/g, '${p.$1}') : endpoint.path.replace(/\{[^}]+\}/, '${id}')}\`. The base URL comes from ctx.api. Never write http:// or https://.
 - Use ctx.api for normal requests and ctx.noAuthApi for auth cases (the same valid request without the auth header).
 - Never expect a 5xx. Assert status codes, field presence and field types. Assert exact values only for values the test itself sent.
 - Tests run against a shared live API while other tests create, update and delete data. Never assert a list length or item count, never compare the results of two calls, and never assume a list is unchanged or contains (or lacks) a specific item you did not create in the same test. For lists, assert the array type and the shape of its items only.

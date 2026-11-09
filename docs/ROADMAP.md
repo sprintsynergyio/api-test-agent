@@ -19,6 +19,7 @@ We work through the phases in order, one step at a time. A phase is done only wh
 | Pactum output | Adapter built, proven offline against the local shop (Phase 2 PR); live agent run and UI toggle pending |
 | Eval harness | In progress: harness built (`npm run eval`, 7 planted bugs, scorer + offline tests); score pending the first live run |
 | Safety guard against production hosts | Done, proven (Phase 1) |
+| Input model: nested paths, query, endpoint headers, env/brand/region profiles | Built and proven offline (Phase 4a PR); live agent run on `input/local-shop-nested.json` pending |
 
 ---
 
@@ -117,6 +118,17 @@ Built before Phase 2 so the Pactum proof can be "same eval score as Playwright",
 **Pitch-ready after this phase:** "Import your spec, choose Playwright or Pactum, safe by default, catches X% of planted bugs with Y false alarms."
 
 ---
+
+## Phase 4a: Input model for real APIs (built, live run pending)
+
+Pulled forward from Phases 4 and 5 because the first real client (multi-brand, multi-region, multi-env ecommerce) cannot be described without it.
+
+- Paths with more than one placeholder, filled by ordered setup steps (`setup` may be an array with `param`), `ctx.setup()` in both ctx files.
+- Per-endpoint `query` and `headers`, sent by the probe, createResource and the tests (`params` and `headers` request options); importers fill them from OpenAPI, Postman, cURL and HAR.
+- `profile` block: dimensions (env, brand, region, ...), templated baseUrl and headers, overrides; `--select` / `AGENT_SELECT` picks one value per dimension; the safety guard classifies the resolved host; summary gets `selection`; exported frameworks keep the profile and resolve it at run time.
+- Real client profiles live in `profiles/local/` (gitignored). `input/example-profile.json` has placeholder hosts only.
+
+**Proof so far:** `npm run test:config` (28 checks), probe on `input/local-shop-nested.json` against the local shop with the reviews resource, both exported frameworks run standalone with nested setup, a profile export refuses the production selection and runs the local one. Pending: the live agent run on the nested input.
 
 ## Phase 4: Spec-driven depth
 

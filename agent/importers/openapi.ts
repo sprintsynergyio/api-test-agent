@@ -205,8 +205,10 @@ export function importOpenApi(content: string): ImportResult {
         if ((p.in === 'header' && isCredentialHeader(name)) || (p.in === 'query' && isCredentialParam(name)) || p.in === 'cookie') {
           if (text) secrets.push(text);
           credentials.push({ name: p.in === 'cookie' ? 'Cookie' : name, where: p.in === 'query' ? 'query' : 'header', value: text, declared: !text });
-        } else if (p.in === 'header' && p.required === true) headers.push({ name, value: text ?? '' });
-        else if (p.in === 'query' && p.required === true) {
+        } else if (p.in === 'header' && (p.required === true || text !== undefined)) headers.push({ name, value: text ?? '' });
+        else if (p.in === 'query' && (p.required === true || text !== undefined)) {
+          // Required query parameters always (example, default or a sample value); optional ones only
+          // when the spec gives an example or default, so nothing is invented for them.
           query.push(`${encodeURIComponent(name)}=${encodeURIComponent(text ?? String(sample(p.schema ?? p) ?? 'string'))}`);
         }
       }

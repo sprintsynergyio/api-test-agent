@@ -3,6 +3,7 @@ import { builtinModules } from 'node:module';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { apiName, type Config } from './config';
+import { exportedConfig, modelSource } from './frameworks/shared-export';
 
 // Writes the generated suite as a standalone Playwright project in frameworks/<name>/ and zips it.
 
@@ -31,6 +32,8 @@ function pinnedVersions(): Record<string, string> {
 function httpSource(): string {
   const src = readFileSync('agent/http.ts', 'utf8');
   const importLine = "import type { Config } from './config';";
+  const modelLine = "import { queryString, resolvePath, setupSteps } from './model';";
+  if (!src.includes(modelLine)) throw new Error('framework export: agent/http.ts no longer imports model helpers as expected');
   if (!src.includes(importLine)) throw new Error('framework export: agent/http.ts no longer imports Config as expected');
   return src
     .replace(
@@ -42,16 +45,21 @@ function httpSource(): string {
   auth?: { header: string; valueEnv: string };
   allowProduction?: boolean;
   allowWrites?: boolean;
+  profile?: Profile;
+  selection: Selection | null;
   endpoints: {
     id: string;
     method: string;
     path: string;
     requiresAuth: boolean;
     body?: Record<string, unknown>;
-    setup?: { endpointId: string; idField: string };
+    query?: Query;
+    headers?: Record<string, string>;
+    setup?: Setup | Setup[];
   }[];
 };`,
     )
+    .replace(modelLine, "import { queryString, resolvePath, setupSteps, type Profile, type Query, type Selection, type Setup } from './model';")
     .replace(/^\/\/ Shared HTTP logic for the ctx fixture and the agent\./m, '// HTTP clients and createResource for the ctx fixture.');
 }
 
@@ -66,12 +74,14 @@ function safetySource(): string {
 // before any request is sent.
 const GLOBAL_SETUP_SOURCE = `import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { applyProfile } from './model';
 import { assessSafety, refusalMessage } from './safety';
 
 const configFile = fileURLToPath(new URL('../config/api.json', import.meta.url));
 
 export default function globalSetup() {
-  const config = JSON.parse(readFileSync(configFile, 'utf8'));
+  // With a profile, AGENT_SELECT (env=staging,brand=alpha,...) picks the base URL and headers.
+  const config = applyProfile(JSON.parse(readFileSync(configFile, 'utf8')), process.env.AGENT_SELECT);
   // AGENT_FORCE_PRODUCTION=1 (testing only) treats every host as production.
   const safety = assessSafety(config, { forceProduction: process.env.AGENT_FORCE_PRODUCTION === '1' });
   if (safety.mode === 'refused') throw new Error(refusalMessage(safety));
@@ -90,8 +100,10 @@ import {
   formatExchange,
   recordClients,
   reportLabels,
+  runSetup,
   type Config,
 } from '../../src/http';
+import { applyProfile } from '../../src/model';
 import { endpointAllowed, READ_ONLY_SKIP } from '../../src/safety';
 
 // The only test-side file that reads process.env (src/global-setup.ts checks the host once before
@@ -102,13 +114,16 @@ export type Ctx = {
   api: APIRequestContext;
   noAuthApi: APIRequestContext;
   createResource: (endpointId: string) => Promise<string>;
+  // Runs this spec's endpoint setup steps and returns every path placeholder value.
+  setup: () => Promise<Record<string, string>>;
 };
 
 const configFile = fileURLToPath(new URL('../../config/api.json', import.meta.url));
 
 export const test = base.extend<{ ctx: Ctx }>({
   ctx: async ({}, use, testInfo) => {
-    const config = JSON.parse(readFileSync(configFile, 'utf8')) as Config;
+    // With a profile, AGENT_SELECT (env=staging,brand=alpha,...) picks the base URL and headers.
+    const config = applyProfile(JSON.parse(readFileSync(configFile, 'utf8')), process.env.AGENT_SELECT) as Config;
 
     // No auth section: api and noAuthApi are the same. With one, the value must be set.
     const authValue = config.auth ? process.env[config.auth.valueEnv] : undefined;
@@ -141,6 +156,10 @@ export const test = base.extend<{ ctx: Ctx }>({
       api: recordedClients.api,
       noAuthApi: recordedClients.noAuthApi,
       createResource: (endpointId) => createResource(config, recordedClients, endpointId),
+      setup: async () => {
+        if (!endpoint) throw new Error('ctx.setup: no endpoint in config/api.json is named after this spec file');
+        return runSetup(config, recordedClients, endpoint);
+      },
     });
 
     await disposeClients(clients);
@@ -335,11 +354,8 @@ export function exportFramework(opts: {
   // The validated config holds only the env variable name, never an auth value.
   // name is set to the framework name so the fixture can use it as the Allure epic.
   // The safety flags are always written, so a team can see and change them.
-  const { name: _inputName, framework: _framework, allowProduction, allowWrites, ...configRest } = config;
-  write(
-    'config/api.json',
-    JSON.stringify({ name, ...configRest, allowProduction: allowProduction === true, allowWrites: allowWrites === true }, null, 2) + '\n',
-  );
+  write('config/api.json', JSON.stringify(exportedConfig(name, config), null, 2) + '\n');
+  write('src/model.ts', modelSource());
   write('src/http.ts', httpSource());
   write('src/safety.ts', safetySource());
   write('src/global-setup.ts', GLOBAL_SETUP_SOURCE);

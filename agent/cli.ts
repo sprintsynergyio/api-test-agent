@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, sep } from 'node:path';
 import { BudgetExceeded, claudeBudget, claudeCallsUsed, claudeEnv, redact } from './claude';
-import { apiName, loadConfig, type Config, type Endpoint } from './config';
+import { apiName, loadConfig, selectionLine, takeSelectFlag, type Config, type Endpoint } from './config';
 import { frameworkFor, type FrameworkAdapter, type FrameworkInfo, type TestOutcome } from './frameworks';
 import { generateEndpoint } from './generate';
 import { planEndpoint, type Plan } from './plan';
@@ -165,6 +165,7 @@ function writeSummary(o: {
     testFramework,
     inputFile,
     baseUrl: config.baseUrl,
+    selection: config.selection ?? null,
     safety: { hostClass: safety.hostClass, mode: safety.mode, allowProduction: safety.allowProduction, allowWrites: safety.allowWrites },
     requestsSent,
     startedAt: startedAt.toISOString(),
@@ -224,7 +225,8 @@ function toFinding(o: TestOutcome, plan: Plan | undefined): Finding {
 }
 
 async function main() {
-  const inputFile = process.argv[2] || 'input/endpoints.json';
+  const args = takeSelectFlag(process.argv.slice(2));
+  const inputFile = args[0] || 'input/endpoints.json';
   const startedAt = new Date();
   const config = loadConfig(inputFile);
   const fw = frameworkFor(config);
@@ -292,6 +294,8 @@ async function main() {
   console.log('=== PROBING ===');
   console.log(`safety: ${safety.hostClass} host, ${safety.mode} mode`);
   console.log(`framework: ${fw.name}`);
+  const selected = selectionLine(config);
+  if (selected) console.log(selected);
   if (safety.hostClass === 'production' && safety.mode === 'full') console.log(PRODUCTION_WRITES_WARNING);
   const probeRun = await probeAll(config, authValue, { forceProduction });
   let requestsSent = probeRun.requestsSent;

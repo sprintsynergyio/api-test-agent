@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, wri
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { apiName, type Config } from '../config';
 import { validateWithRules, type GateRules } from '../validate';
+import { exportedConfig, modelSource } from './shared-export';
 import type { ExportEndpoint, ExportFinding, FrameworkAdapter, FrameworkInfo, RunResult, TestOutcome } from './types';
 
 // The Pactum adapter: Mocha + Pactum tests that import only from tests-pactum/setup/ctx.ts.
@@ -117,8 +118,11 @@ function ctxSource(): string {
   const importLine = "from '../../agent/safety';";
   const inputLine = /^const INPUT_FILE = .*\/\/ EXPORT-INPUT$/m;
   if (!src.includes(importLine) || !inputLine.test(src)) throw new Error(`framework export: ${CTX_FILE} no longer has the expected import and INPUT_FILE lines`);
+  const modelLine = "from '../../agent/model';";
+  if (!src.includes(modelLine)) throw new Error(`framework export: ${CTX_FILE} no longer imports agent/model as expected`);
   return src
     .replace(importLine, "from './safety';")
+    .replace(modelLine, "from './model';")
     .replace(inputLine, "const INPUT_FILE = fileURLToPath(new URL('../config/api.json', import.meta.url));")
     .replace("import { join } from 'node:path';", "import { join } from 'node:path';\nimport { fileURLToPath } from 'node:url';")
     .replace(/^\/\/ The Pactum equivalent of tests\/fixtures\/ctx\.ts: the ONLY/m, '// The ONLY');
@@ -287,8 +291,8 @@ export function exportPactumFramework(opts: {
   );
   write('.mocharc.json', MOCHARC);
   write('tsconfig.json', TSCONFIG);
-  const { name: _inputName, framework: _framework, allowProduction, allowWrites, ...configRest } = config;
-  write('config/api.json', JSON.stringify({ name, ...configRest, allowProduction: allowProduction === true, allowWrites: allowWrites === true }, null, 2) + '\n');
+  write('config/api.json', JSON.stringify(exportedConfig(name, config), null, 2) + '\n');
+  write('src/model.ts', modelSource());
   write('src/safety.ts', safetySource());
   write('src/ctx.ts', ctxSource());
   if (config.auth) write('.env.example', `${config.auth.valueEnv}=\n`);
@@ -338,7 +342,7 @@ export const pactumAdapter: FrameworkAdapter = {
   generatorRules(endpoint, plan, probe) {
     return [
       "Copy the template's structure: Mocha describe and it (both are globals, do not import them), every test title starts with its type tag ([happy], [schema], [invalid-input], [auth]), and every test calls recordStatus(response.status()) before its first expect.",
-      'Requests: ctx.api.get(path), ctx.api.post(path, body), ctx.api.put(path, body), ctx.api.patch(path, body), ctx.api.delete(path). Each returns a response with status(), ok(), headers(), text() and json(). Never import pactum, node:assert or chai; expect comes from the setup file.',
+      'Requests: ctx.api.get(path, options?), ctx.api.post(path, body, options?), ctx.api.put(path, body, options?), ctx.api.patch(path, body, options?), ctx.api.delete(path, options?). options is { params?: query parameters, headers?: extra headers }. Each returns a response with status(), ok(), headers(), text() and json(). Never import pactum, node:assert or chai; expect comes from the setup file.',
       `Status assertions, exactly in the template's style and no other form (the static gate rejects anything else): happy and schema expect(response.status()).toBe(${probe.status}); invalid-input expect(response.status()).toBeGreaterThanOrEqual(400) and expect(response.status()).toBeLessThanOrEqual(499); auth expect([401, 403]).toContain(response.status()). Never use .not on a status, and never assert a status from a different request than the one under test.`,
       'Auth tests send the request under test with ctx.noAuthApi and never mention ctx.api (resources they need come from ctx.createResource).',
       'Response bodies may be empty or not JSON (see the probe). Only call response.json() when the probe shows a JSON body for that status; cast it, for example (await response.json()) as Record<string, unknown>.',

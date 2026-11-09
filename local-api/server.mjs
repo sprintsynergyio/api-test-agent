@@ -83,13 +83,67 @@ function validate(b, { checkPriceType, checkName }) {
   return errors;
 }
 
+// Reviews live under a product. POST needs auth, DELETE needs auth, GET is public.
+let nextReviewId = 1;
+const reviews = new Map(); // reviewId -> { id, productId, rating, text, createdAt }
+
+async function handleReviews(req, res, parts) {
+  const productId = Number(parts[1]);
+  if (!Number.isInteger(productId) || productId < 1) return send(res, 400, { error: "id must be a positive integer" });
+  if (!products.has(productId)) return send(res, 404, { error: "product not found" });
+
+  if (parts.length === 3) {
+    if (req.method === "GET") {
+      return send(res, 200, [...reviews.values()].filter((r) => r.productId === productId));
+    }
+    if (req.method === "POST") {
+      if (!authed(req)) return send(res, 401, { error: "unauthorized" });
+      const body = await readBody(req);
+      if (!body.ok) return send(res, 400, { error: "invalid JSON" });
+      const b = body.value;
+      const errors = [];
+      if (!b || typeof b !== "object") errors.push("body must be a JSON object");
+      else {
+        if (!Number.isInteger(b.rating) || b.rating < 1 || b.rating > 5) errors.push("rating is required and must be an integer from 1 to 5");
+        if (typeof b.text !== "string" || b.text.trim() === "") errors.push("text is required and must be a non-empty string");
+      }
+      if (errors.length) return send(res, 400, { error: "validation failed", details: errors });
+      const review = { id: nextReviewId++, productId, rating: b.rating, text: b.text, createdAt: new Date().toISOString() };
+      reviews.set(review.id, review);
+      return send(res, 201, review);
+    }
+    return send(res, 405, { error: "method not allowed" });
+  }
+
+  const reviewId = Number(parts[3]);
+  if (!Number.isInteger(reviewId) || reviewId < 1) return send(res, 400, { error: "reviewId must be a positive integer" });
+  const review = reviews.get(reviewId);
+  if (req.method === "GET") {
+    if (!review || review.productId !== productId) return send(res, 404, { error: "review not found" });
+    return send(res, 200, review);
+  }
+  if (req.method === "DELETE") {
+    if (!authed(req)) return send(res, 401, { error: "unauthorized" });
+    if (!review || review.productId !== productId) return send(res, 404, { error: "review not found" });
+    reviews.delete(reviewId);
+    res.writeHead(204);
+    return res.end();
+  }
+  return send(res, 405, { error: "method not allowed" });
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
-  if (LOG_REQUESTS) console.log(`${req.method} ${url.pathname}`);
+  if (LOG_REQUESTS) console.log(`${req.method} ${url.pathname}${url.search}`);
   const parts = url.pathname.split("/").filter(Boolean);
 
   if (parts[0] === "health" && parts.length === 1 && req.method === "GET") {
     return send(res, 200, { status: "ok", bugsEnabled: BUGS.size > 0, bugs: [...BUGS] });
+  }
+  // /products/:id/reviews and /products/:id/reviews/:reviewId (nested resource, used by
+  // input/local-shop-nested.json to prove paths with more than one placeholder).
+  if (parts[0] === "products" && parts[2] === "reviews" && (parts.length === 3 || parts.length === 4)) {
+    return handleReviews(req, res, parts);
   }
   if (parts[0] !== "products" || parts.length > 2) {
     return send(res, 404, { error: "not found" });
@@ -105,7 +159,16 @@ const server = http.createServer(async (req, res) => {
   // /products
   if (id === null) {
     if (req.method === "GET") {
-      const list = [...products.values()];
+      let list = [...products.values()];
+      // Query parameters: category=<name> filters, limit=<n> cuts the list (used to prove endpoint query support).
+      const category = url.searchParams.get("category");
+      if (category !== null) list = list.filter((p) => p.category === category);
+      const limit = url.searchParams.get("limit");
+      if (limit !== null) {
+        const n = Number(limit);
+        if (!Number.isInteger(n) || n < 1) return send(res, 400, { error: "limit must be a positive integer" });
+        list = list.slice(0, n);
+      }
       // list-wrong-type: the list comes wrapped in an object instead of a bare array.
       if (bug("list-wrong-type")) return send(res, 200, { items: list });
       return send(res, 200, list);

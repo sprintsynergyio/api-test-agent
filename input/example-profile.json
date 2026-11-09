@@ -1,0 +1,50 @@
+{
+  "name": "example-profile",
+  "profile": {
+    "dimensions": {
+      "env": ["dev", "staging"],
+      "brand": ["alpha", "beta"],
+      "region": ["us", "eu"]
+    },
+    "baseUrl": "https://{brand}-{region}.{env}.example-shop.test",
+    "headers": {
+      "X-Brand": "{brand}",
+      "X-Region": "{region}"
+    },
+    "overrides": [
+      { "when": { "region": "eu" }, "headers": { "Accept-Language": "en-GB" } },
+      { "when": { "env": "dev", "brand": "beta" }, "baseUrl": "https://beta-{region}.dev-internal.example-shop.test" }
+    ]
+  },
+  "defaultHeaders": {
+    "Accept": "application/json",
+    "Content-Type": "application/json"
+  },
+  "auth": {
+    "header": "Authorization",
+    "valueEnv": "EXAMPLE_SHOP_AUTH"
+  },
+  "endpoints": [
+    {
+      "id": "list-products",
+      "method": "GET",
+      "path": "/products",
+      "requiresAuth": false,
+      "query": { "limit": 10 }
+    },
+    {
+      "id": "create-product",
+      "method": "POST",
+      "path": "/products",
+      "requiresAuth": true,
+      "body": { "name": "Trail Runner Shoe", "price": 89.99, "category": "shoes", "inStock": true }
+    },
+    {
+      "id": "get-product",
+      "method": "GET",
+      "path": "/products/{id}",
+      "requiresAuth": false,
+      "setup": { "endpointId": "create-product", "idField": "id" }
+    }
+  ]
+}
