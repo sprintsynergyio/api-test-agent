@@ -1,22 +1,20 @@
 import 'dotenv/config';
-import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { basename, join, sep } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { basename, sep } from 'node:path';
 import { BudgetExceeded, claudeBudget, claudeCallsUsed, claudeEnv, hostedWithoutApiKeyProblem, redact, usingApiKey } from './claude';
 import { apiName, loadConfig, type Config, type Endpoint } from './config';
-import { exportFramework, type FrameworkInfo } from './export';
+import { frameworkFor, type FrameworkAdapter, type FrameworkInfo, type TestOutcome } from './frameworks';
 import { generateEndpoint } from './generate';
 import { planEndpoint, type Plan } from './plan';
 import { probeAll, type ProbeResult } from './probe';
 import { assessSafety, endpointAllowed, PRODUCTION_WRITES_WARNING, READ_ONLY_SKIP, refusalMessage, type Safety } from './safety';
 
 // Full pipeline: probe, plan, generate, run tests, summarize.
-// Console output and out/summary.json follow ui/CONTRACT.md.
+// Console output and out/summary.json follow ui/CONTRACT.md. The output framework (Playwright or
+// Pactum) is an adapter (agent/frameworks/); this file never knows which one runs.
 
 const CONCURRENCY = 3;
-const RESULTS_FILE = 'reports/results.json';
-const ALLURE_RESULTS = 'reports/allure-results';
-const ALLURE_REPORT = 'reports/allure-report';
 const SUMMARY_FILE = 'out/summary.json';
 const CLAUDE_NOT_FOUND = "claude CLI not found on PATH. Run 'which claude' in the terminal that starts the agent or UI.";
 
@@ -38,8 +36,6 @@ type Finding = {
   classification: 'suspected API finding' | 'needs review';
   error: string;
 };
-
-type TestOutcome = { endpointId: string; title: string; passed: boolean; actualStatus: number | null; error: string };
 
 type RunStatus = 'completed' | 'stopped-budget' | 'no-tests' | 'refused';
 
@@ -87,7 +83,7 @@ async function planPhase(states: EndpointState[]) {
   });
 }
 
-async function generatePhase(states: EndpointState[]) {
+async function generatePhase(fw: FrameworkAdapter, states: EndpointState[]) {
   await forEachLimited(states, CONCURRENCY, async (s) => {
     const id = s.endpoint.id;
     if (s.skippedReason) {
@@ -104,7 +100,7 @@ async function generatePhase(states: EndpointState[]) {
       return;
     }
     try {
-      const result = await generateEndpoint(s.endpoint, s.plan, s.probe!);
+      const result = await generateEndpoint(fw, s.endpoint, s.plan, s.probe!);
       if (result.ok) {
         s.specFile = basename(result.specFile);
         console.log(`${id} OK written ${result.specFile}`);
@@ -121,20 +117,6 @@ async function generatePhase(states: EndpointState[]) {
   });
 }
 
-function runPlaywright(inputFile: string): Promise<number | null> {
-  return new Promise((resolve, reject) => {
-    // The tests get the auth value they need from .env through the ctx fixture; the API key never reaches them.
-    const env: NodeJS.ProcessEnv = { ...process.env, INPUT_FILE: inputFile };
-    delete env.ANTHROPIC_API_KEY;
-    const child = spawn('node_modules/.bin/playwright', ['test', '-c', 'playwright.generated.config.ts'], {
-      env,
-      stdio: ['ignore', 'inherit', 'inherit'],
-    });
-    child.on('error', reject);
-    child.on('close', resolve);
-  });
-}
-
 const stripAnsi = (s: string) => s.replace(/\u001b\[[0-9;]*m/g, '');
 
 // Error text goes into summary.json and the UI: show paths relative to the project folder,
@@ -148,82 +130,6 @@ function relativePaths(text: string): string {
 
 function cleanError(text: string, secrets: string[]): string {
   return relativePaths(redact(stripAnsi(text), secrets));
-}
-
-type JsonSuite = { suites?: JsonSuite[]; specs?: JsonSpec[] };
-type JsonAnnotation = { type: string; description?: string };
-type JsonSpec = {
-  title: string;
-  file: string;
-  tests: {
-    status: string;
-    annotations?: JsonAnnotation[];
-    results: { status: string; annotations?: JsonAnnotation[]; errors?: { message?: string }[]; error?: { message?: string } }[];
-  }[];
-};
-
-function readOutcomes(secrets: string[]): { outcomes: TestOutcome[]; loadErrors: string[]; requestsSent: number } {
-  const report = JSON.parse(readFileSync(RESULTS_FILE, 'utf8')) as { suites?: JsonSuite[]; errors?: { message?: string }[] };
-  const outcomes: TestOutcome[] = [];
-  let requestsSent = 0;
-  const walk = (suite: JsonSuite) => {
-    for (const spec of suite.specs ?? []) {
-      for (const t of spec.tests) {
-        const last = t.results[t.results.length - 1];
-        // The ctx fixture records how many requests each test sent (one annotation per test).
-        const sent = (last?.annotations ?? []).find((a) => a.type === 'requests-sent') ?? (t.annotations ?? []).find((a) => a.type === 'requests-sent');
-        if (sent?.description && /^\d+$/.test(sent.description)) requestsSent += Number(sent.description);
-        if (t.status === 'skipped') continue;
-        const annotations = [...(t.annotations ?? []), ...(last?.annotations ?? [])];
-        const statusNote = annotations.find((a) => a.type === 'actual-status')?.description;
-        const actual = statusNote !== undefined && /^\d{3}$/.test(statusNote) ? Number(statusNote) : null;
-        const message = last?.errors?.[0]?.message ?? last?.error?.message ?? '';
-        outcomes.push({
-          endpointId: basename(spec.file).replace(/\.spec\.ts$/, ''),
-          title: spec.title,
-          passed: t.status === 'expected' || t.status === 'flaky',
-          actualStatus: actual,
-          error: cleanError(message, secrets).slice(0, 300),
-        });
-      }
-    }
-    (suite.suites ?? []).forEach(walk);
-  };
-  (report.suites ?? []).forEach(walk);
-  const loadErrors = (report.errors ?? []).map((e) => cleanError(e.message ?? '', secrets).split('\n')[0]);
-  return { outcomes, loadErrors, requestsSent };
-}
-
-function filesUnder(dir: string): string[] {
-  return readdirSync(dir).flatMap((entry) => {
-    const full = join(dir, entry);
-    return statSync(full).isDirectory() ? filesUnder(full) : [full];
-  });
-}
-
-// Builds the Allure HTML report from the raw results. Never fails the run: returns the reason instead.
-function generateAllure(reportName: string, secrets: string[]): { dir: string | null; reason?: string } {
-  if (!existsSync(ALLURE_RESULTS)) return { dir: null, reason: `${ALLURE_RESULTS} was not written` };
-  const res = spawnSync(
-    'node_modules/.bin/allure',
-    ['generate', ALLURE_RESULTS, '--output', ALLURE_REPORT, '--report-name', reportName],
-    { encoding: 'utf8', timeout: 120_000 },
-  );
-  if (res.error || res.status !== 0) {
-    const detail = res.error?.message ?? `${res.stderr}${res.stdout}`.trim().split('\n')[0];
-    return { dir: null, reason: cleanError(`allure exited with ${res.status}: ${detail}`, secrets) };
-  }
-  if (!existsSync(join(ALLURE_REPORT, 'index.html'))) return { dir: null, reason: `${ALLURE_REPORT}/index.html is missing` };
-  for (const dir of [ALLURE_RESULTS, ALLURE_REPORT]) {
-    for (const file of filesUnder(dir)) {
-      if (secrets.some((s) => s && readFileSync(file).includes(s))) {
-        rmSync(ALLURE_RESULTS, { recursive: true, force: true });
-        rmSync(ALLURE_REPORT, { recursive: true, force: true });
-        return { dir: null, reason: `auth value found in ${file}, Allure output deleted` };
-      }
-    }
-  }
-  return { dir: ALLURE_REPORT };
 }
 
 // Every plan and spec needs the claude CLI. Check that it starts, with the same child environment as
@@ -254,10 +160,12 @@ function writeSummary(o: {
   secrets: string[];
   safety: Safety;
   requestsSent: number;
+  testFramework: string;
 }) {
-  const { status, inputFile, config, startedAt, states, outcomes, findings, framework, allureReport, secrets, safety, requestsSent } = o;
+  const { status, inputFile, config, startedAt, states, outcomes, findings, framework, allureReport, secrets, safety, requestsSent, testFramework } = o;
   const summary = {
     status,
+    testFramework,
     inputFile,
     baseUrl: config.baseUrl,
     safety: { hostClass: safety.hostClass, mode: safety.mode, allowProduction: safety.allowProduction, allowWrites: safety.allowWrites },
@@ -322,6 +230,7 @@ async function main() {
   const inputFile = process.argv[2] || 'input/endpoints.json';
   const startedAt = new Date();
   const config = loadConfig(inputFile);
+  const fw = frameworkFor(config);
   for (const dir of ['generated', 'out', 'reports', 'test-results']) rmSync(dir, { recursive: true, force: true });
 
   // Safety guard first: a refused run sends no request and needs neither an auth value nor Claude.
@@ -345,6 +254,7 @@ async function main() {
       secrets: [],
       safety,
       requestsSent: 0,
+      testFramework: fw.name,
     });
     console.log(`Summary written to ${SUMMARY_FILE}`);
     process.exitCode = 1;
@@ -374,6 +284,7 @@ async function main() {
       secrets,
       safety,
       requestsSent: 0,
+      testFramework: fw.name,
     });
     console.log('NO TESTS GENERATED');
     console.log(`Summary written to ${SUMMARY_FILE}`);
@@ -383,6 +294,7 @@ async function main() {
 
   console.log('=== PROBING ===');
   console.log(`safety: ${safety.hostClass} host, ${safety.mode} mode`);
+  console.log(`framework: ${fw.name}`);
   if (safety.hostClass === 'production' && safety.mode === 'full') console.log(PRODUCTION_WRITES_WARNING);
   const probeRun = await probeAll(config, authValue, { forceProduction });
   let requestsSent = probeRun.requestsSent;
@@ -401,7 +313,7 @@ async function main() {
   await planPhase(states);
 
   console.log('=== GENERATING ===');
-  await generatePhase(states);
+  await generatePhase(fw, states);
   rmSync('generated/.candidate', { recursive: true, force: true });
   if (budgetHit) console.log('STOPPED: budget reached');
 
@@ -409,25 +321,24 @@ async function main() {
   let status: RunStatus = budgetHit ? 'stopped-budget' : 'completed';
   let outcomes: TestOutcome[] = [];
   let allureReport: string | null = null;
+  let htmlReport: string | null = null;
 
   if (written.length === 0) {
     status = 'no-tests';
   } else {
     console.log('=== RUNNING TESTS ===');
-    await runPlaywright(inputFile);
-    if (!existsSync(RESULTS_FILE)) throw new Error(`Playwright did not write ${RESULTS_FILE}`);
-    const read = readOutcomes(secrets);
-    outcomes = read.outcomes;
-    requestsSent += read.requestsSent;
-    for (const e of read.loadErrors) console.log(`Playwright error: ${e}`);
+    const run = await fw.run(inputFile, { secrets, reportName: `${apiName(config, inputFile)} API tests`, cleanError: (t) => cleanError(t, secrets) });
+    outcomes = run.outcomes;
+    requestsSent += run.requestsSent;
+    for (const e of run.loadErrors) console.log(`${fw.name} error: ${e}`);
     for (const s of written) {
       if (!outcomes.some((o) => o.endpointId === s.endpoint.id)) {
         s.failureReason = 'spec produced no test results (failed to load)';
       }
     }
-    const allure = generateAllure(`${apiName(config, inputFile)} API tests`, secrets);
-    allureReport = allure.dir;
-    if (!allure.dir) console.log(`allure report not generated: ${allure.reason}`);
+    htmlReport = run.htmlReport;
+    allureReport = run.allureReport;
+    if (!run.allureReport) console.log(`allure report not generated: ${run.allureReason ?? 'unknown reason'}`);
   }
 
   const findings = outcomes
@@ -436,7 +347,7 @@ async function main() {
 
   let framework: FrameworkInfo | null = null;
   if (status !== 'no-tests') {
-    framework = exportFramework({
+    framework = fw.exportFramework({
       config,
       inputFile,
       authValue,
@@ -446,7 +357,7 @@ async function main() {
     });
   }
 
-  const summary = writeSummary({ status, inputFile, config, startedAt, states, outcomes, findings, framework, allureReport, secrets, safety, requestsSent });
+  const summary = writeSummary({ status, inputFile, config, startedAt, states, outcomes, findings, framework, allureReport, secrets, safety, requestsSent, testFramework: fw.name });
 
   console.log('=== SUMMARY ===');
   if (status === 'no-tests') {
@@ -460,6 +371,7 @@ async function main() {
   const api = findings.filter((f) => f.classification === 'suspected API finding');
   const review = findings.filter((f) => f.classification === 'needs review');
   console.log(`Status: ${status}`);
+  console.log(`Framework: ${fw.name}`);
   console.log(`Endpoints: ${t.endpoints}, specs written: ${written.length}, tests: ${t.testsGenerated}, passed: ${t.passed}, failed: ${t.failed}`);
   console.log(`Claude calls: ${summary.claudeCalls.used}/${summary.claudeCalls.budget}, duration: ${summary.durationSec}s`);
   console.log(`Safety: ${safety.hostClass} host, ${safety.mode} mode, requests sent: ${requestsSent}`);
@@ -471,7 +383,7 @@ async function main() {
     console.log(`${review.length} need${review.length === 1 ? 's' : ''} review`);
     for (const f of review) console.log(`  - ${f.testTitle}: expected ${f.expectedStatus}, got ${f.actualStatus ?? 'no status'}`);
   }
-  console.log(`Summary written to ${SUMMARY_FILE}, report in reports/html`);
+  console.log(`Summary written to ${SUMMARY_FILE}${htmlReport ? `, report in ${htmlReport}` : ''}`);
   if (allureReport) console.log(`allure report written to ${allureReport}`);
   if (framework) console.log(`framework written to ${framework.dir} (${framework.files.length} files)`);
 }

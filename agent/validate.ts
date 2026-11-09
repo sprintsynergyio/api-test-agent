@@ -168,9 +168,11 @@ function checkCatches(code: string, reasons: string[]) {
 
 type TestCall = { title: string; start: number };
 
-function findTests(code: string): TestCall[] {
+// testFn is "test" (Playwright) or "it" (Mocha).
+export function findTests(code: string, testFn = 'test'): TestCall[] {
   const tests: TestCall[] = [];
-  for (const m of code.matchAll(/\btest(?:\.only|\.skip)?\(\s*(['"`])((?:\\.|(?!\1)[^\\])*)\1/g)) {
+  const re = new RegExp(`\\b${testFn}(?:\\.only|\\.skip)?\\(\\s*(['"\`])((?:\\\\.|(?!\\1)[^\\\\])*)\\1`, 'g');
+  for (const m of code.matchAll(re)) {
     tests.push({ title: m[2], start: m.index! });
   }
   return tests;
@@ -233,23 +235,48 @@ function typecheck(code: string, name: string): string | null {
   }
 }
 
+// The rules that differ per framework. Everything else in the gate is shared.
+export type GateRules = {
+  // "test" for Playwright, "it" for Mocha.
+  testFn: string;
+  // Checks the import line and anything else framework-specific; returns reasons.
+  frameworkRules: (code: string) => string[];
+  // Imported helpers that record the actual status (local helpers containing 'actual-status' are found automatically).
+  statusRecorders?: string[];
+};
+
+const PLAYWRIGHT_RULES: GateRules = {
+  testFn: 'test',
+  frameworkRules(code) {
+    const reasons: string[] = [];
+    const imp = code.match(/import\s*\{([^}]*)\}\s*from\s*['"](?:\.\.?\/)+(?:tests\/)?fixtures\/ctx(?:\.ts)?['"]/);
+    const imported = imp ? imp[1].split(',').map((s) => s.trim()) : [];
+    if (!imported.includes('test') || !imported.includes('expect')) {
+      reasons.push('does not import test and expect from the ctx fixture file');
+    }
+    if (/@playwright\/test/.test(code)) reasons.push('imports from @playwright/test directly instead of the ctx fixture');
+    if (/\btest(?:\.describe)?\.only\b/.test(code)) reasons.push('contains test.only');
+    if (/\btest(?:\.describe)?\.skip\b/.test(code)) reasons.push('contains test.skip');
+    return reasons;
+  },
+};
+
+// The Playwright gate.
 export function validateSpec(code: string, opts: ValidateOptions): ValidationResult {
+  return validateWithRules(code, opts, PLAYWRIGHT_RULES);
+}
+
+// The shared gate: framework rules first, then every rule that is the same for all frameworks.
+export function validateWithRules(code: string, opts: ValidateOptions, rules: GateRules): ValidationResult {
   const reasons: string[] = [];
 
-  const imp = code.match(/import\s*\{([^}]*)\}\s*from\s*['"](?:\.\.?\/)+(?:tests\/)?fixtures\/ctx(?:\.ts)?['"]/);
-  const imported = imp ? imp[1].split(',').map((s) => s.trim()) : [];
-  if (!imported.includes('test') || !imported.includes('expect')) {
-    reasons.push('does not import test and expect from the ctx fixture file');
-  }
-  if (/@playwright\/test/.test(code)) reasons.push('imports from @playwright/test directly instead of the ctx fixture');
+  reasons.push(...rules.frameworkRules(code));
   if (/process\.env/.test(code)) reasons.push('contains process.env');
   if (/https?:\/\//.test(code)) reasons.push('contains http:// or https://');
-  if (/\btest(?:\.describe)?\.only\b/.test(code)) reasons.push('contains test.only');
-  if (/\btest(?:\.describe)?\.skip\b/.test(code)) reasons.push('contains test.skip');
   checkCatches(code, reasons);
 
-  const tests = findTests(code);
-  const helpers = annotationHelpers(code);
+  const tests = findTests(code, rules.testFn);
+  const helpers = [...annotationHelpers(code), ...(rules.statusRecorders ?? [])];
   const testsPerType = new Map<string, number>();
   tests.forEach((t, i) => {
     const type = TYPES.find((ty) => t.title.startsWith(`[${ty}]`));

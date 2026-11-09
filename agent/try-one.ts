@@ -1,5 +1,6 @@
 import { loadConfig } from './config';
 import { claudeBudget, claudeCallsUsed } from './claude';
+import { frameworkFor } from './frameworks';
 import { generateEndpoint } from './generate';
 import { planEndpoint } from './plan';
 import { readProbe } from './probe';
@@ -24,7 +25,7 @@ async function main() {
   console.log(`${endpointId} OK ${planned.plan.cases.length} cases`);
 
   console.log('=== GENERATING ===');
-  const generated = await generateEndpoint(endpoint, planned.plan, probe);
+  const generated = await generateEndpoint(frameworkFor(config), endpoint, planned.plan, probe);
   if (generated.ok) console.log(`${endpointId} OK written ${generated.specFile}`);
   else {
     console.log(`${endpointId} FAILED static gate: ${generated.reasons.join(' | ').replace(/\s*\n\s*/g, ' ')}`);

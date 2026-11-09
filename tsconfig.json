@@ -7,7 +7,7 @@
     "noEmit": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
-    "types": ["node"]
+    "types": ["node", "mocha"]
   },
-  "include": ["agent/**/*.ts", "tests/**/*.ts", "generated/**/*.ts", "*.ts"]
+  "include": ["agent/**/*.ts", "tests/**/*.ts", "tests-pactum/**/*.ts", "generated/**/*.ts", "*.ts"]
 }

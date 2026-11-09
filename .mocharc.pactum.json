@@ -1,0 +1,8 @@
+{
+  "import": "tsx",
+  "require": "tests-pactum/setup/ctx.ts",
+  "extension": ["ts"],
+  "timeout": 60000,
+  "reporter": "json",
+  "reporter-option": ["output=reports/pactum/results.json"]
+}

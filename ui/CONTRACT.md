@@ -68,6 +68,11 @@ Exit code 0 when the pipeline completed (even with failing tests), non-zero othe
       ]
     }
 
+Since Phase 2 the summary also has a top-level "testFramework": "playwright" | "pactum", the adapter that
+generated and ran the tests (the input file's optional "framework" field, default playwright). On a
+pactum run allureReport is null and there is no reports/html folder; the console says "framework: pactum"
+right after the safety line. Everything else in the summary has the same shape for both frameworks.
+
 probeStatus is null when the probe failed. specFile is null when no spec was written.
 classification is "suspected API finding" or "needs review".
 skippedReason is null, or "skipped: read-only mode" for an endpoint the safety guard did not run (section 7).
@@ -182,7 +187,7 @@ UI server:
   given per run in the UI, never stored by the UI.
 - GET /host-class.mjs serves ui/host-class.mjs to the page.
 
-`npm run check:contract` checks out/summary.json against sections 2, 4, 5 and 7.
+`npm run check:contract` checks out/summary.json against sections 2, 4, 5 and 7, including testFramework.
 
 ## 8. Login and hosted mode (additive)
 
