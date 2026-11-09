@@ -4,22 +4,26 @@ import { BudgetExceeded, callClaude } from './claude';
 import type { Endpoint } from './config';
 import type { Plan } from './plan';
 import type { ProbeResult } from './probe';
-import { validateSpec } from './validate';
+import type { FrameworkAdapter } from './frameworks/types';
 
 const GENERATED_DIR = 'generated';
 const CANDIDATE_DIR = join(GENERATED_DIR, '.candidate');
 
 export type GenerateResult = { ok: true; specFile: string } | { ok: false; reasons: string[] };
 
-const SYSTEM =
-  'You are a senior QA engineer writing Playwright API tests in TypeScript. You answer with exactly one ```ts code block containing the full file, nothing else.';
+function system(fw: FrameworkAdapter): string {
+  return `You are a senior QA engineer writing ${fw.label}. You answer with exactly one \`\`\`ts code block containing the full file, nothing else.`;
+}
 
-function buildPrompt(endpoint: Endpoint, plan: Plan, probe: ProbeResult): string {
+function buildPrompt(fw: FrameworkAdapter, endpoint: Endpoint, plan: Plan, probe: ProbeResult): string {
   const read = (p: string) => readFileSync(p, 'utf8');
   const setupLine = endpoint.setup
     ? `- This endpoint has setup. Each test that needs an existing resource gets one with \`const id = await ctx.createResource('${endpoint.setup.endpointId}');\` (returns the id as a string) and puts it in the path.`
     : '- This endpoint has no setup. Do not call ctx.createResource unless a test needs a resource.';
-  return `Write the Playwright test file generated/${endpoint.id}.spec.ts for this endpoint, implementing every case in the plan as one test.
+  const contextFiles = fw.contextFiles
+    .map((f) => `FILE ${f} (shown for context, tests never import it):\n\`\`\`ts\n${read(f)}\n\`\`\`\n`)
+    .join('\n');
+  return `Write the test file generated/${endpoint.id}.spec.ts (${fw.label}) for this endpoint, implementing every case in the plan as one test.
 
 ENDPOINT CONFIG:
 ${JSON.stringify(endpoint, null, 2)}
@@ -30,34 +34,24 @@ ${JSON.stringify(probe, null, 2)}
 PLAN:
 ${JSON.stringify(plan, null, 2)}
 
-FILE tests/fixtures/ctx.ts (the fixture; tests get everything from ctx):
+FILE ${fw.ctxFile} (the fixture; tests get everything from ctx):
 \`\`\`ts
-${read('tests/fixtures/ctx.ts')}
+${read(fw.ctxFile)}
 \`\`\`
 
-FILE agent/http.ts (createResource implementation used by ctx):
+${contextFiles}FILE ${fw.templateFile} (THE EXAMPLE TO FOLLOW):
 \`\`\`ts
-${read('agent/http.ts')}
-\`\`\`
-
-FILE tests/template/update-booking.spec.ts (THE EXAMPLE TO FOLLOW):
-\`\`\`ts
-${read('tests/template/update-booking.spec.ts')}
+${read(fw.templateFile)}
 \`\`\`
 
 RULES:
-- The file lives in generated/, so import exactly: import { test, expect } from '../tests/fixtures/ctx';
+- The file lives in generated/, so import exactly: ${fw.importLine}
 ${setupLine}
 - Paths are relative, for example \`${endpoint.path.replace(/\{[^}]+\}/, '${id}')}\`. The base URL comes from ctx.api. Never write http:// or https://.
 - Use ctx.api for normal requests and ctx.noAuthApi for auth cases (the same valid request without the auth header).
-- Copy the template's structure: one test.describe block, every test title starts with its type tag ([happy], [schema], [invalid-input], [auth]), and every test records test.info().annotations.push({ type: 'actual-status', description: String(response.status()) }) (or a helper like recordStatus) before its first expect.
-- Status assertions, exactly in the template's style and no other form (the static gate rejects anything else): happy and schema expect(response.status()).toBe(${probe.status}); invalid-input expect(response.status()).toBeGreaterThanOrEqual(400) and expect(response.status()).toBeLessThanOrEqual(499); auth expect([401, 403]).toContain(response.status()). Never use .not on a status, and never assert a status from a different request than the one under test.
-- Auth tests send the request under test with ctx.noAuthApi and never mention ctx.api (resources they need come from ctx.createResource).
 - Never expect a 5xx. Assert status codes, field presence and field types. Assert exact values only for values the test itself sent.
-- Tests run in parallel against a shared live API while other tests create, update and delete data. Never assert a list length or item count, never compare the results of two calls, and never assume a list is unchanged or contains (or lacks) a specific item you did not create in the same test. For lists, assert the array type and the shape of its items only.
-- Response bodies may be empty or not JSON (see the probe). Only call response.json() when the probe shows a JSON body for that status.
-- No process.env, no test.only, no test.skip, no try/catch, no .catch(). Do not import from @playwright/test.
-- One test per plan case: ${plan.cases.length} tests in total.
+- Tests run against a shared live API while other tests create, update and delete data. Never assert a list length or item count, never compare the results of two calls, and never assume a list is unchanged or contains (or lacks) a specific item you did not create in the same test. For lists, assert the array type and the shape of its items only.
+${fw.generatorRules(endpoint, plan, probe).map((r) => `- ${r}`).join('\n')}
 
 Answer with exactly one \`\`\`ts code block containing the whole file.`;
 }
@@ -67,11 +61,11 @@ function extractCode(text: string): string | null {
   return m ? m[1].trimEnd() + '\n' : null;
 }
 
-export async function generateEndpoint(endpoint: Endpoint, plan: Plan, probe: ProbeResult): Promise<GenerateResult> {
+export async function generateEndpoint(fw: FrameworkAdapter, endpoint: Endpoint, plan: Plan, probe: ProbeResult): Promise<GenerateResult> {
   mkdirSync(CANDIDATE_DIR, { recursive: true });
   const candidate = join(CANDIDATE_DIR, `${endpoint.id}.spec.ts`);
   const finalFile = join(GENERATED_DIR, `${endpoint.id}.spec.ts`);
-  const prompt = buildPrompt(endpoint, plan, probe);
+  const prompt = buildPrompt(fw, endpoint, plan, probe);
 
   let reasons: string[] = [];
   for (let attempt = 1; attempt <= 2; attempt++) {
@@ -81,7 +75,7 @@ export async function generateEndpoint(endpoint: Endpoint, plan: Plan, probe: Pr
         : `${prompt}\n\nYOUR PREVIOUS FILE WAS REJECTED BY THE STATIC GATE. Fix every problem below and answer again with the whole file:\n- ${reasons.join('\n- ')}`;
     let text: string;
     try {
-      text = await callClaude(attempt === 1 ? 'generate' : 'generate-retry', endpoint.id, SYSTEM, user);
+      text = await callClaude(attempt === 1 ? 'generate' : 'generate-retry', endpoint.id, system(fw), user);
     } catch (err) {
       if (err instanceof BudgetExceeded) throw err;
       return { ok: false, reasons: [(err as Error).message] };
@@ -93,7 +87,7 @@ export async function generateEndpoint(endpoint: Endpoint, plan: Plan, probe: Pr
       continue;
     }
     writeFileSync(candidate, code);
-    const result = validateSpec(code, {
+    const result = fw.validate(code, {
       name: endpoint.id,
       planTypes: plan.cases.map((c) => c.type),
       probeStatus: probe.status,

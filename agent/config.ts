@@ -28,6 +28,8 @@ export const ConfigSchema = z.object({
   // Safety guard (agent/safety.ts). Missing means false.
   allowProduction: z.boolean().optional(),
   allowWrites: z.boolean().optional(),
+  // Output framework for the generated tests. Missing means playwright.
+  framework: z.enum(['playwright', 'pactum']).optional(),
   endpoints: z.array(EndpointSchema).min(1),
 });
 

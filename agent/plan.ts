@@ -65,7 +65,7 @@ const SYSTEM = 'You are a senior QA engineer planning API tests. You answer with
 
 function buildPrompt(endpoint: Endpoint, probe: ProbeResult): string {
   const types = allowedTypes(endpoint);
-  return `Plan Playwright API test cases for one endpoint.
+  return `Plan API test cases for one endpoint.
 
 ENDPOINT CONFIG:
 ${JSON.stringify(endpoint, null, 2)}

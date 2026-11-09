@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { builtinModules } from 'node:module';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
-import { apiName, type Config, type Endpoint } from './config';
+import { apiName, type Config } from './config';
 
 // Writes the generated suite as a standalone Playwright project in frameworks/<name>/ and zips it.
 
@@ -11,10 +11,8 @@ const ZIP_FILE = 'out/framework.zip';
 const ALLOWED_PACKAGES = new Set(['@playwright/test', 'dotenv', 'dotenv/config', 'allure-js-commons']);
 const TYPES = ['happy', 'schema', 'invalid-input', 'auth'] as const;
 
-export type FrameworkInfo = { name: string; dir: string; zip: string; files: string[]; specCount: number };
-
-export type ExportEndpoint = { endpoint: Endpoint; specFile: string | null; failureReason: string | null };
-export type ExportFinding = { endpointId: string; testTitle: string; expectedStatus: string | null; actualStatus: number | null };
+import type { ExportEndpoint, ExportFinding, FrameworkInfo } from './frameworks/types';
+export type { ExportEndpoint, ExportFinding, FrameworkInfo };
 
 
 function pinnedVersions(): Record<string, string> {
@@ -337,7 +335,7 @@ export function exportFramework(opts: {
   // The validated config holds only the env variable name, never an auth value.
   // name is set to the framework name so the fixture can use it as the Allure epic.
   // The safety flags are always written, so a team can see and change them.
-  const { name: _inputName, allowProduction, allowWrites, ...configRest } = config;
+  const { name: _inputName, framework: _framework, allowProduction, allowWrites, ...configRest } = config;
   write(
     'config/api.json',
     JSON.stringify({ name, ...configRest, allowProduction: allowProduction === true, allowWrites: allowWrites === true }, null, 2) + '\n',
