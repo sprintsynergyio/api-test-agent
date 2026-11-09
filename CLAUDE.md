@@ -21,7 +21,7 @@ An agent that takes a base URL and a list of API endpoints, probes the real API,
 | `npm run test:claude-api` | Messages API path of `agent/claude.ts` with a fake fetch: request shape, error handling, key never leaks (must stay all passed) |
 | `npm run check:contract` | checks `out/summary.json` against `ui/CONTRACT.md`, lists every problem, exit 1 on any |
 
-Claude is called one of two ways. Without `ANTHROPIC_API_KEY`: the Claude Code CLI in headless mode (`claude -p`) with the machine's login. With `ANTHROPIC_API_KEY` in `.env`: the Messages API over HTTPS (`agent/claude.ts`), billed to that key; hosted mode requires this. `CLAUDE_MODEL` optionally overrides the model (API default `claude-sonnet-4-5`); `MAX_CLAUDE_CALLS` caps calls per run. The key is treated like an auth value: never in logs, summaries, exports or the Playwright child process.
+Claude is called one of two ways. Without `ANTHROPIC_API_KEY`: the Claude Code CLI in headless mode (`claude -p`) with the machine's login. With `ANTHROPIC_API_KEY` in `.env`: the Messages API over HTTPS (`agent/claude.ts`), billed to that key; hosted mode requires this. `CLAUDE_MODEL` optionally overrides the model (API default `claude-sonnet-5-5`); `MAX_CLAUDE_CALLS` caps calls per run. The key is treated like an auth value: never in logs, summaries, exports or the Playwright child process.
 
 ## Pipeline
 

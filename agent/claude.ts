@@ -14,7 +14,7 @@ const TIMEOUT_MS = 180_000;
 const DEFAULT_BUDGET = 30;
 const API_URL = 'https://api.anthropic.com/v1/messages';
 const API_VERSION = '2023-06-01';
-const API_DEFAULT_MODEL = 'claude-sonnet-4-5';
+const API_DEFAULT_MODEL = 'claude-sonnet-5-5';
 const API_MAX_TOKENS = 16_000;
 // Variables that must never reach a child process or a log line.
 const SECRET_ENV = /AUTH|ANTHROPIC_API_KEY/i;
