@@ -1,6 +1,6 @@
 # API Test Agent
 
-An agent that takes a base URL and a list of API endpoints, probes the real API, uses Claude to plan and write Playwright API tests, runs them, reports suspected API bugs, and exports a standalone Playwright framework. Endpoints can also be imported from OpenAPI, Postman, cURL, HAR or ticket text. It is a product under active development. Repo: `sprintsynergyhq/api-test-agent` (the local folder name may differ). History, status and setup are in `docs/HACKATHON-HANDOFF.md`.
+An agent that takes a base URL and a list of API endpoints, probes the real API, uses Claude to plan and write Playwright API tests, runs them, reports suspected API bugs, and exports a standalone Playwright framework. Endpoints can also be imported from OpenAPI, Postman, cURL, HAR or ticket text. It is a product under active development. Repo: `sprintsynergyio/api-test-agent` (the local folder name may differ). History, status and setup are in `docs/HACKATHON-HANDOFF.md`.
 
 ## Commands
 
@@ -16,6 +16,7 @@ An agent that takes a base URL and a list of API endpoints, probes the real API,
 | `npm run -s import <type> < file` | import endpoints from a source file (see Importers) |
 | `npm run test:importers` | importer tests, offline (must stay all passed; `RUN_LIVE_CLAUDE_TESTS=1` adds the 2 live Claude tests) |
 | `npm run test:safety` | safety guard tests: host rules, modes, HTTP layer (must stay all passed) |
+| `npm run test:gate` | static gate tests: per-type status rules, noAuthApi rule, per-type plan coverage (must stay all passed) |
 | `npm run eval -- [--runs N] [--bugs all\|none\|id,id] [--dry-run]` | eval harness: runs the agent against every planted-bug set and prints detection, false alarm and flakiness rates (see Eval harness) |
 | `npm run test:eval` | eval harness tests, offline: the scorer, and every planted bug against a real local API (must stay all passed) |
 | `npm run check:contract` | checks `out/summary.json` against `ui/CONTRACT.md`, lists every problem, exit 1 on any |
@@ -56,7 +57,9 @@ Claude is called through the Claude Code CLI in headless mode (`claude -p`) usin
 - a title does not start with `[happy]`, `[schema]`, `[invalid-input]` or `[auth]`
 - a test lacks the `actual-status` annotation before its first assertion
 - any assertion expects a status of 500 or higher
-- it has fewer tests than plan cases, or fails typecheck
+- it has fewer tests than plan cases, fewer tests of a type than the plan has cases of that type, or fails typecheck
+- a status assertion does not match the test's type, or a required one is missing. The only allowed forms, per type: `[happy]` and `[schema]` exactly `expect(<status>).toBe(<probe status>)`; `[invalid-input]` `toBeGreaterThanOrEqual(400)` and `toBeLessThanOrEqual(499)`, both required; `[auth]` `expect([401, 403]).toContain(<status>)` (or `toBe(401)` / `toBe(403)`). `<status>` is `response.status()` or a variable assigned from it. `.not` on a status is never allowed
+- an `[auth]` test mentions `ctx.api` (or destructures `api` from ctx), or does not use `ctx.noAuthApi`
 
 ## Eval harness
 
@@ -105,7 +108,7 @@ Output goes to `eval-results/<timestamp>/` (gitignored; not under `out/`, which 
 3. Tab 1 `npm run api:local`, then `npm run agent input/local-shop.json`: the line `safety: local host, full mode`, exactly 2 suspected API findings (create-product with a text price returns 500; delete-product without auth returns 204), every other test passes, and `npm run check:contract` is clean.
 4. `npm run api:local:fixed`, same run: 0 findings, 0 failures.
 5. `grep -r "hackathon-demo-token\|YWRtaW46" out/ reports/ frameworks/ input/`: no matches.
-6. `npm run test:importers` (offline), `npm run test:safety` and `npm run test:eval`: all passed, 0 failed.
+6. `npm run test:importers` (offline), `npm run test:safety`, `npm run test:gate` and `npm run test:eval`: all passed, 0 failed.
 7. Refused: `npm run agent` on a temp copy of `input/local-shop.json` with `baseUrl` `https://api.example.com`: `REFUSED: api.example.com looks like a production host. ...`, status "refused", `requestsSent` 0, exit 1.
 8. Read-only: Tab 1 `LOG_REQUESTS=1 npm run api:local`, then `AGENT_FORCE_PRODUCTION=1 npm run agent` on a temp copy of `input/local-shop.json` with `"allowProduction": true`: only list-products runs, the other 4 print `SKIPPED read-only mode` and have `skippedReason`, the API log shows no POST, PUT, PATCH or DELETE, and `requestsSent` equals the number of requests in the log.
 9. Paste raw command output in your reply, not a summary. Commit after each verified change on branch `main` (`git status` first, rule 10). Pushing to `origin main` is allowed. Never force push.
