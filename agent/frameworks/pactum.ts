@@ -3,10 +3,12 @@ import { testEnv } from './test-env';
 import { builtinModules } from 'node:module';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import { allAuthEnvNames, describeAuth } from '../auth';
 import { apiName, type Config } from '../config';
+import { authSource } from '../export';
 import { validateWithRules, type GateRules } from '../validate';
 import { exportedConfig, modelSource } from './shared-export';
-import type { ExportEndpoint, ExportFinding, FrameworkAdapter, FrameworkInfo, RunResult, TestOutcome } from './types';
+import type { ExportEndpoint, ExportFinding, ExportOptions, FrameworkAdapter, FrameworkInfo, RunResult, TestOutcome } from './types';
 
 // The Pactum adapter: Mocha + Pactum tests that import only from tests-pactum/setup/ctx.ts.
 // Shared with Playwright: probe, plan, status rules, finding classification, summary, safety guard.
@@ -21,7 +23,7 @@ const IMPORT_LINE = "import { ctx, expect, recordStatus } from '../tests-pactum/
 const FRAMEWORKS_DIR = 'frameworks';
 const ZIP_FILE = 'out/framework.zip';
 const ALLOWED_PACKAGES = new Set(['pactum', 'dotenv', 'dotenv/config']);
-const TYPES = ['happy', 'schema', 'invalid-input', 'auth'] as const;
+const TYPES = ['happy', 'schema', 'invalid-input', 'auth', 'authz'] as const;
 
 // ---- static gate ----
 
@@ -114,17 +116,20 @@ function safetySource(): string {
   return src.replace(/^\/\/ No imports: the framework export[^\n]*\n\/\/[^\n]*\n\/\/[^\n]*\n/m, '');
 }
 
-// Standalone copy of tests-pactum/setup/ctx.ts: imports ./safety and reads config/api.json.
+// Standalone copy of tests-pactum/setup/ctx.ts: imports ./safety, ./model and ./auth, reads config/api.json.
 function ctxSource(): string {
   const src = readFileSync(CTX_FILE, 'utf8');
   const importLine = "from '../../agent/safety';";
   const inputLine = /^const INPUT_FILE = .*\/\/ EXPORT-INPUT$/m;
   if (!src.includes(importLine) || !inputLine.test(src)) throw new Error(`framework export: ${CTX_FILE} no longer has the expected import and INPUT_FILE lines`);
   const modelLine = "from '../../agent/model';";
+  const authLine = "from '../../agent/auth';";
   if (!src.includes(modelLine)) throw new Error(`framework export: ${CTX_FILE} no longer imports agent/model as expected`);
+  if (!src.includes(authLine)) throw new Error(`framework export: ${CTX_FILE} no longer imports agent/auth as expected`);
   return src
     .replace(importLine, "from './safety';")
     .replace(modelLine, "from './model';")
+    .replace(authLine, "from './auth';")
     .replace(inputLine, "const INPUT_FILE = fileURLToPath(new URL('../config/api.json', import.meta.url));")
     .replace("import { join } from 'node:path';", "import { join } from 'node:path';\nimport { fileURLToPath } from 'node:url';")
     .replace(/^\/\/ The Pactum equivalent of tests\/fixtures\/ctx\.ts: the ONLY/m, '// The ONLY');
@@ -157,8 +162,8 @@ const TSCONFIG = `{
 `;
 
 function countByType(spec: string): Record<(typeof TYPES)[number], number> {
-  const counts = { happy: 0, schema: 0, 'invalid-input': 0, auth: 0 };
-  for (const m of spec.matchAll(/\bit\(\s*(['"`])\[(happy|schema|invalid-input|auth)\]/g)) counts[m[2] as (typeof TYPES)[number]]++;
+  const counts = { happy: 0, schema: 0, 'invalid-input': 0, auth: 0, authz: 0 };
+  for (const m of spec.matchAll(/\bit\(\s*(['"`])\[(happy|schema|invalid-input|auth|authz)\]/g)) counts[m[2] as (typeof TYPES)[number]]++;
   return counts;
 }
 
@@ -171,7 +176,7 @@ function readme(name: string, config: Config, endpoints: ExportEndpoint[], specs
     });
   const missing = endpoints.filter((e) => !e.specFile);
   const envStep = config.auth
-    ? `2. \`cp .env.example .env\` and set \`${config.auth.valueEnv}\` to the value of the \`${config.auth.header}\` header.`
+    ? `2. \`cp .env.example .env\` and fill in ${allAuthEnvNames(config.auth).map((n) => `\`${n}\``).join(', ')}. Auth: ${describeAuth(config.auth)}`
     : '2. No auth is needed for this API, so there is no .env to fill in.';
   const cell = (v: unknown) => String(v).replace(/\|/g, '\\|');
   const findingRows = findings.map((f) => `| ${cell(f.endpointId)} | ${cell(f.testTitle)} | ${cell(f.expectedStatus ?? 'n/a')} | ${cell(f.actualStatus ?? 'n/a')} |`);
@@ -183,11 +188,11 @@ Standalone project: Node 20+ and npm are all you need.
 
 ## What the suite covers
 
-| Endpoint | Method | Path | happy | schema | invalid-input | auth |
-|---|---|---|---|---|---|---|
+| Endpoint | Method | Path | happy | schema | invalid-input | auth | authz |
+|---|---|---|---|---|---|---|---|
 ${rows.join('\n')}
 ${missing.length ? `\nNot covered (no spec was generated): ${missing.map((e) => `${e.endpoint.id} (${e.failureReason ?? 'unknown'})`).join('; ')}.\n` : ''}
-Case types: **happy** valid request succeeds and returns the values sent; **schema** response fields are present with the right types; **invalid-input** bad input is rejected with a 4xx; **auth** a request without the auth header is rejected with 401 or 403.
+Case types: **happy** valid request succeeds and returns the values sent; **schema** response fields are present with the right types; **invalid-input** bad input is rejected with a 4xx; **auth** a request without credentials is rejected with 401 or 403; **authz** the same request as another role (\`ctx.as('<role>')\`) is rejected with 403 or 404.
 
 ## How to run
 
@@ -256,14 +261,8 @@ function checkSelfContained(dir: string, files: string[]): string[] {
   return problems;
 }
 
-export function exportPactumFramework(opts: {
-  config: Config;
-  inputFile: string;
-  authValue: string | undefined;
-  endpoints: ExportEndpoint[];
-  findings: ExportFinding[];
-}): FrameworkInfo {
-  const { config, inputFile, authValue, endpoints, findings } = opts;
+export function exportPactumFramework(opts: ExportOptions): FrameworkInfo {
+  const { config, inputFile, secrets, endpoints, findings } = opts;
   const base = apiName(config, inputFile);
   const name = base.endsWith('-pactum') ? base : `${base}-pactum`;
   const dir = join(FRAMEWORKS_DIR, name);
@@ -295,9 +294,10 @@ export function exportPactumFramework(opts: {
   write('tsconfig.json', TSCONFIG);
   write('config/api.json', JSON.stringify(exportedConfig(name, config), null, 2) + '\n');
   write('src/model.ts', modelSource());
+  write('src/auth.ts', authSource());
   write('src/safety.ts', safetySource());
   write('src/ctx.ts', ctxSource());
-  if (config.auth) write('.env.example', `${config.auth.valueEnv}=\n`);
+  if (config.auth) write('.env.example', allAuthEnvNames(config.auth).map((n) => `${n}=\n`).join(''));
   write('.gitignore', 'node_modules/\n.env\nreports/\n');
 
   const specs = new Map<string, string>();
@@ -313,10 +313,9 @@ export function exportPactumFramework(opts: {
 
   const files = listFiles(dir);
   const problems = checkSelfContained(dir, files);
-  if (authValue) {
-    for (const file of files) {
-      if (readFileSync(join(dir, file), 'utf8').includes(authValue)) problems.push(`${file} contains the auth value`);
-    }
+  for (const file of files) {
+    const text = readFileSync(join(dir, file), 'utf8');
+    for (const secret of secrets) if (secret && text.includes(secret)) problems.push(`${file} contains an auth value`);
   }
   if (problems.length) {
     rmSync(dir, { recursive: true, force: true });
@@ -343,10 +342,11 @@ export const pactumAdapter: FrameworkAdapter = {
   importLine: IMPORT_LINE,
   generatorRules(endpoint, plan, probe) {
     return [
-      "Copy the template's structure: Mocha describe and it (both are globals, do not import them), every test title starts with its type tag ([happy], [schema], [invalid-input], [auth]), and every test calls recordStatus(response.status()) before its first expect.",
+      "Copy the template's structure: Mocha describe and it (both are globals, do not import them), every test title starts with its type tag ([happy], [schema], [invalid-input], [auth], [authz]), and every test calls recordStatus(response.status()) before its first expect.",
       'Requests: ctx.api.get(path, options?), ctx.api.post(path, body, options?), ctx.api.put(path, body, options?), ctx.api.patch(path, body, options?), ctx.api.delete(path, options?). options is { params?: query parameters, headers?: extra headers }. Each returns a response with status(), ok(), headers(), text() and json(). Never import pactum, node:assert or chai; expect comes from the setup file.',
-      `Status assertions, exactly in the template's style and no other form (the static gate rejects anything else): happy and schema expect(response.status()).toBe(${probe.status}); invalid-input expect(response.status()).toBeGreaterThanOrEqual(400) and expect(response.status()).toBeLessThanOrEqual(499); auth expect([401, 403]).toContain(response.status()). Never use .not on a status, and never assert a status from a different request than the one under test.`,
+      `Status assertions, exactly in the template's style and no other form (the static gate rejects anything else): happy and schema expect(response.status()).toBe(${probe.status}); invalid-input expect(response.status()).toBeGreaterThanOrEqual(400) and expect(response.status()).toBeLessThanOrEqual(499); auth expect([401, 403]).toContain(response.status()); authz expect([403, 404]).toContain(response.status()). Never use .not on a status, and never assert a status from a different request than the one under test.`,
       'Auth tests send the request under test with ctx.noAuthApi and never mention ctx.api (resources they need come from ctx.createResource).',
+      "Authz tests send the request under test with ctx.as('<role>') (the role named in the plan case; same methods as ctx.api) and never mention ctx.api or ctx.noAuthApi; resources they need come from ctx.createResource, which uses the default role.",
       'Response bodies may be empty or not JSON (see the probe). Only call response.json() when the probe shows a JSON body for that status; cast it, for example (await response.json()) as Record<string, unknown>.',
       'No process.env, no .only, no .skip, no this.skip(), no try/catch, no .catch().',
       `One test per plan case: ${plan.cases.length} tests in total.`,

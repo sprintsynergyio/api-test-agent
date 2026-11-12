@@ -50,9 +50,10 @@ const needsReview = (endpointId: string, type: string): SummaryFinding => ({
 
 // Scorer
 
-await check('catalog has the 7 bugs, 5 detectable, default = the two demo bugs', () => {
-  assert.equal(catalog.bugs.length, 7);
-  assert.equal(catalog.bugs.filter((b) => b.detectableBy !== 'none-yet').length, 5);
+await check('catalog has the 8 bugs, 6 detectable, default = the two demo bugs', () => {
+  assert.equal(catalog.bugs.length, 8);
+  assert.equal(catalog.bugs.filter((b) => b.detectableBy !== 'none-yet').length, 6);
+  assert.equal(catalog.bugs.find((b) => b.id === 'viewer-can-delete')?.detectableBy, 'authz');
   assert.deepEqual(catalog.default, ['price-text-500', 'delete-no-auth']);
 });
 
@@ -114,6 +115,15 @@ await check('scorer: with no active bugs every suspected finding is a false alar
   assert.equal(s.falseAlarms.length, 1);
 });
 
+await check('scorer: an authz finding on delete-product detects viewer-can-delete; an auth finding does not', () => {
+  const hit = scoreRun(summary([suspected('delete-product', 'authz', 204)]), ['viewer-can-delete'], catalog);
+  assert.equal(hit.bugs[0].outcome, 'detected');
+  assert.equal(hit.falseAlarms.length, 0);
+  const miss = scoreRun(summary([suspected('delete-product', 'auth', 204)]), ['viewer-can-delete'], catalog);
+  assert.equal(miss.bugs[0].outcome, 'missed');
+  assert.equal(miss.falseAlarms.length, 1);
+});
+
 await check('scorer: unknown bug id throws', () => {
   assert.throws(() => scoreRun(summary([]), ['no-such-bug'], catalog), /unknown bug id/);
 });
@@ -168,9 +178,10 @@ function stop(api: Api): Promise<void> {
   });
 }
 
-async function call(api: Api, method: string, path: string, body?: unknown, auth = true) {
+async function call(api: Api, method: string, path: string, body?: unknown, auth: boolean | string = true) {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (auth) headers.Authorization = TOKEN;
+  if (auth === true) headers.Authorization = TOKEN;
+  else if (typeof auth === 'string') headers.Authorization = auth;
   const res = await fetch(`http://127.0.0.1:${api.port}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   const text = await res.text();
   return { status: res.status, json: text ? JSON.parse(text) : undefined };
@@ -197,6 +208,17 @@ const probes: Record<string, { probe: Probe; withBug: unknown; withoutBug: unkno
     },
     withBug: 200,
     withoutBug: 401,
+  },
+  'viewer-can-delete': {
+    // A viewer logs in (POST /auth/login) and tries to delete a product the admin created.
+    probe: async (api) => {
+      const created = await call(api, 'POST', '/products', good);
+      const login = await call(api, 'POST', '/auth/login', { username: 'viewer', password: 'viewer-pass' }, false);
+      assert.equal(login.status, 200, 'viewer login');
+      return (await call(api, 'DELETE', `/products/${created.json.id}`, undefined, `Bearer ${login.json.data.token}`)).status;
+    },
+    withBug: 204,
+    withoutBug: 403,
   },
   'create-accepts-missing-name': { probe: (api) => call(api, 'POST', '/products', { price: 10, category: 'shoes', inStock: true }).then((r) => r.status), withBug: 201, withoutBug: 400 },
   'get-bad-id-500': { probe: (api) => call(api, 'GET', '/products/not-a-number').then((r) => r.status), withBug: 500, withoutBug: 400 },

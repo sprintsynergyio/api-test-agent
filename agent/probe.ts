@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { pickAuthEnv } from './auth';
 import { loadConfig, selectionLine, takeSelectFlag, type Config, type Endpoint } from './config';
 import { createClients, disposeClients, resolvePath, runSetup, type Clients } from './http';
 import { queryString, setupSteps } from './model';
@@ -97,15 +98,16 @@ async function probeEndpoint(config: Config, clients: Clients, endpoint: Endpoin
   return result;
 }
 
-export type ProbeRun = { results: Map<string, ProbeResult>; requestsSent: number };
+export type ProbeRun = { results: Map<string, ProbeResult>; requestsSent: number; secrets: string[] };
 
 // Endpoints the safety guard does not allow (read-only mode) are not probed: "<id> SKIPPED read-only mode".
-// createClients throws ProductionRefused before any request when the host is refused.
-export async function probeAll(config: Config, authValue: string | undefined, opts: { forceProduction?: boolean } = {}): Promise<ProbeRun> {
+// createClients throws ProductionRefused before any request when the host is refused. authEnv holds
+// only the environment variables the auth section names (pickAuthEnv); the default role probes.
+export async function probeAll(config: Config, authEnv: Record<string, string | undefined>, opts: { forceProduction?: boolean } = {}): Promise<ProbeRun> {
   rmSync(PROBE_DIR, { recursive: true, force: true });
   mkdirSync(PROBE_DIR, { recursive: true });
 
-  const clients = await createClients(config, authValue, { timeoutMs: REQUEST_TIMEOUT_MS, forceProduction: opts.forceProduction });
+  const clients = await createClients(config, authEnv, { timeoutMs: REQUEST_TIMEOUT_MS, forceProduction: opts.forceProduction });
   const results = new Map<string, ProbeResult>();
   try {
     for (const endpoint of config.endpoints) {
@@ -127,7 +129,7 @@ export async function probeAll(config: Config, authValue: string | undefined, op
   } finally {
     await disposeClients(clients);
   }
-  return { results, requestsSent: clients.counter.sent };
+  return { results, requestsSent: clients.counter.sent, secrets: clients.secrets() };
 }
 
 async function main() {
@@ -135,11 +137,7 @@ async function main() {
   const config = loadConfig(inputFile);
   const line = selectionLine(config);
   if (line) console.log(line);
-  const authValue = config.auth ? process.env[config.auth.valueEnv] : undefined;
-  if (config.auth && !authValue) {
-    throw new Error(`Missing auth value: environment variable ${config.auth.valueEnv} is not set (required by ${inputFile}).`);
-  }
-  await probeAll(config, authValue, { forceProduction: process.env.AGENT_FORCE_PRODUCTION === '1' });
+  await probeAll(config, pickAuthEnv(config.auth, process.env), { forceProduction: process.env.AGENT_FORCE_PRODUCTION === '1' });
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

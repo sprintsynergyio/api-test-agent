@@ -32,6 +32,12 @@
       "detectableBy": "invalid-input"
     },
     {
+      "id": "viewer-can-delete",
+      "description": "DELETE /products/:id accepts a viewer's login token (correct: 403; only admin may write)",
+      "endpointId": "delete-product",
+      "detectableBy": "authz"
+    },
+    {
       "id": "update-not-persisted",
       "description": "PUT /products/:id returns 200 with the new values but does not save them (correct: a later GET returns the new values). Needs a [flow] test, not built yet",
       "endpointId": "update-product",

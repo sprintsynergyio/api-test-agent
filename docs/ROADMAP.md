@@ -20,6 +20,7 @@ We work through the phases in order, one step at a time. A phase is done only wh
 | Eval harness | In progress: harness built (`npm run eval`, 7 planted bugs, scorer + offline tests); score pending the first live run |
 | Safety guard against production hosts | Done, proven (Phase 1) |
 | Input model: nested paths, query, endpoint headers, env/brand/region profiles | Built and proven offline (Phase 4a PR); live agent run on `input/local-shop-nested.json` pending |
+| Real-world auth: header, query, cookie, login flow with refresh, roles, `[authz]` tests | Built and proven offline (Phase 5 PR: `npm run test:auth`, both frameworks and exports against the local shop login); live agent run on `input/local-shop-login.json` pending; OAuth2 client credentials and the UI not yet |
 
 ---
 
@@ -144,17 +145,17 @@ Pulled forward from Phases 4 and 5 because the first real client (multi-brand, m
 
 ---
 
-## Phase 5: Real-world auth
+## Phase 5: Real-world auth (built, live run pending)
 
 **Goal:** test the APIs real teams have, which rarely use a fixed header.
 
 **Deliverables**
-- Login flow: call a login endpoint, read the token from the response, use it for the run.
-- API key in a header or query parameter.
-- OAuth2 client credentials.
-- Roles: two users (for example admin and customer). New `[authz]` tests: a customer cannot read or change another customer's data, a customer cannot call admin endpoints.
+- Login flow: call a login endpoint, read the token from the response, use it for the run. Built: `auth.type: "login"` (agent/auth.ts), token cached per client, one refresh on a configured status.
+- API key in a header, query parameter or cookie. Built: `auth.type: "header" | "query" | "cookie"`.
+- OAuth2 client credentials. Not built: a client-credentials grant is a login request with a form body; the login type takes JSON bodies only. The importers warn when a spec declares oauth2.
+- Roles: two users (for example admin and customer). New `[authz]` tests: a customer cannot read or change another customer's data, a customer cannot call admin endpoints. Built: `auth.roles`, `ctx.as(role)` in both frameworks, the `[authz]` case type with its own plan and gate rules, finding classification and eval scoring.
 
-**Proof:** the local API gets a login endpoint and roles with planted access-control bugs; both are caught in both frameworks; no token appears in any output.
+**Proof so far:** the local shop API has `POST /auth/login` with admin and viewer users and the planted bug `viewer-can-delete`; throwaway `[authz]` specs catch it in both frameworks (actual status 204 recorded); both exports run standalone with the login flow; `npm run test:auth` covers every type, caching, refresh, the guard and redaction; no credential or token in any output. Pending: the live agent run (`npm run agent input/local-shop-login.json`) and the UI, which still accepts only the header type.
 
 ---
 

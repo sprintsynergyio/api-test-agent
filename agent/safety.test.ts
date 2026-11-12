@@ -67,14 +67,16 @@ const HOSTS: [string, HostClass][] = [
   ['', 'production'],
 ];
 
-const AUTH = 'Bearer safety-test-token';
+const AUTH_VALUE = 'Bearer safety-test-token';
+// createClients takes the auth environment: only the variables the auth section names.
+const AUTH = { SAFETY_TEST_AUTH: AUTH_VALUE };
 
 function config(baseUrl: string, flags: { allowProduction?: boolean; allowWrites?: boolean } = {}): Config {
   return {
     baseUrl,
     selection: null,
     defaultHeaders: { Accept: 'application/json', 'Content-Type': 'application/json' },
-    auth: { header: 'Authorization', valueEnv: 'SAFETY_TEST_AUTH' },
+    auth: { type: 'header', header: 'Authorization', valueEnv: 'SAFETY_TEST_AUTH' },
     ...flags,
     endpoints: [
       { id: 'list-items', method: 'GET', path: '/items', requiresAuth: false },
@@ -239,6 +241,29 @@ async function main() {
         assert.equal((await clients.api.delete('/items/7')).status(), 200);
         assert.equal(clients.counter.sent, 2);
         assert.deepEqual(seen, ['POST /items', 'DELETE /items/7']);
+      } finally {
+        await disposeClients(clients);
+      }
+    });
+
+    await check('login auth: refused host sends no login; read-only sends the login (not a data write) but blocks writes', async () => {
+      seen.length = 0;
+      const login: Config['auth'] = {
+        type: 'login',
+        request: { method: 'POST', path: '/login' },
+        credentialsEnv: { user: 'SAFETY_TEST_USER', pass: 'SAFETY_TEST_PASS' },
+        tokenPath: 'id',
+        apply: { type: 'header', header: 'Authorization', prefix: 'Bearer ' },
+      };
+      const env = { SAFETY_TEST_USER: 'u', SAFETY_TEST_PASS: 'p' };
+      await assert.rejects(createClients({ ...config(base), auth: login }, env, { forceProduction: true }), ProductionRefused);
+      assert.deepEqual(seen, [], 'refused: not even the login request is sent');
+      const clients = await createClients({ ...config(base, { allowProduction: true }), auth: login }, env, { forceProduction: true });
+      try {
+        assert.equal((await clients.api.get('/items')).status(), 200);
+        await assert.rejects(clients.api.post('/items', { data: {} }), ReadOnlyBlocked);
+        assert.deepEqual(seen, ['POST /login', 'GET /items'], 'the login (POST) went through the guard, the data write did not');
+        assert.equal(clients.counter.sent, 2);
       } finally {
         await disposeClients(clients);
       }

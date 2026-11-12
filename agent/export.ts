@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { builtinModules } from 'node:module';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import { allAuthEnvNames, describeAuth } from './auth';
 import { apiName, type Config } from './config';
 import { exportedConfig, modelSource } from './frameworks/shared-export';
 
@@ -10,9 +11,9 @@ import { exportedConfig, modelSource } from './frameworks/shared-export';
 const FRAMEWORKS_DIR = 'frameworks';
 const ZIP_FILE = 'out/framework.zip';
 const ALLOWED_PACKAGES = new Set(['@playwright/test', 'dotenv', 'dotenv/config', 'allure-js-commons']);
-const TYPES = ['happy', 'schema', 'invalid-input', 'auth'] as const;
+const TYPES = ['happy', 'schema', 'invalid-input', 'auth', 'authz'] as const;
 
-import type { ExportEndpoint, ExportFinding, FrameworkInfo } from './frameworks/types';
+import type { ExportEndpoint, ExportFinding, ExportOptions, FrameworkInfo } from './frameworks/types';
 export type { ExportEndpoint, ExportFinding, FrameworkInfo };
 
 
@@ -28,13 +29,15 @@ function pinnedVersions(): Record<string, string> {
   );
 }
 
-// Self-contained copy of agent/http.ts: same logic, with the Config type inlined.
+// Self-contained copy of agent/http.ts: same logic, with the Config type inlined. It imports
+// ./auth, ./model and ./safety, which are copied next to it.
 function httpSource(): string {
   const src = readFileSync('agent/http.ts', 'utf8');
   const importLine = "import type { Config } from './config';";
   const modelLine = "import { queryString, resolvePath, setupSteps } from './model';";
   if (!src.includes(modelLine)) throw new Error('framework export: agent/http.ts no longer imports model helpers as expected');
   if (!src.includes(importLine)) throw new Error('framework export: agent/http.ts no longer imports Config as expected');
+  if (!src.includes("} from './auth';")) throw new Error('framework export: agent/http.ts no longer imports ./auth as expected');
   return src
     .replace(
       importLine,
@@ -42,7 +45,7 @@ function httpSource(): string {
   name?: string;
   baseUrl: string;
   defaultHeaders: Record<string, string>;
-  auth?: { header: string; valueEnv: string };
+  auth?: AuthConfig;
   allowProduction?: boolean;
   allowWrites?: boolean;
   profile?: Profile;
@@ -60,7 +63,15 @@ function httpSource(): string {
 };`,
     )
     .replace(modelLine, "import { queryString, resolvePath, setupSteps, type Profile, type Query, type Selection, type Setup } from './model';")
+    .replace("  type AuthRequest,\n} from './auth';", "  type AuthConfig,\n  type AuthRequest,\n} from './auth';")
     .replace(/^\/\/ Shared HTTP logic for the ctx fixture and the agent\./m, '// HTTP clients and createResource for the ctx fixture.');
+}
+
+// agent/auth.ts has no imports, so it is copied as it is (src/auth.ts).
+export function authSource(): string {
+  const src = readFileSync('agent/auth.ts', 'utf8');
+  if (/^\s*import\s/m.test(src)) throw new Error('framework export: agent/auth.ts must not import anything');
+  return src;
 }
 
 // agent/safety.ts has no imports, so it is copied as it is (src/http.ts imports it as ./safety).
@@ -103,6 +114,7 @@ import {
   runSetup,
   type Config,
 } from '../../src/http';
+import { pickAuthEnv } from '../../src/auth';
 import { applyProfile } from '../../src/model';
 import { endpointAllowed, READ_ONLY_SKIP } from '../../src/safety';
 
@@ -113,6 +125,8 @@ export type Ctx = {
   baseUrl: string;
   api: APIRequestContext;
   noAuthApi: APIRequestContext;
+  // A client authenticated as another role from auth.roles (for [authz] tests).
+  as: (role: string) => APIRequestContext;
   createResource: (endpointId: string) => Promise<string>;
   // Runs this spec's endpoint setup steps and returns every path placeholder value.
   setup: () => Promise<Record<string, string>>;
@@ -125,19 +139,16 @@ export const test = base.extend<{ ctx: Ctx }>({
     // With a profile, AGENT_SELECT (env=staging,brand=alpha,...) picks the base URL and headers.
     const config = applyProfile(JSON.parse(readFileSync(configFile, 'utf8')), process.env.AGENT_SELECT) as Config;
 
-    // No auth section: api and noAuthApi are the same. With one, the value must be set.
-    const authValue = config.auth ? process.env[config.auth.valueEnv] : undefined;
-    if (config.auth && !authValue) {
-      throw new Error(
-        \`Missing auth value: environment variable \${config.auth.valueEnv} is not set. Copy .env.example to .env and fill it in.\`,
-      );
-    }
+    // Only the environment variables the auth section names leave this file (src/auth.ts). A missing
+    // one throws with its name (copy .env.example to .env). Without an auth section, api and
+    // noAuthApi are the same.
+    const authEnv = pickAuthEnv(config.auth, process.env);
 
     await labels(...reportLabels(config.name ?? 'api', testInfo.titlePath, testInfo.file));
 
     // The safety guard: refused on a production host without allowProduction, writes blocked in
     // read-only mode. AGENT_FORCE_PRODUCTION=1 (testing only) treats every host as production.
-    const clients = await createClients(config, authValue, { forceProduction: process.env.AGENT_FORCE_PRODUCTION === '1' });
+    const clients = await createClients(config, authEnv, { forceProduction: process.env.AGENT_FORCE_PRODUCTION === '1' });
     // A spec is named after its endpoint. In read-only mode a write endpoint's tests are skipped, never passed.
     const endpoint = config.endpoints.find((e) => \`\${e.id}.spec.ts\` === testInfo.file.split(/[\\\\/]/).pop());
     if (endpoint && !endpointAllowed(clients.safety, endpoint)) {
@@ -145,9 +156,10 @@ export const test = base.extend<{ ctx: Ctx }>({
       testInfo.skip(true, READ_ONLY_SKIP);
     }
 
-    // Every request and response is attached to the test (Playwright report and Allure).
-    const recordedClients = recordClients(config, clients, authValue, async (exchange) => {
-      const { name, body } = formatExchange(config, exchange, authValue);
+    // Every request and response is attached to the test (Playwright report and Allure), login
+    // requests included, with every credential value and token scrubbed.
+    const recordedClients = recordClients(config, clients, async (exchange) => {
+      const { name, body } = formatExchange(config, exchange, clients.secrets());
       await testInfo.attach(name, { body, contentType: 'application/json' });
     });
 
@@ -155,6 +167,7 @@ export const test = base.extend<{ ctx: Ctx }>({
       baseUrl: config.baseUrl,
       api: recordedClients.api,
       noAuthApi: recordedClients.noAuthApi,
+      as: (role) => recordedClients.as(role),
       createResource: (endpointId) => createResource(config, recordedClients, endpointId),
       setup: async () => {
         if (!endpoint) throw new Error('ctx.setup: no endpoint in config/api.json is named after this spec file');
@@ -200,8 +213,8 @@ const TSCONFIG = `{
 `;
 
 function countByType(spec: string): Record<(typeof TYPES)[number], number> {
-  const counts = { happy: 0, schema: 0, 'invalid-input': 0, auth: 0 };
-  for (const m of spec.matchAll(/\btest\(\s*(['"`])\[(happy|schema|invalid-input|auth)\]/g)) {
+  const counts = { happy: 0, schema: 0, 'invalid-input': 0, auth: 0, authz: 0 };
+  for (const m of spec.matchAll(/\btest\(\s*(['"`])\[(happy|schema|invalid-input|auth|authz)\]/g)) {
     counts[m[2] as (typeof TYPES)[number]]++;
   }
   return counts;
@@ -216,7 +229,7 @@ function readme(name: string, config: Config, endpoints: ExportEndpoint[], specs
     });
   const missing = endpoints.filter((e) => !e.specFile);
   const envStep = config.auth
-    ? `2. \`cp .env.example .env\` and set \`${config.auth.valueEnv}\` to the value of the \`${config.auth.header}\` header.`
+    ? `2. \`cp .env.example .env\` and fill in ${allAuthEnvNames(config.auth).map((n) => `\`${n}\``).join(', ')}. Auth: ${describeAuth(config.auth)}`
     : '2. No auth is needed for this API, so there is no .env to fill in.';
   const cell = (v: unknown) => String(v).replace(/\|/g, '\\|');
   const findingRows = findings.map(
@@ -230,11 +243,11 @@ Standalone project: Node 20+ and npm are all you need. No browsers are installed
 
 ## What the suite covers
 
-| Endpoint | Method | Path | happy | schema | invalid-input | auth |
-|---|---|---|---|---|---|---|
+| Endpoint | Method | Path | happy | schema | invalid-input | auth | authz |
+|---|---|---|---|---|---|---|---|
 ${rows.join('\n')}
 ${missing.length ? `\nNot covered (no spec was generated): ${missing.map((e) => `${e.endpoint.id} (${e.failureReason ?? 'unknown'})`).join('; ')}.\n` : ''}
-Case types: **happy** valid request succeeds and returns the values sent; **schema** response fields are present with the right types; **invalid-input** bad input is rejected with a 4xx; **auth** a request without the auth header is rejected with 401 or 403.
+Case types: **happy** valid request succeeds and returns the values sent; **schema** response fields are present with the right types; **invalid-input** bad input is rejected with a 4xx; **auth** a request without credentials is rejected with 401 or 403; **authz** the same request as another role (\`ctx.as('<role>')\`) is rejected with 403 or 404.
 
 ## How to run
 
@@ -313,14 +326,8 @@ function checkSelfContained(dir: string, files: string[]): string[] {
   return problems;
 }
 
-export function exportFramework(opts: {
-  config: Config;
-  inputFile: string;
-  authValue: string | undefined;
-  endpoints: ExportEndpoint[];
-  findings: ExportFinding[];
-}): FrameworkInfo {
-  const { config, inputFile, authValue, endpoints, findings } = opts;
+export function exportFramework(opts: ExportOptions): FrameworkInfo {
+  const { config, inputFile, secrets, endpoints, findings } = opts;
   const name = apiName(config, inputFile);
   const dir = join(FRAMEWORKS_DIR, name);
   rmSync(dir, { recursive: true, force: true });
@@ -356,11 +363,12 @@ export function exportFramework(opts: {
   // The safety flags are always written, so a team can see and change them.
   write('config/api.json', JSON.stringify(exportedConfig(name, config), null, 2) + '\n');
   write('src/model.ts', modelSource());
+  write('src/auth.ts', authSource());
   write('src/http.ts', httpSource());
   write('src/safety.ts', safetySource());
   write('src/global-setup.ts', GLOBAL_SETUP_SOURCE);
   write('tests/fixtures/ctx.ts', CTX_SOURCE);
-  if (config.auth) write('.env.example', `${config.auth.valueEnv}=\n`);
+  if (config.auth) write('.env.example', allAuthEnvNames(config.auth).map((n) => `${n}=\n`).join(''));
   write('.gitignore', 'node_modules/\n.env\nplaywright-report/\ntest-results/\nallure-results/\nallure-report/\n');
 
   const specs = new Map<string, string>();
@@ -377,10 +385,9 @@ export function exportFramework(opts: {
   const files = listFiles(dir);
 
   const problems = checkSelfContained(dir, files);
-  if (authValue) {
-    for (const file of files) {
-      if (readFileSync(join(dir, file), 'utf8').includes(authValue)) problems.push(`${file} contains the auth value`);
-    }
+  for (const file of files) {
+    const text = readFileSync(join(dir, file), 'utf8');
+    for (const secret of secrets) if (secret && text.includes(secret)) problems.push(`${file} contains an auth value`);
   }
   if (problems.length) {
     rmSync(dir, { recursive: true, force: true });

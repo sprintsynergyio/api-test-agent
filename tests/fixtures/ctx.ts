@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { test as base, expect, type APIRequestContext } from '@playwright/test';
 import { labels } from 'allure-js-commons';
+import { pickAuthEnv } from '../../agent/auth';
 import { apiName, loadConfig } from '../../agent/config';
 import { createClients, createResource, disposeClients, formatExchange, recordClients, reportLabels, runSetup } from '../../agent/http';
 import { endpointAllowed, READ_ONLY_SKIP } from '../../agent/safety';
@@ -9,6 +10,8 @@ export type Ctx = {
   baseUrl: string;
   api: APIRequestContext;
   noAuthApi: APIRequestContext;
+  // A client authenticated as another role from the input's auth.roles (for [authz] tests).
+  as: (role: string) => APIRequestContext;
   createResource: (endpointId: string) => Promise<string>;
   // Runs this spec's endpoint setup steps in order and returns every path placeholder value, for
   // example { id: '4', reviewId: '7' } for /products/{id}/reviews/{reviewId}.
@@ -21,19 +24,16 @@ export const test = base.extend<{ ctx: Ctx }>({
   ctx: async ({}, use, testInfo) => {
     const config = loadConfig(inputFile);
 
-    // No auth section: api and noAuthApi are the same. With one, the value must be set.
-    const authValue = config.auth ? process.env[config.auth.valueEnv] : undefined;
-    if (config.auth && !authValue) {
-      throw new Error(
-        `Missing auth value: environment variable ${config.auth.valueEnv} is not set (required by ${inputFile}). Add it to .env.`,
-      );
-    }
+    // Only the environment variables the auth section names leave this file (agent/auth.ts).
+    // A missing one throws with its name before any request. Without an auth section, api and
+    // noAuthApi are the same.
+    const authEnv = pickAuthEnv(config.auth, process.env);
 
     await labels(...reportLabels(apiName(config, inputFile), testInfo.titlePath, testInfo.file));
 
     // The safety guard: refused on a production host without allowProduction, writes blocked in
     // read-only mode. AGENT_FORCE_PRODUCTION=1 (testing only) treats every host as production.
-    const clients = await createClients(config, authValue, { forceProduction: process.env.AGENT_FORCE_PRODUCTION === '1' });
+    const clients = await createClients(config, authEnv, { forceProduction: process.env.AGENT_FORCE_PRODUCTION === '1' });
     // A spec is named after its endpoint. In read-only mode a write endpoint's tests are skipped, never passed.
     const endpoint = config.endpoints.find((e) => `${e.id}.spec.ts` === testInfo.file.split(/[\\/]/).pop());
     if (endpoint && !endpointAllowed(clients.safety, endpoint)) {
@@ -41,9 +41,10 @@ export const test = base.extend<{ ctx: Ctx }>({
       testInfo.skip(true, READ_ONLY_SKIP);
     }
 
-    // Every request and response is attached to the test (Playwright report and Allure).
-    const recordedClients = recordClients(config, clients, authValue, async (exchange) => {
-      const { name, body } = formatExchange(config, exchange, authValue);
+    // Every request and response is attached to the test (Playwright report and Allure), login
+    // requests included, with every credential value and token scrubbed.
+    const recordedClients = recordClients(config, clients, async (exchange) => {
+      const { name, body } = formatExchange(config, exchange, clients.secrets());
       await testInfo.attach(name, { body, contentType: 'application/json' });
     });
 
@@ -51,6 +52,7 @@ export const test = base.extend<{ ctx: Ctx }>({
       baseUrl: config.baseUrl,
       api: recordedClients.api,
       noAuthApi: recordedClients.noAuthApi,
+      as: (role) => recordedClients.as(role),
       createResource: (endpointId) => createResource(config, recordedClients, endpointId),
       setup: async () => {
         if (!endpoint) throw new Error(`ctx.setup: no endpoint in ${inputFile} is named after this spec file`);

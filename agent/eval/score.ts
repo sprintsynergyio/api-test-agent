@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 // Scores one agent run (out/summary.json) against the planted bugs that were active.
 // Pure: no Claude call, no HTTP, no file writes.
 
-export type DetectableBy = 'invalid-input' | 'auth' | 'schema' | 'flow' | 'none-yet';
+export type DetectableBy = 'invalid-input' | 'auth' | 'authz' | 'schema' | 'flow' | 'none-yet';
 
 export type PlantedBug = {
   id: string;

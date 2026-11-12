@@ -166,10 +166,13 @@ export function importOpenApi(content: string): ImportResult {
     if (!isObj(scheme)) return { name: 'Authorization', where: 'header', declared: true };
     if (scheme.type === 'apiKey' && typeof scheme.name === 'string') {
       if (scheme.in === 'query') return { name: scheme.name, where: 'query', declared: true };
-      return { name: scheme.in === 'cookie' ? 'Cookie' : scheme.name, where: 'header', declared: true };
+      if (scheme.in === 'cookie') return { name: scheme.name, where: 'cookie', declared: true };
+      return { name: scheme.name, where: 'header', declared: true };
     }
     if (scheme.type === 'mutualTLS') return null;
-    return { name: 'Authorization', where: 'header', declared: true };
+    // http bearer or basic, oauth2, openIdConnect: all arrive in the Authorization header.
+    const sch = scheme.type === 'http' ? String(scheme.scheme ?? '').toLowerCase() : String(scheme.type ?? '');
+    return { name: 'Authorization', where: 'header', declared: true, scheme: sch || undefined };
   };
 
   const requests: RawRequest[] = [];

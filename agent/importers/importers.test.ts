@@ -100,7 +100,7 @@ function assertCredentialsDropped(r: ImportResult, names: string[]) {
   assertNoSecret('import result', JSON.stringify(r));
   assert.deepEqual(r.input.defaultHeaders, { Accept: 'application/json', 'Content-Type': 'application/json' });
   assert.deepEqual(Object.keys(r.input.auth ?? {}).sort(), ['header', 'valueEnv']);
-  assert.equal(r.input.auth?.valueEnv, 'CUSTOM_API_AUTH');
+  assert.equal((r.input.auth as { valueEnv?: string } | undefined)?.valueEnv, 'CUSTOM_API_AUTH');
   for (const e of r.input.endpoints) {
     for (const key of Object.keys(e)) assert.ok(['id', 'method', 'path', 'requiresAuth', 'body', 'setup', 'query', 'headers'].includes(key), `${e.id}: unexpected field ${key}`);
     // Imported per-endpoint headers and query parameters never carry a credential name.
@@ -202,7 +202,7 @@ async function main() {
     assert.ok(r.warnings.includes(AUTH_REMOVED));
     assert.match(w, /get-reviews-reviewid needs setup for \{reviewId\}: .*no POST \/reviews/);
     assert.match(w, /Setup added: delete-products-id, put-products-id .* post-products .*idField/);
-    assert.match(w, /more than one name \(X-API-Key, query parameter api_key, Cookie\)\. Kept X-API-Key/);
+    assert.match(w, /more than one name \(X-API-Key, query parameter api_key, Cookie\)\. Kept the X-API-Key header/);
     assert.match(w, /Endpoint headers imported .*: X-Tenant-Id\./);
     assert.deepEqual(r.input.endpoints.find((e) => e.headers)?.headers, { 'X-Tenant-Id': 'acme' });
     assert.ok(!w.includes('X-Debug'), 'a disabled header was reported');
@@ -266,7 +266,7 @@ async function main() {
     );
     assert.deepEqual(r.input.auth, { header: 'Authorization', valueEnv: 'CUSTOM_API_AUTH' });
     const w = r.warnings.join('\n');
-    assert.match(w, /more than one name \(Authorization, Cookie, query parameter access_token\)\. Kept Authorization/);
+    assert.match(w, /more than one name \(Authorization, Cookie, query parameter access_token\)\. Kept the Authorization header/);
     assert.match(w, /Endpoint headers imported .*: X-Request-Id\./);
     assert.match(w, /curl options ignored: --frobnicate\./);
     assertNoSecret('import result', JSON.stringify(r));
@@ -302,12 +302,13 @@ async function main() {
       'putStoreConfig: non-JSON body (application/xml)',
       'healthCheck: method HEAD is not supported (GET, POST, PUT, PATCH, DELETE only)',
     ]);
-    assert.deepEqual(r.input.auth, { header: 'api_key', valueEnv: 'CUSTOM_API_AUTH' });
+    // An apiKey in the query becomes the query auth type (sent as ?api_key=<value>, never a header).
+    assert.deepEqual(r.input.auth, { type: 'query', param: 'api_key', valueEnv: 'CUSTOM_API_AUTH' });
     const w = r.warnings.join('\n');
     assert.ok(r.warnings.includes(AUTH_NEEDED), 'auth-needed warning missing');
     assert.ok(!r.warnings.includes(AUTH_REMOVED), 'nothing was removed, the spec has no values');
     assert.match(w, /Sample body built from the schema .* for: createPet\./);
-    assert.match(w, /query parameter api_key, but the agent sends auth as a header/);
+    assert.ok(!/sends auth as a header/.test(w), 'a query credential is sent as a query parameter now, no warning');
     assert.match(w, /Endpoint headers imported .*: X-Request-Id\./);
   });
 
@@ -433,7 +434,7 @@ async function main() {
       name: 'Orders API',
       baseUrl: 'https://invented.example.com',
       defaultHeaders: { Accept: 'application/json', Authorization: 'Bearer abc123456789' },
-      auth: { header: 'Authorization', valueEnv: 'CUSTOM_API_AUTH' },
+      auth: { type: 'header', header: 'Authorization', valueEnv: 'CUSTOM_API_AUTH' },
       endpoints: [
         { id: 'list', method: 'GET', path: '/orders', requiresAuth: false },
         { id: 'create', method: 'POST', path: '/orders', requiresAuth: true, body: { sku: 'string', quantity: 1, color: 'red' } },

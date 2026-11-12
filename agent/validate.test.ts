@@ -57,6 +57,13 @@ const AUTH = `  test('[auth] delete-product rejects a request without auth', asy
     expect([401, 403]).toContain(response.status());
   });`;
 
+const AUTHZ = `  test('[authz] delete-product rejects a viewer deleting another role\\'s product', async ({ ctx }) => {
+    const id = await ctx.createResource('create-product');
+    const response = await ctx.as('viewer').delete(\`/products/\${id}\`);
+    recordStatus(response.status());
+    expect([403, 404]).toContain(response.status());
+  });`;
+
 const ALL_TYPES = ['happy', 'schema', 'invalid-input', 'auth'];
 const opts = (planTypes: string[] = ALL_TYPES, probeStatus: number | null = 204) => ({ name: 'gate-test', planTypes, probeStatus });
 
@@ -190,6 +197,41 @@ rejects(
   'must be exactly toBe(204)',
   opts(['schema']),
 );
+
+// --- authz: another role must be rejected ---
+
+accepts('an authz test that uses ctx.as and expects 403 or 404', spec(AUTHZ), opts(['authz']));
+accepts('a file with one test of each of the five types', spec([HAPPY, SCHEMA, INVALID, AUTH, AUTHZ].join('\n\n')), opts([...ALL_TYPES, 'authz']));
+
+rejects(
+  'an authz test that sends the request with ctx.api (the default role)',
+  spec(AUTHZ.replace("ctx.as('viewer')", 'ctx.api')),
+  'uses ctx.api, the default role',
+  opts(['authz']),
+);
+
+rejects(
+  'an authz test that expects 2xx',
+  spec(AUTHZ.replace('expect([403, 404]).toContain(response.status());', 'expect(response.status()).toBe(204);')),
+  'must be expect([403, 404]).toContain(response.status())',
+  opts(['authz']),
+);
+
+rejects(
+  'an authz test that allows 401 (that is an auth test)',
+  spec(AUTHZ.replace('[403, 404]', '[401, 403, 404]')),
+  'must be expect([403, 404]).toContain(response.status())',
+  opts(['authz']),
+);
+
+rejects(
+  'an authz test that uses ctx.noAuthApi',
+  spec(AUTHZ.replace("ctx.as('viewer')", 'ctx.noAuthApi')),
+  'uses ctx.noAuthApi; that is an [auth] test',
+  opts(['authz']),
+);
+
+rejects('a file with no authz test when the plan has one', spec([HAPPY, AUTH].join('\n\n')), 'the plan has 1 [authz] case(s) but the file has 0 [authz] test(s)', opts(['happy', 'auth', 'authz']));
 
 // --- rejected: auth test that still sends the token ---
 

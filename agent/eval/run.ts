@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { allAuthEnvNames, normalizeAuth } from '../auth';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
@@ -199,8 +200,9 @@ async function main() {
   }
   if (!existsSync(INPUT_TEMPLATE)) throw new Error(`${INPUT_TEMPLATE} is missing`);
   const template = JSON.parse(readFileSync(INPUT_TEMPLATE, 'utf8')) as { baseUrl: string; name?: string };
-  const authEnv = (template as { auth?: { valueEnv: string } }).auth?.valueEnv;
-  if (authEnv && !process.env[authEnv]) throw new Error(`environment variable ${authEnv} is not set (needed by ${INPUT_TEMPLATE}); add it to .env`);
+  for (const name of allAuthEnvNames(normalizeAuth((template as { auth?: unknown }).auth))) {
+    if (!process.env[name]) throw new Error(`environment variable ${name} is not set (needed by ${INPUT_TEMPLATE}); add it to .env`);
+  }
 
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const evalDir = join(EVAL_ROOT, stamp);

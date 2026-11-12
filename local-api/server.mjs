@@ -15,6 +15,12 @@ const PORT = Number(process.env.PORT || 4000);
 const TOKEN = "Bearer hackathon-demo-token";
 const LOG_REQUESTS = process.env.LOG_REQUESTS === "1";
 
+// Login (POST /auth/login with { username, password }) for input/local-shop-login.json. Demo users
+// of a fake local API: admin can do everything the fixed token can, viewer can only read. Issued
+// tokens are random per login and accepted anywhere the fixed token is.
+const USERS = { admin: { password: "admin-pass", role: "admin" }, viewer: { password: "viewer-pass", role: "viewer" } };
+const issuedTokens = new Map(); // "Bearer <token>" -> role
+
 const catalog = JSON.parse(readFileSync(fileURLToPath(new URL("./bugs.json", import.meta.url)), "utf8"));
 const KNOWN = new Set(catalog.bugs.map((b) => b.id));
 
@@ -67,8 +73,28 @@ function readBody(req) {
   });
 }
 
+// The caller's role from the Authorization header: "admin" for the fixed demo token or an admin
+// login token, "viewer" for a viewer login token, null without a valid token.
+function roleOf(req) {
+  const value = req.headers["authorization"];
+  if (value === TOKEN) return "admin";
+  return issuedTokens.get(value) ?? null;
+}
+
 function authed(req) {
-  return req.headers["authorization"] === TOKEN;
+  return roleOf(req) !== null;
+}
+
+// Writes need the admin role. viewer-can-delete: DELETE forgets the role check and lets a viewer through.
+function canWrite(req, { bugId } = {}) {
+  const role = roleOf(req);
+  if (role === null) return false;
+  if (role === "admin") return true;
+  return bugId ? bug(bugId) : false;
+}
+
+function randomToken() {
+  return [...Array(24)].map(() => "abcdefghijklmnopqrstuvwxyz0123456789"[Math.floor(Math.random() * 36)]).join("");
 }
 
 // Returns a list of problems. Empty list means valid.
@@ -98,6 +124,7 @@ async function handleReviews(req, res, parts) {
     }
     if (req.method === "POST") {
       if (!authed(req)) return send(res, 401, { error: "unauthorized" });
+      if (!canWrite(req)) return send(res, 403, { error: "forbidden" });
       const body = await readBody(req);
       if (!body.ok) return send(res, 400, { error: "invalid JSON" });
       const b = body.value;
@@ -124,6 +151,7 @@ async function handleReviews(req, res, parts) {
   }
   if (req.method === "DELETE") {
     if (!authed(req)) return send(res, 401, { error: "unauthorized" });
+    if (!canWrite(req)) return send(res, 403, { error: "forbidden" });
     if (!review || review.productId !== productId) return send(res, 404, { error: "review not found" });
     reviews.delete(reviewId);
     res.writeHead(204);
@@ -139,6 +167,17 @@ const server = http.createServer(async (req, res) => {
 
   if (parts[0] === "health" && parts.length === 1 && req.method === "GET") {
     return send(res, 200, { status: "ok", bugsEnabled: BUGS.size > 0, bugs: [...BUGS] });
+  }
+  // POST /auth/login: { username, password } -> { data: { token } }. Wrong credentials: 401.
+  if (parts[0] === "auth" && parts[1] === "login" && parts.length === 2) {
+    if (req.method !== "POST") return send(res, 405, { error: "method not allowed" });
+    const body = await readBody(req);
+    if (!body.ok || !body.value || typeof body.value !== "object") return send(res, 400, { error: "invalid JSON" });
+    const user = USERS[body.value.username];
+    if (!user || user.password !== body.value.password) return send(res, 401, { error: "invalid credentials" });
+    const token = randomToken();
+    issuedTokens.set(`Bearer ${token}`, user.role);
+    return send(res, 200, { data: { token, role: user.role } });
   }
   // /products/:id/reviews and /products/:id/reviews/:reviewId (nested resource, used by
   // input/local-shop-nested.json to prove paths with more than one placeholder).
@@ -175,6 +214,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === "POST") {
       if (!authed(req)) return send(res, 401, { error: "unauthorized" });
+      if (!canWrite(req)) return send(res, 403, { error: "forbidden" });
       const body = await readBody(req);
       if (!body.ok) return send(res, 400, { error: "invalid JSON" });
       // price-text-500: the price type is not validated, so a string price crashes below.
@@ -206,8 +246,9 @@ const server = http.createServer(async (req, res) => {
     return send(res, 200, existing);
   }
   if (req.method === "PUT") {
-    // update-no-auth: the auth check is skipped.
+    // update-no-auth: the missing-token check is skipped (a token that is present is still checked).
     if (!bug("update-no-auth") && !authed(req)) return send(res, 401, { error: "unauthorized" });
+    if (authed(req) && !canWrite(req)) return send(res, 403, { error: "forbidden" });
     if (!existing) return send(res, 404, { error: "product not found" });
     const body = await readBody(req);
     if (!body.ok) return send(res, 400, { error: "invalid JSON" });
@@ -226,8 +267,10 @@ const server = http.createServer(async (req, res) => {
     return send(res, 200, updated);
   }
   if (req.method === "DELETE") {
-    // delete-no-auth: the auth check is skipped.
+    // delete-no-auth: the missing-token check is skipped (a token that is present is still checked).
     if (!bug("delete-no-auth") && !authed(req)) return send(res, 401, { error: "unauthorized" });
+    // viewer-can-delete: the role check is skipped, so a viewer's token can delete.
+    if (authed(req) && !canWrite(req, { bugId: "viewer-can-delete" })) return send(res, 403, { error: "forbidden" });
     if (!existing) return send(res, 404, { error: "product not found" });
     products.delete(id);
     res.writeHead(204);
