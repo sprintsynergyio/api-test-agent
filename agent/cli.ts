@@ -3,11 +3,12 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, sep } from 'node:path';
 import { extraRoles, pickAuthEnv, secretValues } from './auth';
-import { BudgetExceeded, claudeBudget, claudeCallsUsed, claudeEnv, hostedWithoutApiKeyProblem, redact, usingApiKey } from './claude';
+import { BudgetExceeded, claudeBudget, claudeCallsUsed, claudeEnv, hostedWithoutApiKeyProblem, promptRedaction, redact, usingApiKey } from './claude';
 import { apiName, loadConfig, selectionLine, takeSelectFlag, type Config, type Endpoint } from './config';
 import { frameworkFor, type FrameworkAdapter, type FrameworkInfo, type TestOutcome } from './frameworks';
 import { generateEndpoint } from './generate';
 import { planEndpoint, type Plan } from './plan';
+import { addCleanup, cleanupLine, emptyCleanup, type CleanupTotals } from './http';
 import { probeAll, type ProbeResult } from './probe';
 import { assessSafety, endpointAllowed, PRODUCTION_WRITES_WARNING, READ_ONLY_SKIP, refusalMessage, type Safety } from './safety';
 
@@ -162,8 +163,10 @@ function writeSummary(o: {
   safety: Safety;
   requestsSent: number;
   testFramework: string;
+  redactionReplaced: number;
+  cleanup: CleanupTotals;
 }) {
-  const { status, inputFile, config, startedAt, states, outcomes, findings, framework, allureReport, secrets, safety, requestsSent, testFramework } = o;
+  const { status, inputFile, config, startedAt, states, outcomes, findings, framework, allureReport, secrets, safety, requestsSent, testFramework, redactionReplaced, cleanup } = o;
   const summary = {
     status,
     testFramework,
@@ -172,6 +175,14 @@ function writeSummary(o: {
     selection: config.selection ?? null,
     safety: { hostClass: safety.hostClass, mode: safety.mode, allowProduction: safety.allowProduction, allowWrites: safety.allowWrites },
     requestsSent,
+    redaction: { mode: config.redaction?.mode === 'strict' ? 'strict' : 'standard', fields: config.redaction?.fields?.length ?? 0, replaced: redactionReplaced },
+    cleanup: {
+      created: cleanup.created,
+      deleted: cleanup.deleted,
+      failed: cleanup.failed,
+      skippedNoDeleteEndpoint: cleanup.skippedNoDeleteEndpoint,
+      failures: cleanup.failures.map((f) => cleanError(f, secrets)),
+    },
     startedAt: startedAt.toISOString(),
     durationSec: Math.round((Date.now() - startedAt.getTime()) / 1000),
     claudeCalls: { used: claudeCallsUsed(), budget: claudeBudget() },
@@ -259,6 +270,8 @@ async function main() {
       safety,
       requestsSent: 0,
       testFramework: fw.name,
+      redactionReplaced: 0,
+      cleanup: emptyCleanup(),
     });
     console.log(`Summary written to ${SUMMARY_FILE}`);
     process.exitCode = 1;
@@ -290,6 +303,8 @@ async function main() {
       safety,
       requestsSent: 0,
       testFramework: fw.name,
+      redactionReplaced: 0,
+      cleanup: emptyCleanup(),
     });
     console.log('NO TESTS GENERATED');
     console.log(`Summary written to ${SUMMARY_FILE}`);
@@ -306,6 +321,8 @@ async function main() {
   const probeRun = await probeAll(config, authEnv, { forceProduction });
   for (const s of probeRun.secrets) if (!secrets.includes(s)) secrets.push(s);
   let requestsSent = probeRun.requestsSent;
+  let redactionReplaced = probeRun.redaction.replaced;
+  const cleanup = addCleanup(emptyCleanup(), probeRun.cleanup);
   const states: EndpointState[] = config.endpoints.map((endpoint) => ({
     endpoint,
     probe: probeRun.results.get(endpoint.id),
@@ -338,6 +355,8 @@ async function main() {
     const run = await fw.run(inputFile, { secrets, reportName: `${apiName(config, inputFile)} API tests`, cleanError: (t) => cleanError(t, secrets) });
     outcomes = run.outcomes;
     requestsSent += run.requestsSent;
+    redactionReplaced += run.redactionReplaced;
+    addCleanup(cleanup, run.cleanup);
     for (const e of run.loadErrors) console.log(`${fw.name} error: ${e}`);
     for (const s of written) {
       if (!outcomes.some((o) => o.endpointId === s.endpoint.id)) {
@@ -365,7 +384,9 @@ async function main() {
     });
   }
 
-  const summary = writeSummary({ status, inputFile, config, startedAt, states, outcomes, findings, framework, allureReport, secrets, safety, requestsSent, testFramework: fw.name });
+  // The prompt-level pass (agent/claude.ts) counts what the structured redaction did not already hide.
+  redactionReplaced += promptRedaction.replaced;
+  const summary = writeSummary({ status, inputFile, config, startedAt, states, outcomes, findings, framework, allureReport, secrets, safety, requestsSent, testFramework: fw.name, redactionReplaced, cleanup });
 
   console.log('=== SUMMARY ===');
   if (status === 'no-tests') {
@@ -383,6 +404,9 @@ async function main() {
   console.log(`Endpoints: ${t.endpoints}, specs written: ${written.length}, tests: ${t.testsGenerated}, passed: ${t.passed}, failed: ${t.failed}`);
   console.log(`Claude calls: ${summary.claudeCalls.used}/${summary.claudeCalls.budget}, duration: ${summary.durationSec}s`);
   console.log(`Safety: ${safety.hostClass} host, ${safety.mode} mode, requests sent: ${requestsSent}`);
+  console.log(`Redaction: ${summary.redaction.mode}, ${summary.redaction.replaced} value(s) replaced before Claude and in evidence`);
+  console.log(cleanupLine(cleanup).replace(/^cleanup/, 'Cleanup'));
+  for (const f of summary.cleanup.failures) console.log(`  cleanup failed: ${f}`);
   for (const s of summary.endpoints.filter((e) => e.skippedReason)) console.log(`  skipped: ${s.id}: ${s.skippedReason}`);
   for (const s of summary.endpoints.filter((e) => e.failureReason)) console.log(`  not tested: ${s.id}: ${s.failureReason}`);
   console.log(`${api.length} suspected API finding${api.length === 1 ? '' : 's'}`);

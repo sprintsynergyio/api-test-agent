@@ -6,6 +6,13 @@ import { extraRoles } from './auth';
 import { BudgetExceeded, callClaude } from './claude';
 import { loadConfig, PATH_PARAM, type Endpoint } from './config';
 import { readProbe, type ProbeResult } from './probe';
+import { redactValue } from './redact';
+
+// The endpoint as the prompt shows it: the sample request body with valid stand-ins for personal data
+// (the generated tests copy it, so it must stay a body the API accepts).
+export function promptEndpoint(endpoint: Endpoint): Endpoint {
+  return redactValue(endpoint, undefined, { replaced: 0 }, 'request') as Endpoint;
+}
 
 const PLAN_DIR = 'out/plans';
 
@@ -71,7 +78,8 @@ function extractJson(text: string): unknown {
 
 const SYSTEM = 'You are a senior QA engineer planning API tests. You answer with one JSON object only, no prose.';
 
-function buildPrompt(endpoint: Endpoint, probe: ProbeResult, roles: string[]): string {
+// Exported for the redaction tests: the prompt text must never carry client data.
+export function buildPrompt(endpoint: Endpoint, probe: ProbeResult, roles: string[]): string {
   const types = allowedTypes(endpoint, roles);
   const authzLine = types.includes('authz')
     ? `- "authz" cases send the same valid request as another role (${roles.map((r) => `"${r}"`).join(', ')}; the test uses ctx.as(role)) against a resource the default role created, and expect "403|404" (a lower role must be rejected; some APIs hide the resource with 404). Exactly one authz case per role at most.\n`
@@ -79,7 +87,7 @@ function buildPrompt(endpoint: Endpoint, probe: ProbeResult, roles: string[]): s
   return `Plan API test cases for one endpoint.
 
 ENDPOINT CONFIG:
-${JSON.stringify(endpoint, null, 2)}
+${JSON.stringify(promptEndpoint(endpoint), null, 2)}
 
 PROBE (a real call to this endpoint with its sample body${endpoint.requiresAuth ? ' and the auth header' : ''}; arrays truncated to 3 items):
 ${JSON.stringify(probe, null, 2)}

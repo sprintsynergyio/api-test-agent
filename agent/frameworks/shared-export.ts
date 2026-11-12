@@ -24,3 +24,10 @@ export function exportedConfig(name: string, config: Config): Record<string, unk
     allowWrites: allowWrites === true,
   };
 }
+
+// agent/redact.ts has no imports either, so it is copied as it is (src/redact.ts).
+export function redactSource(): string {
+  const src = readFileSync('agent/redact.ts', 'utf8');
+  if (/^\s*import\s/m.test(src)) throw new Error('framework export: agent/redact.ts must not import anything');
+  return src;
+}

@@ -166,7 +166,8 @@ Pulled forward from Phases 4 and 5 because the first real client (multi-brand, m
 **Deliverables**
 - `[flow]` tests: create, read, update, read again, delete, confirm it is gone.
 - Test data generation from the schema (realistic but fake values).
-- Cleanup: every resource a test creates is deleted afterwards, even when the test fails.
+- Cleanup: every resource a test creates is deleted afterwards, even when the test fails. **Done (PR 7, Nov 2026):** `createResource` records what it makes, each test's fixture (Playwright) or root hook (Mocha) deletes it through the matching DELETE endpoint, the probe cleans its own setup data, totals go to `summary.cleanup`. Still open: deletion of resources the generated test bodies create directly (a `[happy]` POST test's own record is not tracked).
+- Redaction before Claude: **Done (PR 7, Nov 2026):** `agent/redact.ts`, built-in rules always on, `redaction: { fields, mode }` per input, final pass in `callClaude`, evidence files redacted.
 - Environment profiles (dev, staging) with separate base URLs and auth variables.
 
 **Proof:** planted "update not persisted" and "delete does not delete" bugs are caught; after a run, the API has no leftover test data.

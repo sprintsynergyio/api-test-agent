@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { BudgetExceeded, callClaude } from './claude';
 import type { Endpoint } from './config';
 import { pathParams, setupSteps } from './model';
-import type { Plan } from './plan';
+import { promptEndpoint, type Plan } from './plan';
 import type { ProbeResult } from './probe';
 import type { FrameworkAdapter } from './frameworks/types';
 
@@ -16,8 +16,10 @@ function system(fw: FrameworkAdapter): string {
   return `You are a senior QA engineer writing ${fw.label}. You answer with exactly one \`\`\`ts code block containing the full file, nothing else.`;
 }
 
-function buildPrompt(fw: FrameworkAdapter, endpoint: Endpoint, plan: Plan, probe: ProbeResult): string {
+// Exported for the redaction tests: the prompt text must never carry client data.
+export function buildPrompt(fw: FrameworkAdapter, endpoint: Endpoint, plan: Plan, probe: ProbeResult): string {
   const read = (p: string) => readFileSync(p, 'utf8');
+  const shown = promptEndpoint(endpoint);
   const steps = setupSteps(endpoint);
   const params = pathParams(endpoint.path);
   const setupLine =
@@ -26,11 +28,11 @@ function buildPrompt(fw: FrameworkAdapter, endpoint: Endpoint, plan: Plan, probe
       : steps.length === 1
         ? `- This endpoint has setup. Each test that needs an existing resource gets one with \`const id = await ctx.createResource('${steps[0].endpointId}');\` (returns the id as a string) and puts it in the path.`
         : '- This endpoint has no setup. Do not call ctx.createResource unless a test needs a resource.';
-  const queryLine = endpoint.query
-    ? `- This endpoint takes query parameters: ${JSON.stringify(endpoint.query)}. Send them with the \`params\` option, for example \`ctx.api.get(path, { params: ${JSON.stringify(endpoint.query)} })\`; invalid-input cases may send a wrong value or type for one of them instead of a body change.`
+  const queryLine = shown.query
+    ? `- This endpoint takes query parameters: ${JSON.stringify(shown.query)}. Send them with the \`params\` option, for example \`ctx.api.get(path, { params: ${JSON.stringify(shown.query)} })\`; invalid-input cases may send a wrong value or type for one of them instead of a body change.`
     : '';
-  const headersLine = endpoint.headers
-    ? `- This endpoint needs extra headers: ${JSON.stringify(endpoint.headers)}. Send them on every request with the \`headers\` option, for example \`{ headers: ${JSON.stringify(endpoint.headers)} }\` (auth tests too; only the auth header is left out there).`
+  const headersLine = shown.headers
+    ? `- This endpoint needs extra headers: ${JSON.stringify(shown.headers)}. Send them on every request with the \`headers\` option, for example \`{ headers: ${JSON.stringify(shown.headers)} }\` (auth tests too; only the auth header is left out there).`
     : '';
   const contextFiles = fw.contextFiles
     .map((f) => `FILE ${f} (shown for context, tests never import it):\n\`\`\`ts\n${read(f)}\n\`\`\`\n`)
@@ -38,7 +40,7 @@ function buildPrompt(fw: FrameworkAdapter, endpoint: Endpoint, plan: Plan, probe
   return `Write the test file generated/${endpoint.id}.spec.ts (${fw.label}) for this endpoint, implementing every case in the plan as one test.
 
 ENDPOINT CONFIG:
-${JSON.stringify(endpoint, null, 2)}
+${JSON.stringify(shown, null, 2)}
 
 PROBE (a real call with the sample body; arrays truncated to 3 items):
 ${JSON.stringify(probe, null, 2)}

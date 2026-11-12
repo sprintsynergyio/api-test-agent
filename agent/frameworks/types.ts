@@ -1,4 +1,5 @@
 import type { Config, Endpoint } from '../config';
+import type { CleanupTotals } from '../http';
 import type { Plan } from '../plan';
 import type { ProbeResult } from '../probe';
 import type { ValidateOptions, ValidationResult } from '../validate';
@@ -24,6 +25,10 @@ export type RunResult = {
   loadErrors: string[];
   // Requests the tests sent, for summary.requestsSent.
   requestsSent: number;
+  // Values redacted in the tests' evidence, for summary.redaction.
+  redactionReplaced: number;
+  // What the tests created on the API and what cleanup deleted, for summary.cleanup.
+  cleanup: CleanupTotals;
   // Folder of the framework's own HTML report, or null when it has none.
   htmlReport: string | null;
   // "reports/allure-report" when the Allure report was generated, else null with the reason.

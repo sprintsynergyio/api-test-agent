@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { redactText, type RedactionCounter } from './redact';
 
 // Calls Claude one of two ways, chosen by the environment:
 //   - ANTHROPIC_API_KEY set: the Messages API over HTTPS with fetch (hosted mode requires this, so a
@@ -96,9 +97,16 @@ export function callClaudeOutsideBudget(stepName: string, label: string, system:
   return runClaude(stepName, label, system, user, counter);
 }
 
+// Every prompt gets the built-in redaction rules once more, right before it leaves the process, so
+// nothing that bypassed the structured redaction in the probe (importer text, error messages) can
+// carry an email, card number or token to Claude. Counted in promptRedaction for the summary.
+export const promptRedaction: RedactionCounter = { replaced: 0 };
+
 async function runClaude(stepName: string, endpointId: string, system: string, user: string, counter: string): Promise<string> {
-  if (usingApiKey()) return runClaudeApi(stepName, endpointId, system, user, counter);
-  return runClaudeCli(stepName, endpointId, system, user, counter);
+  const safeSystem = redactText(system, promptRedaction);
+  const safeUser = redactText(user, promptRedaction);
+  if (usingApiKey()) return runClaudeApi(stepName, endpointId, safeSystem, safeUser, counter);
+  return runClaudeCli(stepName, endpointId, safeSystem, safeUser, counter);
 }
 
 type ApiResponse = {

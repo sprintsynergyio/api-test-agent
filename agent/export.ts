@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, wri
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { allAuthEnvNames, describeAuth } from './auth';
 import { apiName, type Config } from './config';
-import { exportedConfig, modelSource } from './frameworks/shared-export';
+import { exportedConfig, modelSource, redactSource } from './frameworks/shared-export';
 
 // Writes the generated suite as a standalone Playwright project in frameworks/<name>/ and zips it.
 
@@ -34,7 +34,7 @@ function pinnedVersions(): Record<string, string> {
 function httpSource(): string {
   const src = readFileSync('agent/http.ts', 'utf8');
   const importLine = "import type { Config } from './config';";
-  const modelLine = "import { queryString, resolvePath, setupSteps } from './model';";
+  const modelLine = "import { pathParams, queryString, resolvePath, setupSteps } from './model';";
   if (!src.includes(modelLine)) throw new Error('framework export: agent/http.ts no longer imports model helpers as expected');
   if (!src.includes(importLine)) throw new Error('framework export: agent/http.ts no longer imports Config as expected');
   if (!src.includes("} from './auth';")) throw new Error('framework export: agent/http.ts no longer imports ./auth as expected');
@@ -50,6 +50,7 @@ function httpSource(): string {
   allowWrites?: boolean;
   profile?: Profile;
   selection: Selection | null;
+  redaction?: RedactionConfig;
   endpoints: {
     id: string;
     method: string;
@@ -62,8 +63,9 @@ function httpSource(): string {
   }[];
 };`,
     )
-    .replace(modelLine, "import { queryString, resolvePath, setupSteps, type Profile, type Query, type Selection, type Setup } from './model';")
+    .replace(modelLine, "import { pathParams, queryString, resolvePath, setupSteps, type Profile, type Query, type Selection, type Setup } from './model';")
     .replace("  type AuthRequest,\n} from './auth';", "  type AuthConfig,\n  type AuthRequest,\n} from './auth';")
+    .replace("import { redactHeaders, redactText, redactValue, type RedactionCounter } from './redact';", "import { redactHeaders, redactText, redactValue, type RedactionConfig, type RedactionCounter } from './redact';")
     .replace(/^\/\/ Shared HTTP logic for the ctx fixture and the agent\./m, '// HTTP clients and createResource for the ctx fixture.');
 }
 
@@ -105,6 +107,7 @@ import { fileURLToPath } from 'node:url';
 import { test as base, expect, type APIRequestContext } from '@playwright/test';
 import { labels } from 'allure-js-commons';
 import {
+  cleanupResources,
   createClients,
   createResource,
   disposeClients,
@@ -157,9 +160,10 @@ export const test = base.extend<{ ctx: Ctx }>({
     }
 
     // Every request and response is attached to the test (Playwright report and Allure), login
-    // requests included, with every credential value and token scrubbed.
+    // requests included, with every credential value and token scrubbed and the redaction rules applied.
+    const redaction = { replaced: 0 };
     const recordedClients = recordClients(config, clients, async (exchange) => {
-      const { name, body } = formatExchange(config, exchange, clients.secrets());
+      const { name, body } = formatExchange(config, exchange, clients.secrets(), redaction);
       await testInfo.attach(name, { body, contentType: 'application/json' });
     });
 
@@ -175,6 +179,9 @@ export const test = base.extend<{ ctx: Ctx }>({
       },
     });
 
+    // Delete what this test's createResource and setup calls made on the API (reported as an annotation).
+    const cleanup = await cleanupResources(config, recordedClients);
+    testInfo.annotations.push({ type: 'cleanup', description: JSON.stringify(cleanup) });
     await disposeClients(clients);
   },
 });
@@ -364,6 +371,7 @@ export function exportFramework(opts: ExportOptions): FrameworkInfo {
   write('config/api.json', JSON.stringify(exportedConfig(name, config), null, 2) + '\n');
   write('src/model.ts', modelSource());
   write('src/auth.ts', authSource());
+  write('src/redact.ts', redactSource());
   write('src/http.ts', httpSource());
   write('src/safety.ts', safetySource());
   write('src/global-setup.ts', GLOBAL_SETUP_SOURCE);

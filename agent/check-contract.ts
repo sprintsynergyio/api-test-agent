@@ -43,6 +43,23 @@ field('summary', s, 'startedAt', ['string']);
 need(typeof s.startedAt !== 'string' || !Number.isNaN(Date.parse(s.startedAt)), 'summary.startedAt is not a date');
 need(isInt(s.durationSec), `summary.durationSec is ${JSON.stringify(s.durationSec)}, expected a whole number of seconds`);
 need(isInt(s.requestsSent), `summary.requestsSent is ${JSON.stringify(s.requestsSent)}, expected a count`);
+
+// Redaction and cleanup (section 9), on every run
+const redaction = isObj(s.redaction) ? s.redaction : {};
+need(isObj(s.redaction), 'summary.redaction is missing');
+field('summary.redaction', redaction, 'mode', ['string'], ['standard', 'strict']);
+need(isInt(redaction.fields), 'summary.redaction.fields is not a count');
+need(isInt(redaction.replaced), 'summary.redaction.replaced is not a count');
+const cleanup = isObj(s.cleanup) ? s.cleanup : {};
+need(isObj(s.cleanup), 'summary.cleanup is missing');
+for (const k of ['created', 'deleted', 'failed', 'skippedNoDeleteEndpoint']) need(isInt(cleanup[k]), `summary.cleanup.${k} is not a count`);
+field('summary.cleanup', cleanup, 'failures', ['array']);
+const counts = ['created', 'deleted', 'failed', 'skippedNoDeleteEndpoint'].map((k) => cleanup[k]);
+if (counts.every(isInt)) {
+  const [created, deleted, failed, skipped] = counts as number[];
+  need(created === deleted + failed + skipped, 'summary.cleanup: created must equal deleted + failed + skippedNoDeleteEndpoint');
+}
+if (Array.isArray(cleanup.failures) && isInt(cleanup.failed)) need(cleanup.failures.length === cleanup.failed, 'summary.cleanup.failures must list every failed deletion');
 field('summary', s, 'endpoints', ['array']);
 field('summary', s, 'findings', ['array']);
 field('summary', s, 'framework', ['object', 'null']);
