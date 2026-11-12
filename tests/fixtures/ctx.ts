@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { test as base, expect, type APIRequestContext } from '@playwright/test';
 import { labels } from 'allure-js-commons';
 import { apiName, loadConfig } from '../../agent/config';
-import { createClients, createResource, disposeClients, formatExchange, recordClients, reportLabels, runSetup } from '../../agent/http';
+import { cleanupResources, createClients, createResource, disposeClients, formatExchange, recordClients, reportLabels, runSetup } from '../../agent/http';
 import { endpointAllowed, READ_ONLY_SKIP } from '../../agent/safety';
 
 export type Ctx = {
@@ -41,9 +41,10 @@ export const test = base.extend<{ ctx: Ctx }>({
       testInfo.skip(true, READ_ONLY_SKIP);
     }
 
-    // Every request and response is attached to the test (Playwright report and Allure).
+    // Every request and response is attached to the test (Playwright report and Allure), redacted.
+    const redaction = { replaced: 0 };
     const recordedClients = recordClients(config, clients, authValue, async (exchange) => {
-      const { name, body } = formatExchange(config, exchange, authValue);
+      const { name, body } = formatExchange(config, exchange, authValue, redaction);
       await testInfo.attach(name, { body, contentType: 'application/json' });
     });
 
@@ -58,8 +59,13 @@ export const test = base.extend<{ ctx: Ctx }>({
       },
     });
 
-    // The agent adds these up into requestsSent in out/summary.json.
+    // Delete what this test's createResource and setup calls made on the API, through the same guarded
+    // clients. The agent adds the counts up into summary.cleanup; failures are listed, never hidden.
+    const cleanup = await cleanupResources(config, recordedClients);
+    // The agent adds these up into requestsSent, redaction and cleanup in out/summary.json.
     testInfo.annotations.push({ type: 'requests-sent', description: String(clients.counter.sent) });
+    testInfo.annotations.push({ type: 'redaction', description: String(redaction.replaced) });
+    testInfo.annotations.push({ type: 'cleanup', description: JSON.stringify(cleanup) });
     await disposeClients(clients);
   },
 });

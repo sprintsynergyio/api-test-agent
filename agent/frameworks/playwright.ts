@@ -3,6 +3,7 @@ import { testEnv } from './test-env';
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { exportFramework } from '../export';
+import { addCleanup, emptyCleanup, type CleanupTotals } from '../http';
 import { validateSpec } from '../validate';
 import type { FrameworkAdapter, RunResult, TestOutcome } from './types';
 
@@ -38,17 +39,30 @@ type JsonSpec = {
   }[];
 };
 
-function readOutcomes(cleanError: (text: string) => string): { outcomes: TestOutcome[]; loadErrors: string[]; requestsSent: number } {
+function readOutcomes(cleanError: (text: string) => string): { outcomes: TestOutcome[]; loadErrors: string[]; requestsSent: number; redactionReplaced: number; cleanup: CleanupTotals } {
   const report = JSON.parse(readFileSync(RESULTS_FILE, 'utf8')) as { suites?: JsonSuite[]; errors?: { message?: string }[] };
   const outcomes: TestOutcome[] = [];
   let requestsSent = 0;
+  let redactionReplaced = 0;
+  const cleanup = emptyCleanup();
   const walk = (suite: JsonSuite) => {
     for (const spec of suite.specs ?? []) {
       for (const t of spec.tests) {
         const last = t.results[t.results.length - 1];
-        // The ctx fixture records how many requests each test sent (one annotation per test).
-        const sent = (last?.annotations ?? []).find((a) => a.type === 'requests-sent') ?? (t.annotations ?? []).find((a) => a.type === 'requests-sent');
+        // The ctx fixture records per test: requests sent, values redacted, and the cleanup totals.
+        const note = (type: string) => (last?.annotations ?? []).find((a) => a.type === type) ?? (t.annotations ?? []).find((a) => a.type === type);
+        const sent = note('requests-sent');
         if (sent?.description && /^\d+$/.test(sent.description)) requestsSent += Number(sent.description);
+        const red = note('redaction');
+        if (red?.description && /^\d+$/.test(red.description)) redactionReplaced += Number(red.description);
+        const cl = note('cleanup');
+        if (cl?.description) {
+          try {
+            addCleanup(cleanup, JSON.parse(cl.description));
+          } catch {
+            cleanup.failures.push(`unreadable cleanup annotation on "${spec.title}"`);
+          }
+        }
         if (t.status === 'skipped') continue;
         const annotations = [...(t.annotations ?? []), ...(last?.annotations ?? [])];
         const statusNote = annotations.find((a) => a.type === 'actual-status')?.description;
@@ -67,7 +81,7 @@ function readOutcomes(cleanError: (text: string) => string): { outcomes: TestOut
   };
   (report.suites ?? []).forEach(walk);
   const loadErrors = (report.errors ?? []).map((e) => cleanError(e.message ?? '').split('\n')[0]);
-  return { outcomes, loadErrors, requestsSent };
+  return { outcomes, loadErrors, requestsSent, redactionReplaced, cleanup };
 }
 
 function filesUnder(dir: string): string[] {

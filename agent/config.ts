@@ -8,6 +8,8 @@ const SetupSchema = z.object({
   idField: z.string().min(1),
   // The placeholder this step fills. Missing: the placeholder at this step's position (first for a single setup).
   param: z.string().min(1).optional(),
+  // The DELETE endpoint that removes what this step created, when it cannot be found by path (agent/http.ts cleanup).
+  cleanup: z.object({ endpointId: z.string().min(1) }).optional(),
 });
 
 const QueryValue = z.union([z.string(), z.number(), z.boolean()]);
@@ -57,6 +59,15 @@ export const ConfigSchema = z.object({
   allowWrites: z.boolean().optional(),
   // Output framework for the generated tests. Missing means playwright.
   framework: z.enum(['playwright', 'pactum']).optional(),
+  // Client data redaction before anything reaches Claude or the disk (agent/redact.ts). The built-in
+  // rules are always on; fields lists dot paths (with * wildcards) whose values are always hidden;
+  // strict hides every string and number in response bodies and keeps only the shape.
+  redaction: z
+    .object({
+      fields: z.array(z.string().min(1)).optional(),
+      mode: z.enum(['standard', 'strict']).optional(),
+    })
+    .optional(),
   endpoints: z.array(EndpointSchema).min(1),
 });
 
@@ -118,6 +129,11 @@ export function configProblems(config: Omit<Config, 'baseUrl' | 'selection'> & {
       }
       if (seen.has(step.param!)) problems.push(`field "${where}.param" fills {${step.param}} twice`);
       seen.add(step.param!);
+      if (step.cleanup) {
+        const target = config.endpoints.find((e) => e.id === step.cleanup!.endpointId);
+        if (!target) problems.push(`field "${where}.cleanup.endpointId" references unknown endpoint "${step.cleanup.endpointId}"`);
+        else if (target.method !== 'DELETE') problems.push(`field "${where}.cleanup.endpointId" must name a DELETE endpoint, "${target.id}" is ${target.method}`);
+      }
     });
   });
   return problems;

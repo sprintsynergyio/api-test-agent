@@ -3,7 +3,7 @@ import { builtinModules } from 'node:module';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { apiName, type Config } from './config';
-import { exportedConfig, modelSource } from './frameworks/shared-export';
+import { exportedConfig, modelSource, redactSource } from './frameworks/shared-export';
 
 // Writes the generated suite as a standalone Playwright project in frameworks/<name>/ and zips it.
 
@@ -32,7 +32,7 @@ function pinnedVersions(): Record<string, string> {
 function httpSource(): string {
   const src = readFileSync('agent/http.ts', 'utf8');
   const importLine = "import type { Config } from './config';";
-  const modelLine = "import { queryString, resolvePath, setupSteps } from './model';";
+  const modelLine = "import { pathParams, queryString, resolvePath, setupSteps } from './model';";
   if (!src.includes(modelLine)) throw new Error('framework export: agent/http.ts no longer imports model helpers as expected');
   if (!src.includes(importLine)) throw new Error('framework export: agent/http.ts no longer imports Config as expected');
   return src
@@ -47,6 +47,7 @@ function httpSource(): string {
   allowWrites?: boolean;
   profile?: Profile;
   selection: Selection | null;
+  redaction?: RedactionConfig;
   endpoints: {
     id: string;
     method: string;
@@ -59,7 +60,8 @@ function httpSource(): string {
   }[];
 };`,
     )
-    .replace(modelLine, "import { queryString, resolvePath, setupSteps, type Profile, type Query, type Selection, type Setup } from './model';")
+    .replace(modelLine, "import { pathParams, queryString, resolvePath, setupSteps, type Profile, type Query, type Selection, type Setup } from './model';")
+    .replace("import { redactHeaders, redactText, redactValue, type RedactionCounter } from './redact';", "import { redactHeaders, redactText, redactValue, type RedactionConfig, type RedactionCounter } from './redact';")
     .replace(/^\/\/ Shared HTTP logic for the ctx fixture and the agent\./m, '// HTTP clients and createResource for the ctx fixture.');
 }
 
@@ -94,6 +96,7 @@ import { fileURLToPath } from 'node:url';
 import { test as base, expect, type APIRequestContext } from '@playwright/test';
 import { labels } from 'allure-js-commons';
 import {
+  cleanupResources,
   createClients,
   createResource,
   disposeClients,
@@ -145,7 +148,7 @@ export const test = base.extend<{ ctx: Ctx }>({
       testInfo.skip(true, READ_ONLY_SKIP);
     }
 
-    // Every request and response is attached to the test (Playwright report and Allure).
+    // Every request and response is attached to the test (Playwright report and Allure), redacted.
     const recordedClients = recordClients(config, clients, authValue, async (exchange) => {
       const { name, body } = formatExchange(config, exchange, authValue);
       await testInfo.attach(name, { body, contentType: 'application/json' });
@@ -162,6 +165,9 @@ export const test = base.extend<{ ctx: Ctx }>({
       },
     });
 
+    // Delete what this test's createResource and setup calls made on the API (reported as an annotation).
+    const cleanup = await cleanupResources(config, recordedClients);
+    testInfo.annotations.push({ type: 'cleanup', description: JSON.stringify(cleanup) });
     await disposeClients(clients);
   },
 });
@@ -356,6 +362,7 @@ export function exportFramework(opts: {
   // The safety flags are always written, so a team can see and change them.
   write('config/api.json', JSON.stringify(exportedConfig(name, config), null, 2) + '\n');
   write('src/model.ts', modelSource());
+  write('src/redact.ts', redactSource());
   write('src/http.ts', httpSource());
   write('src/safety.ts', safetySource());
   write('src/global-setup.ts', GLOBAL_SETUP_SOURCE);

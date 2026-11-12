@@ -31,6 +31,12 @@ writes allowed a warning line:
     safety: local host, full mode
     WARNING: write requests enabled against a production host
 
+At the end of the probe phase, after the per-endpoint lines, two more lines report what the redaction
+layer replaced and what the probe's own setup data cleanup did (section 9). The UI ignores both:
+
+    redaction: standard, 3 value(s) replaced
+    cleanup: created 3, deleted 3, failed 0, no delete endpoint 0
+
 A refused run prints one line, no phase headers, and exits 1:
 
     REFUSED: api.example.com looks like a production host. Set allowProduction to run read-only tests.
@@ -193,7 +199,7 @@ UI server:
   given per run in the UI, never stored by the UI.
 - GET /host-class.mjs serves ui/host-class.mjs to the page.
 
-`npm run check:contract` checks out/summary.json against sections 2, 4, 5 and 7, including testFramework and selection.
+`npm run check:contract` checks out/summary.json against sections 2, 4, 5, 7 and 9, including testFramework and selection.
 
 ## 8. Login and hosted mode (additive)
 
@@ -216,3 +222,21 @@ Nothing in sections 1 to 7 changes. When `UI_USERS` is set (login on) and/or `HO
   run, or `?run=<runId>` when that run is this login's. Another login's run is a 404.
 - POST /api/stop by another login: 403. POST /api/inputs/save in hosted mode: 403.
 - Hosted mode hides the "Allow write requests" checkbox: a production host is always read-only there.
+
+## 9. Redaction and cleanup (additive)
+
+On every run the summary also has:
+
+- "redaction": { "mode": "standard" | "strict", "fields": <count of listed fields>, "replaced": <count> }.
+  replaced counts every value the redaction layer (agent/redact.ts) replaced before it reached Claude
+  (probe bodies, prompts) or the disk (probe files, evidence attachments). The console prints
+  "Redaction: <mode>, N value(s) replaced before Claude and in evidence" in the summary block.
+- "cleanup": { "created", "deleted", "failed", "skippedNoDeleteEndpoint", "failures": [ "<reason>", ... ] }.
+  created counts every resource createResource or a setup step made on the target API during the run
+  (probe and tests); deleted, failed and skippedNoDeleteEndpoint add up to created; failures has one
+  line per failed deletion. A failed cleanup never fails the run and is never hidden: the console prints
+  "Cleanup: created N, deleted N, failed N, no delete endpoint N" and one "  cleanup failed: ..." line each.
+
+Playwright reports carry the same numbers per test as annotations "redaction" (a count) and "cleanup"
+(the totals as JSON); reports/pactum/status.json has redactionReplaced and cleanup per entry. The UI
+does not read either field yet.
