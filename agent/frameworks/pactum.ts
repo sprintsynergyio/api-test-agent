@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { testEnv } from './test-env';
 import { builtinModules } from 'node:module';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
@@ -50,7 +51,8 @@ const PACTUM_RULES: GateRules = {
 function runMocha(inputFile: string): Promise<number | null> {
   return new Promise((resolvePromise, reject) => {
     const child = spawn('node_modules/.bin/mocha', ['--config', MOCHA_CONFIG, 'generated/**/*.spec.ts'], {
-      env: { ...process.env, INPUT_FILE: inputFile },
+      // The tests read their auth value from .env through the ctx file; the Claude API key never reaches them.
+      env: testEnv(inputFile),
       stdio: ['ignore', 'inherit', 'inherit'],
     });
     child.on('error', reject);

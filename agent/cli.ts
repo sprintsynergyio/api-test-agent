@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, sep } from 'node:path';
-import { BudgetExceeded, claudeBudget, claudeCallsUsed, claudeEnv, redact } from './claude';
+import { BudgetExceeded, claudeBudget, claudeCallsUsed, claudeEnv, hostedWithoutApiKeyProblem, redact, usingApiKey } from './claude';
 import { apiName, loadConfig, selectionLine, takeSelectFlag, type Config, type Endpoint } from './config';
 import { frameworkFor, type FrameworkAdapter, type FrameworkInfo, type TestOutcome } from './frameworks';
 import { generateEndpoint } from './generate';
@@ -135,6 +135,9 @@ function cleanError(text: string, secrets: string[]): string {
 // Every plan and spec needs the claude CLI. Check that it starts, with the same child environment as
 // the real calls, before probing, so a missing CLI ends the run with one clear message.
 function claudeCliProblem(): string | null {
+  const hosted = hostedWithoutApiKeyProblem();
+  if (hosted) return hosted;
+  if (usingApiKey()) return null;
   const res = spawnSync('claude', ['--version'], { env: claudeEnv(), encoding: 'utf8', timeout: 30_000 });
   if ((res.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') return CLAUDE_NOT_FOUND;
   if (res.error || res.status !== 0) {

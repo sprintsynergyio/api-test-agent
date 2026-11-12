@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { testEnv } from './test-env';
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { exportFramework } from '../export';
@@ -16,7 +17,8 @@ const HTML_REPORT = 'reports/html';
 function runPlaywright(inputFile: string): Promise<number | null> {
   return new Promise((resolve, reject) => {
     const child = spawn('node_modules/.bin/playwright', ['test', '-c', 'playwright.generated.config.ts'], {
-      env: { ...process.env, INPUT_FILE: inputFile },
+      // The tests read their auth value from .env through the ctx file; the Claude API key never reaches them.
+      env: testEnv(inputFile),
       stdio: ['ignore', 'inherit', 'inherit'],
     });
     child.on('error', reject);

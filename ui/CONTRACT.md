@@ -194,3 +194,25 @@ UI server:
 - GET /host-class.mjs serves ui/host-class.mjs to the page.
 
 `npm run check:contract` checks out/summary.json against sections 2, 4, 5 and 7, including testFramework and selection.
+
+## 8. Login and hosted mode (additive)
+
+Nothing in sections 1 to 7 changes. When `UI_USERS` is set (login on) and/or `HOSTED=1`:
+
+- GET /api/session: `{ loginRequired, hosted, user, runsPerHour }`. `user` is null before login. The page shows
+  the Sign in card while `loginRequired` is true and `user` is null, and the rest of the page only after.
+- POST /api/login `{ user, password }`: 200 `{ user }` plus the session cookie, or 401 `{ error }`.
+  POST /api/logout clears it.
+- With login on, every `/api/*` route except session, login and logout, and `/report` and `/allure`,
+  answers 401 `{ "error": "Login required" }` without a valid cookie. The page reloads to the Sign in card on a 401.
+- GET /api/state gains `yours` (the run in progress is this login's), `queued` (jobs waiting), `position`
+  (this login's place in the queue or null), `hosted`, `user`. `startedAt`, `exitCode` and `hasSummary`
+  describe this login's run only; `hasSummary` means this login has a finished run with a summary.
+- POST /api/run with login on: 202 `{ started: true, runId }`, or 202 `{ queued: true, position, runId }`
+  when another login's run is in progress; 409 when this login already has a run in progress or queued;
+  429 `{ error }` over the hourly limit or when the queue is full; 400 with the local-address refusal
+  message for a local or private host in hosted mode. Stream events `start` and `done` carry `runId`.
+- /api/summary, /api/spec, /api/framework/download, /report and /allure serve this login's latest finished
+  run, or `?run=<runId>` when that run is this login's. Another login's run is a 404.
+- POST /api/stop by another login: 403. POST /api/inputs/save in hosted mode: 403.
+- Hosted mode hides the "Allow write requests" checkbox: a production host is always read-only there.

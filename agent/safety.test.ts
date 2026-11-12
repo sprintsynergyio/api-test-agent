@@ -86,7 +86,12 @@ function config(baseUrl: string, flags: { allowProduction?: boolean; allowWrites
 }
 
 async function main() {
-  const ui = (await import(pathToFileURL('ui/host-class.mjs').href)) as { classifyHost(url: string): HostClass; refusalMessage(url: string): string };
+  const ui = (await import(pathToFileURL('ui/host-class.mjs').href)) as {
+    classifyHost(url: string): HostClass;
+    refusalMessage(url: string): string;
+    localRefusalMessage(url: string): string;
+    safetyMode(url: string, cfg: { allowProduction?: boolean; allowWrites?: boolean }, opts?: { forceProduction?: boolean; hosted?: boolean }): { hostClass: HostClass; mode: string };
+  };
 
   console.log('classifyHost');
   for (const [url, want] of HOSTS) {
@@ -124,6 +129,50 @@ async function main() {
     assert.equal(assessSafety({ baseUrl: 'https://api.example.com' }, { forceProduction: false }).mode, 'refused');
     assert.equal(assessSafety({ baseUrl: 'https://api.example.com' }, {}).hostClass, 'production');
   });
+  console.log('Hosted mode');
+  await check('hosted: local and private hosts are refused, in the agent and the UI', () => {
+    for (const url of ['http://localhost:4000', 'http://127.0.0.1:4000', 'http://10.8.0.1', 'http://192.168.1.10:8080', 'http://[::1]:3000', 'http://api.local']) {
+      for (const flags of [{}, { allowProduction: true, allowWrites: true }]) {
+        const s = assessSafety({ baseUrl: url, ...flags }, { hosted: true });
+        assert.equal(s.hostClass, 'local', url);
+        assert.equal(s.mode, 'refused', `${url} ${JSON.stringify(flags)}`);
+        assert.equal(s.hosted, true);
+        assert.equal(ui.safetyMode(url, flags, { hosted: true }).mode, 'refused', `ui ${url}`);
+      }
+    }
+    const want = 'REFUSED: 10.8.0.1 is a local or private address; the hosted agent only tests public non-production hosts.';
+    assert.equal(refusalMessage(assessSafety({ baseUrl: 'http://10.8.0.1/v1' }, { hosted: true })), want);
+    assert.equal(ui.localRefusalMessage('http://10.8.0.1/v1'), want);
+  });
+  await check('hosted: non-production stays full, production stays refused or read-only, never full', () => {
+    assert.equal(assessSafety({ baseUrl: 'https://api-staging.example.com', allowWrites: true }, { hosted: true }).mode, 'full');
+    assert.equal(assessSafety({ baseUrl: 'https://api.example.com' }, { hosted: true }).mode, 'refused');
+    assert.equal(assessSafety({ baseUrl: 'https://api.example.com', allowProduction: true }, { hosted: true }).mode, 'read-only');
+    assert.equal(assessSafety({ baseUrl: 'https://api.example.com', allowProduction: true, allowWrites: true }, { hosted: true }).mode, 'read-only', 'allowWrites is ignored when hosted');
+    assert.equal(ui.safetyMode('https://api.example.com', { allowProduction: true, allowWrites: true }, { hosted: true }).mode, 'read-only');
+    assert.equal(ui.safetyMode('https://api.example.com', { allowProduction: true, allowWrites: true }).mode, 'full', 'not hosted: unchanged');
+  });
+  await check('HOSTED=1 in the environment applies without an option, and hosted: false cannot undo it', () => {
+    const before = process.env.HOSTED;
+    process.env.HOSTED = '1';
+    try {
+      assert.equal(assessSafety({ baseUrl: 'http://localhost:4000' }).mode, 'refused');
+      assert.equal(assessSafety({ baseUrl: 'http://localhost:4000' }, { hosted: false }).mode, 'refused');
+      assert.equal(assessSafety({ baseUrl: 'https://api.example.com', allowProduction: true, allowWrites: true }).mode, 'read-only');
+    } finally {
+      if (before === undefined) delete process.env.HOSTED;
+      else process.env.HOSTED = before;
+    }
+    assert.equal(assessSafety({ baseUrl: 'http://localhost:4000' }).mode, 'full', 'without HOSTED the local demo is unchanged');
+  });
+  await check('hosted: the shared HTTP layer refuses a local host before any request', async () => {
+    await assert.rejects(createClients(config('http://127.0.0.1:1'), AUTH, { hosted: true }), (err: Error) => {
+      assert.ok(err instanceof ProductionRefused, err.message);
+      assert.match(err.message, /local or private address/);
+      return true;
+    });
+  });
+
   await check('read-only mode allows reads without setup only', () => {
     const s = assessSafety({ baseUrl: 'https://api.example.com', allowProduction: true });
     const eps = config('https://api.example.com').endpoints;
