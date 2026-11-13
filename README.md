@@ -1,5 +1,7 @@
 # API Test Agent
 
+[![CI](https://github.com/sprintsynergyio/api-test-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/sprintsynergyio/api-test-agent/actions/workflows/ci.yml)
+
 Give the agent a base URL and a list of API endpoints, and it writes an API test suite in Playwright or Pactum, runs it, and reports suspected API bugs. It first calls each endpoint once to see how the API really responds. Then a model (Claude or OpenAI) plans the test cases (happy path, response schema, invalid input, missing auth, wrong role) and writes one spec file per endpoint. Each file must pass a static gate before it is kept. The suite runs and every failure is classified. The result is a standalone test project you can download and run anywhere.
 
 **New to the repo? Team setup: see [docs/TEAM-SETUP.md](docs/TEAM-SETUP.md).** Clone, `npm ci`, `npm run ui`, paste a model API key once, run.
@@ -17,6 +19,11 @@ Give the agent a base URL and a list of API endpoints, and it writes an API test
 - Eval harness: a local demo API with planted bugs and `npm run eval` to measure detection, false alarms and flakiness per provider.
 - Hosted mode for a shared server: login, per-user runs, rate limits, local hosts refused. See [docs/HOSTING.md](docs/HOSTING.md).
 - Plan and open items: [docs/ROADMAP.md](docs/ROADMAP.md). Rules for changing the code: `CLAUDE.md`.
+
+## Requirements
+
+- Node 20 or newer.
+- A Claude or OpenAI API key, or a Claude Code login, if you want the agent to generate tests. Typechecking, the offline test suites and the hand-written template tests do not need a key.
 
 ## Setup
 
@@ -166,3 +173,7 @@ A failed test is a **suspected API finding** when the API returned a 5xx, or ret
 | `npx tsx agent/try-one.ts <input> <endpointId>` | Plan and generate one endpoint |
 | `npm run -s import <type> < file` | Import endpoints from Postman, OpenAPI, cURL, HAR or text (see Importers) |
 | `npm run test:importers` | Importer tests against `test-fixtures/importers/` (makes 2 live Claude calls) |
+
+## License
+
+MIT. Copyright 2026 SprintSynergy (https://sprintsynergy.com). See [LICENSE](LICENSE).
