@@ -2,6 +2,30 @@
   "name": "api-test-agent",
   "version": "1.0.0",
   "description": "",
+  "license": "MIT",
+  "author": {
+    "name": "SprintSynergy",
+    "url": "https://sprintsynergy.com"
+  },
+  "contributors": [
+    {
+      "name": "Muhammad Usman",
+      "url": "https://linkedin.com/in/sdet-muhammadusman"
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sprintsynergyio/api-test-agent.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sprintsynergyio/api-test-agent/issues"
+  },
+  "homepage": "https://github.com/sprintsynergyio/api-test-agent#readme",
+  "keywords": [],
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "test:template": "playwright test -c playwright.config.ts",
     "test:generated": "playwright test -c playwright.generated.config.ts",
@@ -21,7 +45,7 @@
     "test:gate": "tsx agent/validate.test.ts",
     "test:config": "tsx agent/config.test.ts",
     "test:gate:pactum": "tsx agent/frameworks/pactum.test.ts",
-    "test:template:pactum": "mocha --config .mocharc.pactum.json tests-pactum/template/*.spec.ts",
+    "test:template:pactum": "cross-env INPUT_FILE=input/local-shop.json mocha --config .mocharc.pactum.json \"tests-pactum/template/*.spec.ts\"",
     "test:generated:pactum": "mocha --config .mocharc.pactum.json 'generated/**/*.spec.ts'",
     "test:eval": "tsx agent/eval/eval.test.ts",
     "eval": "tsx agent/eval/run.ts",
@@ -30,18 +54,15 @@
     "ui:hash": "node ui/hash-password.mjs",
     "check:contract": "tsx agent/check-contract.ts"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "module",
   "devDependencies": {
     "@playwright/test": "^1.64.1",
     "@types/mocha": "^10.0.10",
     "@types/node": "^26.6.5",
-    "allure": "3.21.0",
+    "allure": "3.33.0",
     "allure-js-commons": "3.13.0",
     "allure-playwright": "3.13.0",
     "bcryptjs": "^2.4.3",
+    "cross-env": "^10.1.0",
     "dotenv": "^18.0.8",
     "mocha": "^12.0.3",
     "pactum": "^3.9.1",
@@ -50,7 +71,9 @@
     "yaml": "^2.9.1",
     "zod": "^4.6.7"
   },
-  "engines": {
-    "node": ">=20"
+  "overrides": {
+    "follow-redirects": "^1.16.3",
+    "dompurify": "^3.4.17",
+    "fast-xml-parser": "^5.12.1"
   }
 }
