@@ -25,12 +25,25 @@ An agent that takes a base URL and a list of API endpoints, probes the real API,
 | `npm run test:cleanup` | test data cleanup against a real local API it starts itself: HTTP layer, nested resources, no DELETE endpoint, a failing DELETE, a Playwright run and a Mocha run (must stay all passed) |
 | `npm run test:gate` | Playwright static gate tests: per-type status rules, noAuthApi rule, per-type plan coverage (must stay all passed) |
 | `npm run test:gate:pactum` | Pactum static gate tests (must stay all passed) |
-| `npm run eval -- [--runs N] [--bugs all\|none\|id,id] [--dry-run]` | eval harness: runs the agent against every planted-bug set and prints detection, false alarm and flakiness rates (see Eval harness) |
+| `npm run eval -- [--runs N] [--bugs all\|none\|id,id] [--provider anthropic\|openai] [--dry-run]` | eval harness: runs the agent against every planted-bug set and prints detection, false alarm and flakiness rates (see Eval harness); `--provider` sets `LLM_PROVIDER` for the runs and is recorded in score.json |
 | `npm run test:eval` | eval harness tests, offline: the scorer, and every planted bug against a real local API (must stay all passed) |
-| `npm run test:claude-api` | Messages API path of `agent/claude.ts` with a fake fetch: request shape, error handling, key never leaks (must stay all passed) |
+| `npm run test:claude-api` | Messages API and Chat Completions paths of `agent/claude.ts` with a fake fetch, plus `verifyProviderKey`: request shapes, error handling, keys never leak (must stay all passed) |
+| `npm run test:settings` | the UI's model settings routes against a fake provider server: verify, save to `.env`, restart reads it, read-only with a login (must stay all passed) |
 | `npm run check:contract` | checks `out/summary.json` against `ui/CONTRACT.md`, lists every problem, exit 1 on any |
 
-Claude is called one of two ways. Without `ANTHROPIC_API_KEY`: the Claude Code CLI in headless mode (`claude -p`) with the machine's login. With `ANTHROPIC_API_KEY` in `.env`: the Messages API over HTTPS (`agent/claude.ts`), billed to that key; hosted mode requires this. `CLAUDE_MODEL` optionally overrides the model (API default `claude-sonnet-5-5`); `MAX_CLAUDE_CALLS` caps calls per run. The key is treated like an auth value: never in logs, summaries, exports or the Playwright child process.
+## Model providers (`agent/claude.ts`)
+
+The model is chosen once per process from the environment (`modelChoice()`), printed as `model: <provider> <model> (API key|Claude Code login)` after the framework line, and written to `summary.model { provider, model, via }`.
+
+| `.env` | Path |
+|---|---|
+| `LLM_PROVIDER` unset or `anthropic`, no `ANTHROPIC_API_KEY` | the Claude Code CLI in headless mode (`claude -p`) with the machine's login (`via: "cli"`) |
+| `anthropic` with `ANTHROPIC_API_KEY` | the Messages API over HTTPS, billed to the key; default model `claude-sonnet-5-5` |
+| `LLM_PROVIDER=openai` with `OPENAI_API_KEY` | the Chat Completions API (`max_completion_tokens`, system plus user message); default model `gpt-6.1-sol` (OpenAI's balanced model as of Nov 2026). Without the key the run stops before probing with `LLM_PROVIDER=openai requires OPENAI_API_KEY` |
+
+`LLM_MODEL` overrides the model for either provider; `CLAUDE_MODEL` still works as the old name for the Anthropic model. `ANTHROPIC_BASE_URL` and `OPENAI_BASE_URL` redirect the calls (proxies, the settings test's fake server). `MAX_CLAUDE_CALLS` caps calls per run for every provider. Hosted mode requires the selected provider's key. Both keys are treated like auth values: scrubbed from logs, errors, summaries and exports, and removed from every child process (`claudeEnv`, `agent/frameworks/test-env.ts`). The per-call console line keeps the `[claude]` label for every provider (the UI reads it, `ui/CONTRACT.md`). The prompts were tuned against Claude; `npm run eval -- --provider openai` measures the other provider before anyone standardises on it.
+
+`verifyProviderKey(provider, key, model?)` makes one 5-token request and returns `{ ok, provider, model, error }` with a plain sentence for 401, 402/403, 404, 429 and network failures, never the key. The UI's first-launch card uses it (section 10 of `ui/CONTRACT.md`): `GET /api/settings`, `POST /api/settings/verify`, `POST /api/settings` (verifies, then writes `LLM_PROVIDER`, `LLM_MODEL` and the key line into `.env`, mode 600, other lines kept). The POST routes are 403 whenever `HOSTED=1` or `UI_USERS` is set: a shared server never takes keys from the browser. `ENV_FILE` points the UI server at another `.env` (tests); `SKIP_CLI_DETECT=1` makes it ignore an installed `claude` CLI (tests).
 
 ## Frameworks
 
@@ -108,7 +121,7 @@ For the UI running on a shared server (the SprintSynergy VPS, `docs/HOSTING.md`)
 | `HOST` | bind address; anything but `127.0.0.1` or `localhost` needs `HOSTED=1`, otherwise the server exits 1. Behind Nginx keep the default |
 | `UI_PORT` | UI port (default 3000) |
 | `UI_USERS` | `name:bcryptHash,name2:bcryptHash` from `npm run ui:hash -- <password>`. Sets login on, hosted or not. Required with `HOSTED=1` |
-| `ANTHROPIC_API_KEY` | required with `HOSTED=1`: the shared server never uses a personal Claude login |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | the selected provider's key is required with `HOSTED=1`: the shared server never uses a personal Claude login |
 | `HOSTED_RUNS_PER_HOUR` | runs per login per hour (default 5); over it `POST /api/run` is 429 |
 | `HOSTED_QUEUE` | runs waiting behind the one in progress (default 5); over it 429 |
 | `HOSTED_RUN_TTL_HOURS` | run folders older than this are deleted hourly (default 24) |
@@ -196,7 +209,8 @@ Output goes to `eval-results/<timestamp>/` (gitignored; not under `out/`, which 
 3. Tab 1 `npm run api:local`, then `npm run agent input/local-shop.json`: the line `safety: local host, full mode`, exactly 2 suspected API findings (create-product with a text price returns 500; delete-product without auth returns 204), every other test passes, and `npm run check:contract` is clean. Then the same on a copy of the input with `"framework": "pactum"`: the line `framework: pactum`, the same 2 findings, `check:contract` clean, and the exported `frameworks/<name>-pactum/` (no double suffix when the name already ends in `-pactum`) runs standalone (`npm install`, `.env`, `npm test`) with the same results.
 4. `npm run api:local:fixed`, same run: 0 findings, 0 failures.
 5. `grep -r "hackathon-demo-token\|YWRtaW46" out/ reports/ frameworks/ input/`: no matches.
-6. `npm run test:importers` (offline), `npm run test:safety`, `npm run test:auth`, `npm run test:gate`, `npm run test:gate:pactum`, `npm run test:config`, `npm run test:eval`, `npm run test:claude-api`, `npm run test:redact` and `npm run test:cleanup`: all passed, 0 failed.
+6. `npm run test:importers` (offline), `npm run test:safety`, `npm run test:auth`, `npm run test:gate`, `npm run test:gate:pactum`, `npm run test:config`, `npm run test:eval`, `npm run test:claude-api`, `npm run test:settings`, `npm run test:redact` and `npm run test:cleanup`: all passed, 0 failed.
+6d. Model setup: with no key in `.env` and `SKIP_CLI_DETECT=1 npm run ui`, the startup line ends with `model: not set up yet (the page will ask for a key)` and the page opens on the "Set up your model" card; Verify with a wrong key shows the 401 sentence, with a real key `Key works`, Save writes the three lines to `.env` (file mode 600) and the header shows `Claude ... via API key`; `npm run agent input/local-shop.json` then prints `model: anthropic claude-sonnet-5-5 (API key)` and the summary has `model`. With `UI_USERS` set the card never shows and the POST routes are 403.
 6a. Login auth: `.env` has the four `LOCAL_API_*_USER` / `_PASSWORD` values from `.env.example`. Tab 1 `LOG_REQUESTS=1 npm run api:local`, then `npm run probe input/local-shop-login.json`: all 5 `OK`, and the API log shows exactly one `POST /auth/login` before the probes. `npm run agent input/local-shop-login.json`: every endpoint `OK written`, the 2 default findings plus `[authz] delete-product ...: expected 403|404, got 204` (planted bug `viewer-can-delete` is not in the default set, so run Tab 1 as `BUGS=price-text-500,delete-no-auth,viewer-can-delete npm run api:local` for three findings), `check:contract` clean, and `grep -rE "admin-pass|viewer-pass|Bearer [a-z0-9]{24}" out/ reports/ frameworks/` finds nothing. The same with `"framework": "pactum"` in a copy of the input.
 6b. Nested paths: Tab 1 `npm run api:local`, then `npm run probe input/local-shop-nested.json`: all 6 endpoints `OK` (get-review and delete-review go through two setup steps). `npm run agent input/local-shop-nested.json`: every endpoint `OK written`, the same 2 kinds of finding are not expected here (the reviews resource has no planted bug), `check:contract` clean. Profiles: `npm run agent input/example-profile.json` exits 1 asking for `--select`; with `-- --select env=staging,brand=alpha,region=eu` it resolves `https://alpha-eu.staging.example-shop.test` (a non-production host that does not exist, so the probe fails cleanly).
 6c. Cleanup and redaction live: Tab 1 `LOG_REQUESTS=1 npm run api:local`, then `npm run agent input/local-shop.json`: the probe phase ends with `redaction: standard, 0 value(s) replaced` and `cleanup: created N, deleted N, failed 0, no delete endpoint 0`; the summary block has `Redaction:` and `Cleanup:` lines with `failed 0`; the API log shows a `DELETE /products/<id>` for every `POST /products` that setup made (the probe's own `POST /products` request and the `[happy]` create test's own record are the known exceptions: they are not made through createResource); `check:contract` clean.
@@ -210,7 +224,7 @@ Output goes to `eval-results/<timestamp>/` (gitignored; not under `out/`, which 
 - macOS assumed: `npm run api:local:fixed` uses `FIXED=1 node ...` (on Windows use `BUGS=` through cross-env or set it in the shell) and Allure 3 uses macOS's `mdls`. On Windows, Allure may not generate (the run continues with `allureReport: null`).
 - If port 3000 or 4000 is busy: `lsof -ti tcp:3000 -sTCP:LISTEN | xargs kill` (or `tcp:4000`). Without `-sTCP:LISTEN`, lsof also lists clients connected to the port, such as a browser, and kills them too.
 - `AGENT_FORCE_PRODUCTION=1` (testing only) makes every host count as production in the agent, the ctx fixture, the exported framework and the UI server. It can only make the guard stricter.
-- The UI server reads `.env` too (dotenv), so `HOSTED`, `UI_USERS` and `ANTHROPIC_API_KEY` can live there or in the systemd unit.
+- The UI server reads `.env` too (dotenv), so `HOSTED`, `UI_USERS` and the provider keys can live there or in the systemd unit. The setup card writes to the same file.
 - `LOG_REQUESTS=1 npm run api:local` prints `<METHOD> <path><?query>` for every request the local API receives, to prove what the guard let through and which query parameters were sent.
 - If `tsx` fails with "The service was stopped", macOS killed a quarantined esbuild binary (folder copied from a zip or download). Fix: `npm ci`.
 - Restful Booker is a shared public server that resets its data; a random 404 there is not a code bug.

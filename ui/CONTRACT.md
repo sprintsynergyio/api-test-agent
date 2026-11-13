@@ -91,6 +91,12 @@ been rejected). Rule 4 for it is the same as for auth and invalid-input: a 2xx a
 for it is "403|404". Inputs with auth types other than the fixed header (query, cookie, login) and with
 auth.roles are CLI only for now: the UI's input check still accepts only auth { header, valueEnv }.
 
+Since Phase 8 the summary also has a top-level "model": { "provider": "anthropic" | "openai", "model": "<id>",
+"via": "api" | "cli" }: which model provider wrote the plans and specs and whether it was reached through an
+API key or the Claude Code login. The console prints "model: <provider> <model> (API key|Claude Code login)"
+right after the framework line. The "[claude]" per-call lines keep their label for every provider.
+The UI shows the current choice from GET /api/settings (section 10); it does not read this field.
+
 probeStatus is null when the probe failed. specFile is null when no spec was written.
 classification is "suspected API finding" or "needs review".
 skippedReason is null, or "skipped: read-only mode" for an endpoint the safety guard did not run (section 7).
@@ -205,7 +211,7 @@ UI server:
   given per run in the UI, never stored by the UI.
 - GET /host-class.mjs serves ui/host-class.mjs to the page.
 
-`npm run check:contract` checks out/summary.json against sections 2, 4, 5, 7 and 9, including testFramework and selection.
+`npm run check:contract` checks out/summary.json against sections 2, 4, 5, 7 and 9, including testFramework, selection and model.
 
 ## 8. Login and hosted mode (additive)
 
@@ -246,3 +252,25 @@ On every run the summary also has:
 Playwright reports carry the same numbers per test as annotations "redaction" (a count) and "cleanup"
 (the totals as JSON); reports/pactum/status.json has redactionReplaced and cleanup per entry. The UI
 does not read either field yet.
+
+## 10. Model settings (additive, local mode only)
+
+The first-launch setup card lets a person on their own machine pick the model provider and save a key.
+Shared servers never take keys from the browser: with `HOSTED=1` or `UI_USERS` set the two POST routes
+answer 403 and the page hides the card.
+
+- GET /api/settings: `{ provider, model, hasKey, via, configured, editable, providers }`. `provider` is the
+  current LLM_PROVIDER (default anthropic), `model` the model the next run will use, `hasKey` whether the
+  provider's key is set in the environment, `via` "api" or "cli", `configured` whether a run can start
+  (a key, or for anthropic the `claude` CLI found at server start), `editable` whether the POST routes are
+  allowed, `providers` the list of `{ id, label, defaultModel, keyEnv }`. The key itself is never returned.
+- POST /api/settings/verify `{ provider, key, model? }`: one minimal request to the provider. 200
+  `{ ok, provider, model, error }`; `error` is a plain sentence naming the usual cause (wrong key, billing,
+  model not found, rate limit, network) and never contains the key.
+- POST /api/settings `{ provider, key, model? }`: verifies, then writes `LLM_PROVIDER=`, `LLM_MODEL=` and the
+  provider's key line into `.env` (every other line kept, file created from `.env.example` when missing,
+  mode 600) and reloads them for the next run. 200 with the same shape as GET, 400 when the key fails
+  verification (with the verify error), 403 when not editable.
+- The page shows the card when `configured` is false and `editable` is true, and a one-line status with a
+  "Change" link otherwise.
+

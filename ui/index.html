@@ -63,6 +63,19 @@
 
   /* Layout */
   .grid { display: grid; grid-template-columns: 430px 1fr; gap: 22px; align-items: start; }
+  .setup { margin-bottom: 22px; border: 1px solid #c7d2fe; box-shadow: 0 8px 30px rgba(79, 70, 229, 0.10); }
+  .setup-inner { display: grid; grid-template-columns: 360px 1fr; gap: 28px; padding: 26px 28px; align-items: start; }
+  @media (max-width: 1050px) { .setup-inner { grid-template-columns: 1fr; } }
+  .setup-step { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #4f46e5; background: #eef2ff; border-radius: 999px; padding: 4px 10px; margin-bottom: 10px; }
+  .setup-text h2 { margin: 0 0 8px; font-size: 20px; }
+  .setup-text .hint { margin: 0; line-height: 1.5; }
+  .setup-fields { display: grid; grid-template-columns: 220px 1fr 220px; gap: 12px; }
+  @media (max-width: 1050px) { .setup-fields { grid-template-columns: 1fr; } }
+  .setup-fields .lbl { display: block; margin-bottom: 6px; }
+  .setup-fields select, .setup-fields .txt { width: 100%; box-sizing: border-box; }
+  .setup-actions { display: flex; align-items: center; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+  .setup-actions #setupMsg { margin: 0 0 0 6px; }
+  .grid.dimmed { opacity: .45; pointer-events: none; filter: grayscale(.2); }
   @media (max-width: 1050px) { .grid { grid-template-columns: 1fr; } }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
   .card-h { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 18px 20px 0; }
@@ -357,6 +370,8 @@
       </div>
     </div>
     <div style="display:flex;align-items:center;gap:12px">
+      <span id="modelStatus" class="hint hidden"></span>
+      <button id="modelChangeBtn" class="link-btn hidden" type="button">Change</button>
       <span id="whoami" class="hint hidden"></span>
       <button id="logoutBtn" class="link-btn hidden" type="button">Sign out</button>
       <div id="pill" class="status-pill"><span class="dot"></span><span id="pillText">Ready</span></div>
@@ -373,6 +388,43 @@
       <input id="loginPass" class="txt" type="password" autocomplete="current-password">
       <button id="loginBtn" class="btn btn-primary" type="button" style="margin-top:14px">Sign in</button>
       <div id="loginMsg" class="bad-msg hidden"></div>
+    </div>
+  </section>
+
+  <!-- Model setup: shown on a personal machine until a provider key is saved (or the claude CLI is found).
+       It is a first-run screen: full width, three fields in one row, the main grid dimmed until done. -->
+  <section id="setupWrap" class="card setup hidden">
+    <div class="setup-inner">
+      <div class="setup-text">
+        <div class="setup-step">First run</div>
+        <h2>Set up your model</h2>
+        <p class="hint">The agent uses one model provider to plan and write the tests. Paste an API key, click Verify, then Save. The key is written only to <code>.env</code> on this machine and never leaves it.</p>
+      </div>
+      <div class="setup-form">
+        <div class="setup-fields">
+          <div>
+            <label class="lbl" for="setupProvider">Provider</label>
+            <select id="setupProvider">
+              <option value="anthropic">Claude (Anthropic)</option>
+              <option value="openai">OpenAI</option>
+            </select>
+          </div>
+          <div>
+            <label class="lbl" for="setupKey">API key</label>
+            <input id="setupKey" class="txt" type="password" autocomplete="off" spellcheck="false" placeholder="sk-...">
+          </div>
+          <div>
+            <label class="lbl" for="setupModel">Model <span class="hint" style="font-weight:400">(optional)</span></label>
+            <input id="setupModel" class="txt" type="text" autocomplete="off" spellcheck="false" placeholder="">
+          </div>
+        </div>
+        <div class="setup-actions">
+          <button id="setupVerifyBtn" class="btn btn-ghost" type="button">Verify</button>
+          <button id="setupSaveBtn" class="btn btn-primary" type="button">Save and continue</button>
+          <button id="setupCloseBtn" class="link-btn hidden" type="button">Cancel</button>
+          <div id="setupMsg" class="hint hidden"></div>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -978,6 +1030,85 @@
   $("logoutBtn").addEventListener("click", async () => {
     await fetch("/api/logout", { method: "POST" }).catch(() => null);
     window.location.reload();
+  });
+
+  // Model setup (personal machines only: the server says whether settings are editable).
+  let settings = null;
+  function modelLabel(st) {
+    const name = st.provider === "openai" ? "OpenAI" : "Claude";
+    if (st.via === "cli") return name + " via Claude Code login";
+    return name + " " + st.model + " via API key";
+  }
+  function renderSettings(st) {
+    settings = st;
+    const status = $("modelStatus");
+    if (st.configured) {
+      status.textContent = modelLabel(st);
+      status.classList.remove("hidden");
+    } else {
+      status.textContent = "Model not set up";
+      status.classList.remove("hidden");
+    }
+    $("modelChangeBtn").classList.toggle("hidden", !st.editable);
+    $("setupCloseBtn").classList.toggle("hidden", !st.configured);
+    const providerSel = $("setupProvider");
+    if (st.provider) providerSel.value = st.provider;
+    const p = (st.providers || []).find((x) => x.id === providerSel.value);
+    $("setupModel").placeholder = p ? p.defaultModel : "";
+    if (!st.configured && st.editable) showSetup();
+    else hideSetup();
+  }
+  function showSetup() {
+    $("setupWrap").classList.remove("hidden");
+    // Until a model is set the rest of the page cannot run anything, so it is dimmed, not hidden.
+    const firstRun = $("setupCloseBtn").classList.contains("hidden");
+    $("mainGrid").classList.toggle("dimmed", firstRun);
+    $("setupKey").focus();
+  }
+  function hideSetup() {
+    $("setupWrap").classList.add("hidden");
+    $("mainGrid").classList.remove("dimmed");
+  }
+  function setupMessage(text, kind) {
+    const m = $("setupMsg");
+    m.textContent = text;
+    m.className = kind === "ok" ? "ok-msg" : kind === "bad" ? "bad-msg" : "hint";
+    m.classList.remove("hidden");
+  }
+  async function loadSettings() {
+    try {
+      const st = await (await fetch("/api/settings")).json();
+      renderSettings(st);
+    } catch {}
+  }
+  async function postSettings(route) {
+    const body = { provider: $("setupProvider").value, key: $("setupKey").value.trim(), model: $("setupModel").value.trim() };
+    if (!body.key) return setupMessage("Paste the API key first.", "bad");
+    setupMessage(route === "/api/settings" ? "Checking the key, then saving..." : "Checking the key...", "");
+    $("setupVerifyBtn").disabled = true;
+    $("setupSaveBtn").disabled = true;
+    const res = await fetch(route, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).catch(() => null);
+    const out = res ? await res.json().catch(() => ({})) : {};
+    $("setupVerifyBtn").disabled = false;
+    $("setupSaveBtn").disabled = false;
+    if (!res) return setupMessage("Could not reach the UI server.", "bad");
+    if (route === "/api/settings/verify") {
+      if (res.ok && out.ok) return setupMessage("Key works. Model: " + out.model + ". Click Save to keep it.", "ok");
+      return setupMessage(out.error || "The key did not work.", "bad");
+    }
+    if (!res.ok) return setupMessage(out.error || "Could not save.", "bad");
+    $("setupKey").value = "";
+    setupMessage("Saved to .env. The next run uses " + modelLabel(out) + ".", "ok");
+    renderSettings(out);
+    hideSetup();
+  }
+  $("setupVerifyBtn").addEventListener("click", () => postSettings("/api/settings/verify"));
+  $("setupSaveBtn").addEventListener("click", () => postSettings("/api/settings"));
+  $("setupCloseBtn").addEventListener("click", hideSetup);
+  $("modelChangeBtn").addEventListener("click", () => { $("setupMsg").classList.add("hidden"); showSetup(); });
+  $("setupProvider").addEventListener("change", () => {
+    const p = ((settings && settings.providers) || []).find((x) => x.id === $("setupProvider").value);
+    $("setupModel").placeholder = p ? p.defaultModel : "";
   });
 
   function showRunErr(msg) {
@@ -1653,6 +1784,7 @@
   })();
 
   async function startApp() {
+    await loadSettings();
     await loadInputs();
     connectStream();
     try {

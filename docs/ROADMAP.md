@@ -187,6 +187,10 @@ Pulled forward from Phases 4 and 5 because the first real client (multi-brand, m
 
 ---
 
+## Phase 8: Team setup (built, live check pending)
+
+For a team that clones the repo and runs it on their own machines. Model provider adapter (Claude via API key or Claude Code login, OpenAI via Chat Completions), a first-launch settings card in the UI that verifies a key and writes it to `.env` (local machines only; shared servers refuse it), `docs/TEAM-SETUP.md`, `npm run eval -- --provider` to compare providers. Not yet: Grok or other providers, per-login keys on a shared server, a Docker image.
+
 ## Not in scope (for now)
 
 - Performance and load testing.
