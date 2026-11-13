@@ -6,7 +6,7 @@ export type Query = Record<string, string | number | boolean>;
 
 // setup creates the resource a path placeholder needs. param names the placeholder it fills; a
 // single setup object without param fills the first placeholder (the original shape).
-export type Setup = { endpointId: string; idField: string; param?: string };
+export type Setup = { endpointId: string; idField: string; param?: string; cleanup?: { endpointId: string } };
 
 export type EndpointLike = {
   id: string;

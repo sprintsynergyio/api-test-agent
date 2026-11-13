@@ -15,6 +15,8 @@
     "import": "tsx agent/import.ts",
     "test:importers": "tsx agent/importers/importers.test.ts",
     "test:safety": "tsx agent/safety.test.ts",
+    "test:redact": "tsx agent/redact.test.ts",
+    "test:cleanup": "tsx agent/cleanup.test.ts",
     "test:gate": "tsx agent/validate.test.ts",
     "test:config": "tsx agent/config.test.ts",
     "test:gate:pactum": "tsx agent/frameworks/pactum.test.ts",

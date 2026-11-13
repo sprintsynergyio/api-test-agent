@@ -5,7 +5,8 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, wri
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { apiName, type Config } from '../config';
 import { validateWithRules, type GateRules } from '../validate';
-import { exportedConfig, modelSource } from './shared-export';
+import { addCleanup, emptyCleanup, type CleanupTotals } from '../http';
+import { exportedConfig, modelSource, redactSource } from './shared-export';
 import type { ExportEndpoint, ExportFinding, FrameworkAdapter, FrameworkInfo, RunResult, TestOutcome } from './types';
 
 // The Pactum adapter: Mocha + Pactum tests that import only from tests-pactum/setup/ctx.ts.
@@ -62,12 +63,14 @@ function runMocha(inputFile: string): Promise<number | null> {
 
 type MochaTest = { title: string; fullTitle: string; file?: string; err?: { message?: string; stack?: string } };
 type MochaJson = { tests?: MochaTest[]; passes?: MochaTest[]; failures?: MochaTest[]; pending?: MochaTest[] };
-type StatusEntry = { file: string; title: string; state: string; actualStatus: number | null; requestsSent: number };
+type StatusEntry = { file: string; title: string; state: string; actualStatus: number | null; requestsSent: number; redactionReplaced?: number; cleanup?: Partial<CleanupTotals> };
 
-function readOutcomes(cleanError: (text: string) => string): { outcomes: TestOutcome[]; loadErrors: string[]; requestsSent: number } {
+function readOutcomes(cleanError: (text: string) => string): { outcomes: TestOutcome[]; loadErrors: string[]; requestsSent: number; redactionReplaced: number; cleanup: CleanupTotals } {
   const report = JSON.parse(readFileSync(RESULTS_FILE, 'utf8')) as MochaJson;
   const statuses: StatusEntry[] = existsSync(STATUS_FILE) ? (JSON.parse(readFileSync(STATUS_FILE, 'utf8')) as StatusEntry[]) : [];
   const requestsSent = statuses.reduce((n, s) => n + (Number.isInteger(s.requestsSent) ? s.requestsSent : 0), 0);
+  const redactionReplaced = statuses.reduce((n, s) => n + (Number.isInteger(s.redactionReplaced) ? s.redactionReplaced! : 0), 0);
+  const cleanup = statuses.reduce((t, s) => addCleanup(t, s.cleanup), emptyCleanup());
   const passedTitles = new Set((report.passes ?? []).map((t) => `${t.file ?? ''}|${t.title}`));
   const pendingTitles = new Set((report.pending ?? []).map((t) => `${t.file ?? ''}|${t.title}`));
   const outcomes: TestOutcome[] = [];
@@ -90,7 +93,7 @@ function readOutcomes(cleanError: (text: string) => string): { outcomes: TestOut
       error: cleanError(t.err?.message ?? '').slice(0, 300),
     });
   }
-  return { outcomes, loadErrors, requestsSent };
+  return { outcomes, loadErrors, requestsSent, redactionReplaced, cleanup };
 }
 
 // ---- exporter ----
@@ -121,10 +124,13 @@ function ctxSource(): string {
   const inputLine = /^const INPUT_FILE = .*\/\/ EXPORT-INPUT$/m;
   if (!src.includes(importLine) || !inputLine.test(src)) throw new Error(`framework export: ${CTX_FILE} no longer has the expected import and INPUT_FILE lines`);
   const modelLine = "from '../../agent/model';";
+  const redactLine = "from '../../agent/redact';";
   if (!src.includes(modelLine)) throw new Error(`framework export: ${CTX_FILE} no longer imports agent/model as expected`);
+  if (!src.includes(redactLine)) throw new Error(`framework export: ${CTX_FILE} no longer imports agent/redact as expected`);
   return src
     .replace(importLine, "from './safety';")
     .replace(modelLine, "from './model';")
+    .replace(redactLine, "from './redact';")
     .replace(inputLine, "const INPUT_FILE = fileURLToPath(new URL('../config/api.json', import.meta.url));")
     .replace("import { join } from 'node:path';", "import { join } from 'node:path';\nimport { fileURLToPath } from 'node:url';")
     .replace(/^\/\/ The Pactum equivalent of tests\/fixtures\/ctx\.ts: the ONLY/m, '// The ONLY');
@@ -295,6 +301,7 @@ export function exportPactumFramework(opts: {
   write('tsconfig.json', TSCONFIG);
   write('config/api.json', JSON.stringify(exportedConfig(name, config), null, 2) + '\n');
   write('src/model.ts', modelSource());
+  write('src/redact.ts', redactSource());
   write('src/safety.ts', safetySource());
   write('src/ctx.ts', ctxSource());
   if (config.auth) write('.env.example', `${config.auth.valueEnv}=\n`);

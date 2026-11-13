@@ -3,8 +3,9 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { loadConfig, selectionLine, takeSelectFlag, type Config, type Endpoint } from './config';
-import { createClients, disposeClients, resolvePath, runSetup, type Clients } from './http';
+import { cleanupLine, cleanupResources, createClients, disposeClients, resolvePath, runSetup, type CleanupTotals, type Clients } from './http';
 import { queryString, setupSteps } from './model';
+import { describeRedaction, redactHeaders, redactText, redactValue, type RedactionCounter } from './redact';
 import { endpointAllowed } from './safety';
 
 const PROBE_DIR = 'out/probes';
@@ -97,7 +98,22 @@ async function probeEndpoint(config: Config, clients: Clients, endpoint: Endpoin
   return result;
 }
 
-export type ProbeRun = { results: Map<string, ProbeResult>; requestsSent: number };
+export type ProbeRun = { results: Map<string, ProbeResult>; requestsSent: number; redaction: RedactionCounter; cleanup: CleanupTotals };
+
+// What the plan and generate prompts and out/probes/*.json see: the redacted probe (agent/redact.ts).
+// Status, content type, timing and the shape of the body are kept; personal and secret-looking values
+// are not. The request body gets valid stand-ins because the generated tests copy it.
+export function redactProbe(result: ProbeResult, config: Config, counter: RedactionCounter): ProbeResult {
+  return {
+    ...result,
+    path: redactText(result.path, counter),
+    requestBody: redactValue(result.requestBody, config.redaction, counter, 'request'),
+    headers: redactHeaders(result.headers, counter) ?? null,
+    ...(result.body !== undefined ? { body: redactValue(result.body, config.redaction, counter) } : {}),
+    ...(result.bodyText !== undefined ? { bodyText: redactText(result.bodyText, counter) } : {}),
+    ...(result.error !== undefined ? { error: redactText(result.error, counter) } : {}),
+  };
+}
 
 // Endpoints the safety guard does not allow (read-only mode) are not probed: "<id> SKIPPED read-only mode".
 // createClients throws ProductionRefused before any request when the host is refused.
@@ -107,6 +123,8 @@ export async function probeAll(config: Config, authValue: string | undefined, op
 
   const clients = await createClients(config, authValue, { timeoutMs: REQUEST_TIMEOUT_MS, forceProduction: opts.forceProduction });
   const results = new Map<string, ProbeResult>();
+  const redaction: RedactionCounter = { replaced: 0 };
+  let cleanup: CleanupTotals;
   try {
     for (const endpoint of config.endpoints) {
       if (!endpointAllowed(clients.safety, endpoint)) {
@@ -118,16 +136,23 @@ export async function probeAll(config: Config, authValue: string | undefined, op
       if (result.status !== null && !result.usable) {
         result = await probeEndpoint(config, clients, endpoint);
       }
+      // Only the redacted probe is kept: on disk, in the prompts, in memory.
+      result = redactProbe(result, config, redaction);
       writeFileSync(join(PROBE_DIR, `${endpoint.id}.json`), JSON.stringify(result, null, 2) + '\n');
       if (result.status === null) console.log(`${endpoint.id} FAILED ${result.error}`);
       else if (!result.usable) console.log(`${endpoint.id} FAILED returned ${result.status} after retry`);
       else console.log(`${endpoint.id} OK ${result.status}`);
       results.set(endpoint.id, result);
     }
+    console.log(describeRedaction(config.redaction, redaction));
+    // The probe's setup steps created resources on the target API: delete them now.
+    cleanup = await cleanupResources(config, clients);
+    console.log(cleanupLine(cleanup));
+    for (const f of cleanup.failures) console.log(`  cleanup failed: ${f}`);
   } finally {
     await disposeClients(clients);
   }
-  return { results, requestsSent: clients.counter.sent };
+  return { results, requestsSent: clients.counter.sent, redaction, cleanup };
 }
 
 async function main() {

@@ -6,6 +6,8 @@
 //   BUGS unset        turns on the catalog's default set (the two original demo bugs).
 //   FIXED=1           turns every bug off (same as BUGS="").
 // Set LOG_REQUESTS=1 to print "<METHOD> <path>" for every request (used to prove the safety guard).
+// FAIL_DELETE_IDS=6,9 (tests only, not a planted bug): DELETE /products/<id> answers 500 for those ids,
+// so npm run test:cleanup can prove a failed cleanup is reported and never hidden.
 
 import http from "node:http";
 import { readFileSync } from "node:fs";
@@ -14,6 +16,7 @@ import { fileURLToPath } from "node:url";
 const PORT = Number(process.env.PORT || 4000);
 const TOKEN = "Bearer hackathon-demo-token";
 const LOG_REQUESTS = process.env.LOG_REQUESTS === "1";
+const FAIL_DELETE_IDS = new Set((process.env.FAIL_DELETE_IDS ?? "").split(",").map((s) => Number(s.trim())).filter((n) => Number.isInteger(n) && n > 0));
 
 const catalog = JSON.parse(readFileSync(fileURLToPath(new URL("./bugs.json", import.meta.url)), "utf8"));
 const KNOWN = new Set(catalog.bugs.map((b) => b.id));
@@ -229,6 +232,7 @@ const server = http.createServer(async (req, res) => {
     // delete-no-auth: the auth check is skipped.
     if (!bug("delete-no-auth") && !authed(req)) return send(res, 401, { error: "unauthorized" });
     if (!existing) return send(res, 404, { error: "product not found" });
+    if (FAIL_DELETE_IDS.has(id)) return send(res, 500, { error: "internal server error (FAIL_DELETE_IDS test hook)" });
     products.delete(id);
     res.writeHead(204);
     return res.end();

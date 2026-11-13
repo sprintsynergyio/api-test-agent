@@ -1,6 +1,7 @@
 import { request, type APIRequestContext, type APIResponse } from '@playwright/test';
 import type { Config } from './config';
-import { queryString, resolvePath, setupSteps } from './model';
+import { pathParams, queryString, resolvePath, setupSteps } from './model';
+import { redactHeaders, redactText, redactValue, type RedactionCounter } from './redact';
 import { assessSafety, ProductionRefused, READ_METHODS, ReadOnlyBlocked, refusalMessage, type Safety } from './safety';
 
 // Shared HTTP logic for the ctx fixture and the agent. Never reads process.env or files:
@@ -9,11 +10,15 @@ import { assessSafety, ProductionRefused, READ_METHODS, ReadOnlyBlocked, refusal
 
 export type RequestCounter = { sent: number };
 
+// A resource createResource made on the target API, so cleanup can delete it afterwards.
+export type CreatedResource = { endpointId: string; id: string; params: Record<string, string> };
+
 export type Clients = {
   api: APIRequestContext;
   noAuthApi: APIRequestContext;
   safety: Safety;
   counter: RequestCounter; // requests actually sent through api and noAuthApi
+  created: CreatedResource[]; // everything createResource made, newest last
 };
 
 export type ClientOptions = { timeoutMs?: number; forceProduction?: boolean; hosted?: boolean };
@@ -76,7 +81,7 @@ export async function createClients(config: Config, authValue: string | undefine
     timeout: opts.timeoutMs,
   });
   const counter: RequestCounter = { sent: 0 };
-  return { api: guarded(api, safety, counter), noAuthApi: guarded(noAuthApi, safety, counter), safety, counter };
+  return { api: guarded(api, safety, counter), noAuthApi: guarded(noAuthApi, safety, counter), safety, counter, created: [] };
 }
 
 // Evidence: every request and response made through the clients, for test reports.
@@ -148,23 +153,26 @@ export function recordClients(
 }
 
 // One report attachment per exchange: JSON with the request and the response (body cut to 5 KB).
-export function formatExchange(config: Config, exchange: Exchange, authValue: string | undefined): { name: string; body: string } {
+// Everything written is redacted (see redact.ts): the auth header, credential-looking headers, and
+// personal or secret-looking values in bodies and errors; config.redaction adds the per-API rules.
+export function formatExchange(config: Config, exchange: Exchange, authValue: string | undefined, counter: RedactionCounter = { replaced: 0 }): { name: string; body: string } {
   const authHeader = config.auth?.header.toLowerCase();
-  const headers = Object.fromEntries(
-    Object.entries(exchange.requestHeaders).map(([k, v]) => [k, k.toLowerCase() === authHeader ? REDACTED : v]),
+  const headers = redactHeaders(
+    Object.fromEntries(Object.entries(exchange.requestHeaders).map(([k, v]) => [k, k.toLowerCase() === authHeader ? REDACTED : v])),
+    counter,
   );
   const text = exchange.responseBody;
-  let responseBody: unknown = text.length > MAX_BODY_CHARS ? `${text.slice(0, MAX_BODY_CHARS)}... [truncated, ${text.length} characters]` : text;
+  let responseBody: unknown = text.length > MAX_BODY_CHARS ? redactText(`${text.slice(0, MAX_BODY_CHARS)}... [truncated, ${text.length} characters]`, counter) : text;
   if (text.length > 0 && text.length <= MAX_BODY_CHARS) {
     try {
-      responseBody = JSON.parse(text);
+      responseBody = redactValue(JSON.parse(text), config.redaction, counter);
     } catch {
-      responseBody = text;
+      responseBody = redactText(text, counter);
     }
   }
   const evidence = {
-    request: { method: exchange.method, path: exchange.path, headers, body: exchange.requestBody },
-    response: exchange.error ? { error: exchange.error } : { status: exchange.status, body: responseBody },
+    request: { method: exchange.method, path: redactText(exchange.path, counter), headers, body: redactValue(exchange.requestBody, config.redaction, counter, 'request') },
+    response: exchange.error ? { error: redactText(exchange.error, counter) } : { status: exchange.status, body: responseBody },
   };
   let body = JSON.stringify(evidence, null, 2);
   if (authValue) body = body.split(authValue).join(REDACTED);
@@ -237,7 +245,97 @@ export async function createResource(
   if (id === undefined || id === null || id === '') {
     throw new Error(`createResource(${endpointId}) returned no "${field}": status ${response.status()}, body: ${text}`);
   }
+  clients.created.push({ endpointId, id: String(id), params: own });
   return String(id);
+}
+
+// ---- cleanup ----
+// Deletes what createResource made, newest first (a review goes before its product), through the same
+// guarded clients. Nothing is hidden: the totals say what was deleted, what failed and why, and what
+// had no DELETE endpoint to use.
+
+export type CleanupTotals = { created: number; deleted: number; failed: number; skippedNoDeleteEndpoint: number; failures: string[] };
+
+export const emptyCleanup = (): CleanupTotals => ({ created: 0, deleted: 0, failed: 0, skippedNoDeleteEndpoint: 0, failures: [] });
+
+export function addCleanup(into: CleanupTotals, more: Partial<CleanupTotals> | null | undefined): CleanupTotals {
+  if (!more) return into;
+  into.created += more.created ?? 0;
+  into.deleted += more.deleted ?? 0;
+  into.failed += more.failed ?? 0;
+  into.skippedNoDeleteEndpoint += more.skippedNoDeleteEndpoint ?? 0;
+  if (more.failures) into.failures.push(...more.failures);
+  return into;
+}
+
+export function cleanupLine(t: CleanupTotals): string {
+  return `cleanup: created ${t.created}, deleted ${t.deleted}, failed ${t.failed}, no delete endpoint ${t.skippedNoDeleteEndpoint}`;
+}
+
+// The DELETE endpoint for resources made by createEndpointId: the setup step's explicit cleanup, else the
+// DELETE whose path is the create endpoint's path plus one more placeholder (/products -> /products/{id}).
+export function deleteEndpointFor(config: Config, createEndpointId: string): Config['endpoints'][number] | undefined {
+  const create = config.endpoints.find((e) => e.id === createEndpointId);
+  if (!create) return undefined;
+  for (const e of config.endpoints) {
+    const step = setupSteps(e).find((st) => st.endpointId === createEndpointId && st.cleanup);
+    if (step) return config.endpoints.find((d) => d.id === step.cleanup!.endpointId);
+  }
+  return config.endpoints.find((d) => d.method === 'DELETE' && isChildPath(create.path, d.path));
+}
+
+// Is child the parent path plus exactly one placeholder segment? Placeholder names may differ:
+// /products/{id}/reviews is the parent of /products/{productId}/reviews/{reviewId}.
+function isChildPath(parent: string, child: string): boolean {
+  const p = parent.split('/');
+  const c = child.split('/');
+  if (c.length !== p.length + 1 || !/^\{[^}]+\}$/.test(c[c.length - 1])) return false;
+  return p.every((seg, i) => seg === c[i] || (/^\{[^}]+\}$/.test(seg) && /^\{[^}]+\}$/.test(c[i])));
+}
+
+export async function cleanupResources(config: Config, clients: Clients): Promise<CleanupTotals> {
+  const totals = emptyCleanup();
+  const list = clients.created.splice(0).reverse();
+  totals.created = list.length;
+  for (const made of list) {
+    const del = deleteEndpointFor(config, made.endpointId);
+    if (!del) {
+      totals.skippedNoDeleteEndpoint++;
+      continue;
+    }
+    // The parent placeholders may be named differently on the DELETE path: map them by position.
+    const create = config.endpoints.find((e) => e.id === made.endpointId)!;
+    const createParams = pathParams(create.path);
+    const delParams = pathParams(del.path);
+    const values: Record<string, string> = {};
+    delParams.slice(0, -1).forEach((name, i) => {
+      const from = createParams[i];
+      if (from !== undefined && made.params[from] !== undefined) values[name] = made.params[from];
+    });
+    values[delParams[delParams.length - 1]] = made.id;
+    let path: string;
+    try {
+      path = resolvePath(del.path, values);
+    } catch (err) {
+      totals.failed++;
+      totals.failures.push(`DELETE ${del.path}: ${String((err as Error)?.message ?? err).split('\n')[0]}`);
+      continue;
+    }
+    const client = del.requiresAuth ? clients.api : clients.noAuthApi;
+    try {
+      const response = await client.fetch(path, { method: 'DELETE', params: del.query, headers: del.headers });
+      // 404 means it is already gone, which is the state cleanup wants.
+      if (response.ok() || response.status() === 404) totals.deleted++;
+      else {
+        totals.failed++;
+        totals.failures.push(`DELETE ${path} returned ${response.status()}`);
+      }
+    } catch (err) {
+      totals.failed++;
+      totals.failures.push(`DELETE ${path} failed: ${String((err as Error)?.message ?? err).split('\n')[0]}`);
+    }
+  }
+  return totals;
 }
 
 // Runs an endpoint's setup steps in order and returns every placeholder value, known ones included.

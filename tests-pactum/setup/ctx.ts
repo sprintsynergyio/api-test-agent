@@ -3,7 +3,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import pactum from 'pactum';
 import { assessSafety, endpointAllowed, ProductionRefused, READ_METHODS, ReadOnlyBlocked, refusalMessage, type Safety } from '../../agent/safety';
-import { applyProfile, queryString, resolvePath, setupSteps, type Profile, type Query, type Selection, type Setup } from '../../agent/model';
+import { applyProfile, pathParams, queryString, resolvePath, setupSteps, type Profile, type Query, type Selection, type Setup } from '../../agent/model';
+import { redactHeaders, redactText, redactValue, type RedactionConfig } from '../../agent/redact';
 
 // The Pactum equivalent of tests/fixtures/ctx.ts: the ONLY Pactum test-side file that reads process.env
 // or the input file. Tests import { ctx, expect, recordStatus } from here and nothing from pactum.
@@ -28,6 +29,7 @@ export type Config = {
   auth?: { header: string; valueEnv: string };
   allowProduction?: boolean;
   allowWrites?: boolean;
+  redaction?: RedactionConfig;
   endpoints: {
     id: string;
     method: string;
@@ -104,8 +106,12 @@ export type Ctx = {
 };
 
 const counter = { sent: 0 };
+const redaction = { replaced: 0 };
+// Everything createResource made on the API and cleanup has not deleted yet, newest last.
+type CreatedResource = { endpointId: string; id: string; params: Record<string, string> };
+const created: CreatedResource[] = [];
 
-type Current = { file: string; title: string; actualStatus: number | null; sentBefore: number; evidence: string[] } | null;
+type Current = { file: string; title: string; actualStatus: number | null; sentBefore: number; redactedBefore: number; evidence: string[] } | null;
 let current: Current = null;
 let evidenceIndex = 0;
 
@@ -121,15 +127,22 @@ function toJsonOrText(text: string): unknown {
   }
 }
 
-// One JSON file per exchange in reports/pactum/evidence/, auth header shown as <redacted> and the raw
-// auth value scrubbed from everything else.
+// One JSON file per exchange in reports/pactum/evidence/, redacted (see redact.ts): the auth header and
+// credential-looking headers, personal or secret-looking values in bodies and errors, plus the per-API
+// rules in config.redaction. The raw auth value is scrubbed from everything else.
 function writeEvidence(method: string, path: string, headers: Record<string, string>, body: unknown, status: number | null, text: string, error?: string) {
   const authHeader = config.auth?.header.toLowerCase();
-  const shownHeaders = Object.fromEntries(Object.entries(headers).map(([k, v]) => [k, k.toLowerCase() === authHeader ? REDACTED : v]));
+  const shownHeaders = redactHeaders(
+    Object.fromEntries(Object.entries(headers).map(([k, v]) => [k, k.toLowerCase() === authHeader ? REDACTED : v])),
+    redaction,
+  );
+  const shownBody = toJsonOrText(text);
   const evidence = {
     test: current ? { file: current.file, title: current.title } : null,
-    request: { method, path, headers: shownHeaders, body: body ?? null },
-    response: error ? { error } : { status, body: toJsonOrText(text) },
+    request: { method, path: redactText(path, redaction), headers: shownHeaders, body: redactValue(body ?? null, config.redaction, redaction, 'request') },
+    response: error
+      ? { error: redactText(error, redaction) }
+      : { status, body: typeof shownBody === 'string' ? redactText(shownBody, redaction) : redactValue(shownBody, config.redaction, redaction) },
   };
   let out = JSON.stringify(evidence, null, 2);
   if (authValue) out = out.split(authValue).join(REDACTED);
@@ -220,7 +233,78 @@ async function createResource(endpointId: string, idField?: string, params: Reco
   if (id === undefined || id === null || id === '') {
     throw new Error(`createResource(${endpointId}) returned no "${field}": status ${response.status()}, body: ${text}`);
   }
+  created.push({ endpointId, id: String(id), params: own });
   return String(id);
+}
+
+// ---- cleanup ----
+// Deletes what createResource made, newest first, through send() (so the guard covers it). The totals
+// go to status.json per test; the agent adds them into summary.cleanup. Failures are listed, never hidden.
+
+export type CleanupTotals = { created: number; deleted: number; failed: number; skippedNoDeleteEndpoint: number; failures: string[] };
+
+const isPlaceholder = (seg: string) => /^\{[^}]+\}$/.test(seg);
+
+// Is child the parent path plus exactly one placeholder segment (placeholder names may differ)?
+function isChildPath(parent: string, child: string): boolean {
+  const p = parent.split('/');
+  const c = child.split('/');
+  if (c.length !== p.length + 1 || !isPlaceholder(c[c.length - 1])) return false;
+  return p.every((seg, i) => seg === c[i] || (isPlaceholder(seg) && isPlaceholder(c[i])));
+}
+
+// The setup step's explicit cleanup endpoint, else the DELETE whose path is the create path plus one placeholder.
+function deleteEndpointFor(createEndpointId: string): Config['endpoints'][number] | undefined {
+  const create = config.endpoints.find((e) => e.id === createEndpointId);
+  if (!create) return undefined;
+  for (const e of config.endpoints) {
+    const step = setupSteps(e).find((st) => st.endpointId === createEndpointId && st.cleanup);
+    if (step) return config.endpoints.find((d) => d.id === step.cleanup!.endpointId);
+  }
+  return config.endpoints.find((d) => d.method === 'DELETE' && isChildPath(create.path, d.path));
+}
+
+async function cleanupResources(): Promise<CleanupTotals> {
+  const totals: CleanupTotals = { created: 0, deleted: 0, failed: 0, skippedNoDeleteEndpoint: 0, failures: [] };
+  const list = created.splice(0).reverse();
+  totals.created = list.length;
+  for (const made of list) {
+    const del = deleteEndpointFor(made.endpointId);
+    if (!del) {
+      totals.skippedNoDeleteEndpoint++;
+      continue;
+    }
+    const create = config.endpoints.find((e) => e.id === made.endpointId)!;
+    const createParams = pathParams(create.path);
+    const delParams = pathParams(del.path);
+    const values: Record<string, string> = {};
+    delParams.slice(0, -1).forEach((name, i) => {
+      const from = createParams[i];
+      if (from !== undefined && made.params[from] !== undefined) values[name] = made.params[from];
+    });
+    values[delParams[delParams.length - 1]] = made.id;
+    let path: string;
+    try {
+      path = resolvePath(del.path, values);
+    } catch (err) {
+      totals.failed++;
+      totals.failures.push(`DELETE ${del.path}: ${String((err as Error)?.message ?? err).split('\n')[0]}`);
+      continue;
+    }
+    try {
+      const response = await (del.requiresAuth ? api : noAuthApi).delete(path, { params: del.query, headers: del.headers });
+      // 404 means it is already gone, which is the state cleanup wants.
+      if (response.ok() || response.status() === 404) totals.deleted++;
+      else {
+        totals.failed++;
+        totals.failures.push(`DELETE ${path} returned ${response.status()}`);
+      }
+    } catch (err) {
+      totals.failed++;
+      totals.failures.push(`DELETE ${path} failed: ${String((err as Error)?.message ?? err).split('\n')[0]}`);
+    }
+  }
+  return totals;
 }
 
 // Runs an endpoint's setup steps in order; each step sees the values collected so far.
@@ -334,7 +418,16 @@ export function expect(actual: unknown): Expectation {
 
 // Mocha root hooks (loaded with --require). beforeEach: skip write endpoints in read-only mode, never
 // pass them. afterEach: append this test's actual status and request count to reports/pactum/status.json.
-type StatusEntry = { file: string; title: string; state: string; actualStatus: number | null; requestsSent: number; evidence: string[] };
+type StatusEntry = {
+  file: string;
+  title: string;
+  state: string;
+  actualStatus: number | null;
+  requestsSent: number;
+  redactionReplaced: number;
+  cleanup: CleanupTotals;
+  evidence: string[];
+};
 
 function appendStatus(entry: StatusEntry) {
   mkdirSync(REPORT_DIR, { recursive: true });
@@ -354,16 +447,21 @@ export const mochaHooks = {
       this.skip();
       return;
     }
-    current = { file, title: this.currentTest?.title ?? '', actualStatus: null, sentBefore: counter.sent, evidence: [] };
+    current = { file, title: this.currentTest?.title ?? '', actualStatus: null, sentBefore: counter.sent, redactedBefore: redaction.replaced, evidence: [] };
   },
-  afterEach(this: MochaContext) {
+  async afterEach(this: MochaContext) {
     if (!current) return;
+    const state = this.currentTest?.state ?? 'unknown';
+    // Delete what this test created on the API, then record the test (cleanup requests count too).
+    const cleanup = await cleanupResources();
     appendStatus({
       file: current.file,
       title: current.title,
-      state: this.currentTest?.state ?? 'unknown',
+      state,
       actualStatus: current.actualStatus,
       requestsSent: counter.sent - current.sentBefore,
+      redactionReplaced: redaction.replaced - current.redactedBefore,
+      cleanup,
       evidence: current.evidence,
     });
     current = null;
