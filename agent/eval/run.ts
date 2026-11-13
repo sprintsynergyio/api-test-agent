@@ -19,15 +19,15 @@ const SUMMARY_FILE = 'out/summary.json';
 const EVAL_ROOT = 'eval-results';
 const API_START_TIMEOUT_MS = 10_000;
 
-type Args = { runs: number; bugSets: string[][] | null; dryRun: boolean };
+type Args = { runs: number; bugSets: string[][] | null; dryRun: boolean; provider: string | null };
 
 function usage(): never {
-  console.error('usage: npm run eval -- [--runs N] [--bugs all|none|id,id] [--dry-run]');
+  console.error('usage: npm run eval -- [--runs N] [--bugs all|none|id,id] [--provider anthropic|openai] [--dry-run]');
   process.exit(2);
 }
 
 function parseArgs(argv: string[]): Args {
-  const args: Args = { runs: 3, bugSets: null, dryRun: false };
+  const args: Args = { runs: 3, bugSets: null, dryRun: false, provider: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--dry-run') args.dryRun = true;
@@ -39,6 +39,10 @@ function parseArgs(argv: string[]): Args {
       const v = argv[++i];
       if (!v) usage();
       args.bugSets = [v === 'none' ? [] : v === 'all' ? ['all'] : v.split(',').map((s) => s.trim()).filter(Boolean)];
+    } else if (a === '--provider') {
+      const v = argv[++i];
+      if (v !== 'anthropic' && v !== 'openai') usage();
+      args.provider = v;
     } else usage();
   }
   return args;
@@ -113,10 +117,10 @@ function stopApi(child: ChildProcess): Promise<void> {
   });
 }
 
-function runAgent(inputFile: string, logFile: string): Promise<number | null> {
+function runAgent(inputFile: string, logFile: string, provider: string | null): Promise<number | null> {
   return new Promise((resolve, reject) => {
     const child = spawn('node_modules/.bin/tsx', ['agent/cli.ts', inputFile], {
-      env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
+      env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1', ...(provider ? { LLM_PROVIDER: provider } : {}) },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let log = '';
@@ -224,7 +228,7 @@ async function main() {
         console.log(`=== ${label} ===`);
         // Never score a summary left over from an earlier run if this one dies before writing its own.
         rmSync(SUMMARY_FILE, { force: true });
-        const exitCode = await runAgent(inputFile, join(setDir, `run-${run}.log`));
+        const exitCode = await runAgent(inputFile, join(setDir, `run-${run}.log`), args.provider);
         const record: RunRecord = { set: set.label, run, exitCode, score: null, key: null };
         if (!existsSync(SUMMARY_FILE)) {
           record.error = `agent exited ${exitCode} and wrote no ${SUMMARY_FILE} (see ${join(setDir, `run-${run}.log`)})`;
@@ -253,7 +257,7 @@ async function main() {
     }
   }
 
-  writeFileSync(join(evalDir, 'score.json'), JSON.stringify({ runs: args.runs, sets, records }, null, 2) + '\n');
+  writeFileSync(join(evalDir, 'score.json'), JSON.stringify({ runs: args.runs, provider: args.provider ?? process.env.LLM_PROVIDER ?? 'anthropic', sets, records }, null, 2) + '\n');
   console.log(`\nwritten ${evalDir}/score.json\n`);
   printTable(records, sets, catalog);
 

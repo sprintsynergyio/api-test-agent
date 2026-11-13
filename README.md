@@ -1,15 +1,30 @@
 # API Test Agent
 
-Give the agent a base URL and a list of API endpoints, and it writes a Playwright API test suite in TypeScript, runs it, and reports suspected API bugs. It first calls each endpoint once to see how the API really responds. Then Claude plans the test cases (happy path, response schema, invalid input, missing auth) and writes one spec file per endpoint. Each file must pass a static gate before it is kept. The suite runs and every failure is classified. The result is a standalone Playwright project you can download and run anywhere.
+Give the agent a base URL and a list of API endpoints, and it writes an API test suite in Playwright or Pactum, runs it, and reports suspected API bugs. It first calls each endpoint once to see how the API really responds. Then a model (Claude or OpenAI) plans the test cases (happy path, response schema, invalid input, missing auth, wrong role) and writes one spec file per endpoint. Each file must pass a static gate before it is kept. The suite runs and every failure is classified. The result is a standalone test project you can download and run anywhere.
+
+**New to the repo? Team setup: see [docs/TEAM-SETUP.md](docs/TEAM-SETUP.md).** Clone, `npm ci`, `npm run ui`, paste a model API key once, run.
+
+## What it does today
+
+- Two output frameworks: Playwright (TypeScript) and Pactum (Mocha). Same plan, same gate, same findings.
+- Importers: OpenAPI or Swagger, Postman, cURL, HAR, ticket text. Credentials are dropped on import.
+- Inputs for real APIs: nested paths with several ids, query parameters, per-endpoint headers, and a profile block for environments, brands and regions (`--select env=staging,brand=alpha,region=eu`), so one export serves every combination.
+- Auth: fixed header, API key in the query string, cookie, or a login call that fetches a token (cached, refreshed once on 401), plus extra roles for permission tests (`[authz]`).
+- Redaction before anything reaches the model: emails, phones, card numbers, tokens, IPs and secret-looking fields are replaced; optional field list and a strict mode that keeps only the shape.
+- Test data cleanup: every record the tests create is deleted at the end, through the same guarded client.
+- Production safety guard: production hosts are refused unless you say so, and then run read-only. Local, private and `staging`-style hosts run in full.
+- Model providers: Claude (API key or your Claude Code login) or OpenAI. Set once from the UI on your own machine.
+- Eval harness: a local demo API with planted bugs and `npm run eval` to measure detection, false alarms and flakiness per provider.
+- Hosted mode for a shared server: login, per-user runs, rate limits, local hosts refused. See [docs/HOSTING.md](docs/HOSTING.md).
+- Plan and open items: [docs/ROADMAP.md](docs/ROADMAP.md). Rules for changing the code: `CLAUDE.md`.
 
 ## Setup
 
-No API key is needed. The agent calls the Claude Code CLI you are already logged in to.
-
-1. Install Node 20+ and the Claude Code CLI, and log in to Claude Code (`claude`).
-2. `npm install` (Playwright browsers are not needed, the tests only use Playwright's API client).
-3. `cp .env.example .env` and fill in the auth values your input files name (for the kit: `API_AUTH_VALUE` for Restful Booker, `LOCAL_API_AUTH_VALUE` for the local shop API). `MAX_CLAUDE_CALLS` caps Claude calls per run (default 30). `CLAUDE_MODEL` is optional.
-4. Check it works: `npm run typecheck` and `npm run test:template` (4 tests against Restful Booker).
+1. Install Node 20+.
+2. `npm ci` (Playwright browsers are not needed, the tests only use Playwright's API client).
+3. Start the UI (`npm run ui`, http://localhost:3000). The first screen asks for a Claude or OpenAI API key, checks it, and saves it to `.env` on your machine. If Claude Code is installed and logged in, no key is needed and the card does not appear.
+4. `.env` also holds the auth values your input files name (for the kit: `API_AUTH_VALUE` for Restful Booker, `LOCAL_API_AUTH_VALUE` for the local shop API; copy them from `.env.example`). `MAX_CLAUDE_CALLS` caps model calls per run (default 30). `LLM_MODEL` is optional.
+5. Check it works: `npm run typecheck` and `npm run test:template` (4 tests against Restful Booker).
 
 ## Run it
 
@@ -105,6 +120,16 @@ Write an input file (or use the Custom API tab):
 - `setup` means: before calling this endpoint, call `endpointId` with its sample body, read `idField` from the response, and put it into the path placeholder (`{id}`).
 
 Then run `npm run agent path/to/my-api.json`.
+
+## Model providers
+
+| `.env` | Effect |
+|---|---|
+| nothing set, Claude Code logged in | the agent calls the `claude` CLI with your login (no API cost beyond your plan) |
+| `ANTHROPIC_API_KEY=sk-ant-...` | Claude through the Messages API, billed to that key; `LLM_MODEL` picks the model (default `claude-sonnet-5-5`) |
+| `LLM_PROVIDER=openai` and `OPENAI_API_KEY=sk-...` | OpenAI through Chat Completions; `LLM_MODEL` picks the model (default `gpt-6.1-sol`) |
+
+The UI's setup card writes these lines for you. The prompts were tuned against Claude; use `npm run eval -- --provider openai` to see the detection table for OpenAI before standardising on it.
 
 ## Test rules
 

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
-import { callClaudeOutsideBudget, claudeEnv, hostedWithoutApiKeyProblem, redact, setFetchForTests, usingApiKey } from './claude';
+import { callClaudeOutsideBudget, claudeEnv, describeModelChoice, hostedWithoutApiKeyProblem, modelChoice, redact, setFetchForTests, usingApiKey, verifyProviderKey } from './claude';
 
-// npm run test:claude-api: the Messages API path of agent/claude.ts with a fake fetch. Offline, no key.
+// npm run test:claude-api: the Messages API and Chat Completions paths of agent/claude.ts with a fake
+// fetch, plus verifyProviderKey. Offline, no key.
 // Every case here is a way the API path could leak the key or make a failure look like a result.
 
 let failed = 0;
@@ -121,6 +122,134 @@ async function main() {
     delete process.env.HOSTED;
     delete process.env.ANTHROPIC_API_KEY;
     assert.equal(hostedWithoutApiKeyProblem(), null);
+  });
+
+  // ---------- OpenAI path ----------
+  const OPENAI_KEY = 'sk-proj-test-key-9876543210';
+
+  await check('LLM_PROVIDER=openai without OPENAI_API_KEY is a named problem', () => {
+    process.env.LLM_PROVIDER = 'openai';
+    delete process.env.OPENAI_API_KEY;
+    assert.match(hostedWithoutApiKeyProblem() ?? '', /LLM_PROVIDER=openai requires OPENAI_API_KEY/);
+    process.env.OPENAI_API_KEY = OPENAI_KEY;
+    assert.equal(hostedWithoutApiKeyProblem(), null);
+  });
+
+  await check('model choice: openai with a key is via api with the default model; LLM_MODEL overrides; CLAUDE_MODEL does not', () => {
+    delete process.env.LLM_MODEL;
+    process.env.CLAUDE_MODEL = 'claude-test-model';
+    assert.deepEqual(modelChoice(), { provider: 'openai', model: 'gpt-6.1-sol', via: 'api' });
+    process.env.LLM_MODEL = 'gpt-custom';
+    assert.deepEqual(modelChoice(), { provider: 'openai', model: 'gpt-custom', via: 'api' });
+    assert.equal(describeModelChoice(), 'model: openai gpt-custom (API key)');
+    assert.equal(usingApiKey(), true);
+  });
+
+  await check('openai request shape: Chat Completions URL, Bearer header, system and user messages, max_completion_tokens', async () => {
+    const captured: Captured[] = [];
+    fakeFetch(200, { choices: [{ message: { content: '{"ok":true}' }, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 3 } }, captured);
+    const out = await callClaudeOutsideBudget('plan', 'ep-1', 'SYSTEM PROMPT', 'USER PROMPT', 'test 1/1');
+    assert.equal(out, '{"ok":true}');
+    const { url, init } = captured[0];
+    assert.equal(url, 'https://api.openai.com/v1/chat/completions');
+    const headers = init.headers as Record<string, string>;
+    assert.equal(headers.authorization, `Bearer ${OPENAI_KEY}`);
+    assert.equal(headers['x-api-key'], undefined);
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+    assert.equal(body.model, 'gpt-custom');
+    assert.deepEqual(body.messages, [
+      { role: 'system', content: 'SYSTEM PROMPT' },
+      { role: 'user', content: 'USER PROMPT' },
+    ]);
+    assert.ok(typeof body.max_completion_tokens === 'number' && body.max_completion_tokens >= 8000);
+    assert.equal(body.max_tokens, undefined, 'current OpenAI models reject max_tokens');
+    assert.ok(!String(init.body).includes(OPENAI_KEY));
+  });
+
+  await check('OPENAI_BASE_URL redirects the call (tests and proxies)', async () => {
+    const captured: Captured[] = [];
+    process.env.OPENAI_BASE_URL = 'http://127.0.0.1:1234/';
+    fakeFetch(200, { choices: [{ message: { content: 'x' }, finish_reason: 'stop' }] }, captured);
+    await callClaudeOutsideBudget('plan', 'ep-1', 's', 'u', 'test');
+    assert.equal(captured[0].url, 'http://127.0.0.1:1234/v1/chat/completions');
+    delete process.env.OPENAI_BASE_URL;
+  });
+
+  for (const status of [401, 429, 500]) {
+    await check(`openai HTTP ${status} throws with the status, key redacted`, async () => {
+      fakeFetch(status, { error: { type: 'x', message: `bad ${OPENAI_KEY}` } }, []);
+      await assert.rejects(callClaudeOutsideBudget('plan', 'ep-1', 's', 'u', 'test'), (err: Error) => {
+        assert.match(err.message, new RegExp(`HTTP ${status}`));
+        assert.ok(!err.message.includes(OPENAI_KEY), err.message);
+        return true;
+      });
+    });
+  }
+
+  await check('openai empty content and a length cut-off both throw', async () => {
+    fakeFetch(200, { choices: [{ message: { content: '' }, finish_reason: 'stop' }] }, []);
+    await assert.rejects(callClaudeOutsideBudget('plan', 'ep-1', 's', 'u', 'test'), /returned no text/);
+    fakeFetch(200, { choices: [{ message: { content: 'partial' }, finish_reason: 'length' }] }, []);
+    await assert.rejects(callClaudeOutsideBudget('plan', 'ep-1', 's', 'u', 'test'), /cut off/);
+  });
+
+  await check('child process environment drops OPENAI_API_KEY too', () => {
+    const env = claudeEnv();
+    assert.equal(env.OPENAI_API_KEY, undefined);
+  });
+
+  await check('redact hides the OpenAI key value', () => {
+    assert.equal(redact(`k ${OPENAI_KEY}`), 'k <redacted>');
+  });
+
+  delete process.env.LLM_PROVIDER;
+  delete process.env.LLM_MODEL;
+  delete process.env.OPENAI_API_KEY;
+
+  // ---------- verifyProviderKey ----------
+  for (const provider of ['anthropic', 'openai'] as const) {
+    const okBody = provider === 'anthropic' ? { content: [{ type: 'text', text: 'OK' }], stop_reason: 'end_turn' } : { choices: [{ message: { content: 'OK' }, finish_reason: 'stop' }] };
+    await check(`verifyProviderKey ${provider}: 200 is ok with the default model and a minimal request`, async () => {
+      const captured: Captured[] = [];
+      fakeFetch(200, okBody, captured);
+      const r = await verifyProviderKey(provider, 'sk-verify-key-123456789');
+      assert.deepEqual(r, { ok: true, provider, model: provider === 'anthropic' ? 'claude-sonnet-5-5' : 'gpt-6.1-sol', error: null });
+      const body = JSON.parse(String(captured[0].init.body)) as Record<string, unknown>;
+      assert.equal(provider === 'anthropic' ? body.max_tokens : body.max_completion_tokens, 5);
+    });
+    await check(`verifyProviderKey ${provider}: 401, 404, 429 and a network error give plain messages without the key`, async () => {
+      const key = 'sk-verify-key-123456789';
+      fakeFetch(401, { error: { message: `invalid ${key}` } }, []);
+      let r = await verifyProviderKey(provider, key);
+      assert.equal(r.ok, false);
+      assert.match(r.error ?? '', /rejected \(HTTP 401\)/);
+      assert.ok(!(r.error ?? '').includes(key), r.error ?? '');
+      fakeFetch(404, { error: { message: 'no such model' } }, []);
+      r = await verifyProviderKey(provider, key, 'nope-1');
+      assert.match(r.error ?? '', /"nope-1" was not found \(HTTP 404\)/);
+      fakeFetch(429, { error: { message: 'slow down' } }, []);
+      r = await verifyProviderKey(provider, key);
+      assert.match(r.error ?? '', /Rate limited or out of quota \(HTTP 429\)/);
+      fakeFetch(403, { error: { message: 'no credits' } }, []);
+      r = await verifyProviderKey(provider, key);
+      assert.match(r.error ?? '', /billing, credits or permissions/);
+      setFetchForTests(async () => {
+        throw new Error('ENOTFOUND api.example');
+      });
+      r = await verifyProviderKey(provider, key);
+      assert.match(r.error ?? '', /Could not reach the provider: ENOTFOUND/);
+    });
+  }
+
+  await check('verifyProviderKey refuses an empty key without calling the provider', async () => {
+    let called = 0;
+    setFetchForTests(async () => {
+      called++;
+      return new Response('{}', { status: 200 });
+    });
+    const r = await verifyProviderKey('openai', '');
+    assert.equal(r.ok, false);
+    assert.equal(called, 0);
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

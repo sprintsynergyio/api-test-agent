@@ -36,6 +36,13 @@ field('summary', s, 'testFramework', ['string'], ['playwright', 'pactum']);
 field('summary', s, 'inputFile', ['string']);
 field('summary', s, 'baseUrl', ['string']);
 field('summary', s, 'selection', ['object', 'null']);
+// Model (Phase 8): which provider and model produced the plans and specs, and how it was reached.
+need(isObj(s.model), 'summary.model is missing');
+if (isObj(s.model)) {
+  field('summary.model', s.model, 'provider', ['string'], ['anthropic', 'openai']);
+  field('summary.model', s.model, 'model', ['string']);
+  field('summary.model', s.model, 'via', ['string'], ['api', 'cli']);
+}
 if (isObj(s.selection)) {
   for (const [k, v] of Object.entries(s.selection)) need(typeof v === 'string' && v.length > 0, `summary.selection.${k} must be a non-empty string`);
 }

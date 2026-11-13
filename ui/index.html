@@ -357,6 +357,8 @@
       </div>
     </div>
     <div style="display:flex;align-items:center;gap:12px">
+      <span id="modelStatus" class="hint hidden"></span>
+      <button id="modelChangeBtn" class="link-btn hidden" type="button">Change</button>
       <span id="whoami" class="hint hidden"></span>
       <button id="logoutBtn" class="link-btn hidden" type="button">Sign out</button>
       <div id="pill" class="status-pill"><span class="dot"></span><span id="pillText">Ready</span></div>
@@ -373,6 +375,28 @@
       <input id="loginPass" class="txt" type="password" autocomplete="current-password">
       <button id="loginBtn" class="btn btn-primary" type="button" style="margin-top:14px">Sign in</button>
       <div id="loginMsg" class="bad-msg hidden"></div>
+    </div>
+  </section>
+
+  <!-- Model setup: shown on a personal machine until a provider key is saved (or the claude CLI is found). -->
+  <section id="setupWrap" class="card hidden" style="max-width:560px;margin:0 auto 20px">
+    <div class="card-h"><h2>Set up your model</h2><button id="setupCloseBtn" class="link-btn hidden" type="button">Close</button></div>
+    <div class="card-b">
+      <p class="hint" style="margin:0 0 12px">The agent needs one model provider to plan and write the tests. Paste an API key, check it, and save. Your key is saved only in <code>.env</code> on this machine.</p>
+      <label class="lbl" for="setupProvider">Provider</label>
+      <select id="setupProvider">
+        <option value="anthropic">Claude (Anthropic)</option>
+        <option value="openai">OpenAI</option>
+      </select>
+      <label class="lbl" for="setupKey" style="margin-top:10px;display:block">API key</label>
+      <input id="setupKey" class="txt" type="password" autocomplete="off" spellcheck="false" placeholder="sk-...">
+      <label class="lbl" for="setupModel" style="margin-top:10px;display:block">Model <span class="hint" style="font-weight:400">(optional, leave empty for the default)</span></label>
+      <input id="setupModel" class="txt" type="text" autocomplete="off" spellcheck="false" placeholder="">
+      <div style="display:flex;gap:10px;margin-top:14px">
+        <button id="setupVerifyBtn" class="btn btn-ghost" type="button">Verify</button>
+        <button id="setupSaveBtn" class="btn btn-primary" type="button">Save</button>
+      </div>
+      <div id="setupMsg" class="hint hidden" style="margin-top:10px"></div>
     </div>
   </section>
 
@@ -978,6 +1002,81 @@
   $("logoutBtn").addEventListener("click", async () => {
     await fetch("/api/logout", { method: "POST" }).catch(() => null);
     window.location.reload();
+  });
+
+  // Model setup (personal machines only: the server says whether settings are editable).
+  let settings = null;
+  function modelLabel(st) {
+    const name = st.provider === "openai" ? "OpenAI" : "Claude";
+    if (st.via === "cli") return name + " via Claude Code login";
+    return name + " " + st.model + " via API key";
+  }
+  function renderSettings(st) {
+    settings = st;
+    const status = $("modelStatus");
+    if (st.configured) {
+      status.textContent = modelLabel(st);
+      status.classList.remove("hidden");
+    } else {
+      status.textContent = "Model not set up";
+      status.classList.remove("hidden");
+    }
+    $("modelChangeBtn").classList.toggle("hidden", !st.editable);
+    $("setupCloseBtn").classList.toggle("hidden", !st.configured);
+    const providerSel = $("setupProvider");
+    if (st.provider) providerSel.value = st.provider;
+    const p = (st.providers || []).find((x) => x.id === providerSel.value);
+    $("setupModel").placeholder = p ? p.defaultModel : "";
+    if (!st.configured && st.editable) showSetup();
+    else hideSetup();
+  }
+  function showSetup() {
+    $("setupWrap").classList.remove("hidden");
+    $("setupKey").focus();
+  }
+  function hideSetup() {
+    $("setupWrap").classList.add("hidden");
+  }
+  function setupMessage(text, kind) {
+    const m = $("setupMsg");
+    m.textContent = text;
+    m.className = kind === "ok" ? "ok-msg" : kind === "bad" ? "bad-msg" : "hint";
+    m.classList.remove("hidden");
+  }
+  async function loadSettings() {
+    try {
+      const st = await (await fetch("/api/settings")).json();
+      renderSettings(st);
+    } catch {}
+  }
+  async function postSettings(route) {
+    const body = { provider: $("setupProvider").value, key: $("setupKey").value.trim(), model: $("setupModel").value.trim() };
+    if (!body.key) return setupMessage("Paste the API key first.", "bad");
+    setupMessage(route === "/api/settings" ? "Checking the key, then saving..." : "Checking the key...", "");
+    $("setupVerifyBtn").disabled = true;
+    $("setupSaveBtn").disabled = true;
+    const res = await fetch(route, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).catch(() => null);
+    const out = res ? await res.json().catch(() => ({})) : {};
+    $("setupVerifyBtn").disabled = false;
+    $("setupSaveBtn").disabled = false;
+    if (!res) return setupMessage("Could not reach the UI server.", "bad");
+    if (route === "/api/settings/verify") {
+      if (res.ok && out.ok) return setupMessage("Key works. Model: " + out.model + ". Click Save to keep it.", "ok");
+      return setupMessage(out.error || "The key did not work.", "bad");
+    }
+    if (!res.ok) return setupMessage(out.error || "Could not save.", "bad");
+    $("setupKey").value = "";
+    setupMessage("Saved to .env. The next run uses " + modelLabel(out) + ".", "ok");
+    renderSettings(out);
+    hideSetup();
+  }
+  $("setupVerifyBtn").addEventListener("click", () => postSettings("/api/settings/verify"));
+  $("setupSaveBtn").addEventListener("click", () => postSettings("/api/settings"));
+  $("setupCloseBtn").addEventListener("click", hideSetup);
+  $("modelChangeBtn").addEventListener("click", () => { $("setupMsg").classList.add("hidden"); showSetup(); });
+  $("setupProvider").addEventListener("change", () => {
+    const p = ((settings && settings.providers) || []).find((x) => x.id === $("setupProvider").value);
+    $("setupModel").placeholder = p ? p.defaultModel : "";
   });
 
   function showRunErr(msg) {
@@ -1653,6 +1752,7 @@
   })();
 
   async function startApp() {
+    await loadSettings();
     await loadInputs();
     connectStream();
     try {

@@ -15,12 +15,15 @@
 // runs (snapshots under runs/<runId>/). Without HOSTED and without UI_USERS the server behaves as
 // the local demo always has. See docs/HOSTING.md.
 
-import "dotenv/config";
+import dotenv from "dotenv";
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+
+// ENV_FILE (tests) points at another .env; the default is the project root .env.
+dotenv.config({ quiet: true, ...(process.env.ENV_FILE ? { path: path.resolve(process.env.ENV_FILE) } : {}) });
 import crypto from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { classifyHost, localRefusalMessage, refusalMessage, safetyMode } from "./host-class.mjs";
@@ -71,9 +74,82 @@ if (HOSTED && !LOGIN_REQUIRED) {
   console.error("HOSTED=1 requires UI_USERS (name:bcryptHash,...). Make a hash with: npm run ui:hash -- <password>");
   process.exit(1);
 }
-if (HOSTED && !process.env.ANTHROPIC_API_KEY) {
-  console.error("HOSTED=1 requires ANTHROPIC_API_KEY: the hosted agent never uses a personal Claude login.");
+// Model provider (mirrors agent/claude.ts modelChoice): LLM_PROVIDER anthropic (default) or openai.
+const PROVIDERS = [
+  { id: "anthropic", label: "Claude (Anthropic)", defaultModel: "claude-sonnet-5-5", keyEnv: "ANTHROPIC_API_KEY" },
+  { id: "openai", label: "OpenAI", defaultModel: "gpt-6.1-sol", keyEnv: "OPENAI_API_KEY" },
+];
+function providerId() {
+  const raw = String(process.env.LLM_PROVIDER || "anthropic").trim().toLowerCase();
+  return raw === "openai" ? "openai" : "anthropic";
+}
+function providerOf(id) {
+  return PROVIDERS.find((p) => p.id === id) || PROVIDERS[0];
+}
+if (HOSTED && !process.env[providerOf(providerId()).keyEnv]) {
+  console.error(`HOSTED=1 requires ${providerOf(providerId()).keyEnv} (LLM_PROVIDER=${providerId()}): the hosted agent never uses a personal Claude login.`);
   process.exit(1);
+}
+// Settings can be changed from the browser only on a personal machine: no login, not hosted.
+const SETTINGS_EDITABLE = !HOSTED && !LOGIN_REQUIRED;
+const ENV_FILE = process.env.ENV_FILE ? path.resolve(process.env.ENV_FILE) : path.join(ROOT, ".env");
+const ENV_EXAMPLE = path.join(ROOT, ".env.example");
+// Is the Claude Code CLI on this machine? Checked once at start; SKIP_CLI_DETECT=1 (tests) says no.
+const CLI_FOUND = process.env.SKIP_CLI_DETECT === "1" ? false : detectClaudeCli();
+function detectClaudeCli() {
+  try {
+    const r = spawnSync("claude", ["--version"], { encoding: "utf8", timeout: 15000, env: childEnvWithoutSecrets() });
+    return !r.error && r.status === 0;
+  } catch {
+    return false;
+  }
+}
+function childEnvWithoutSecrets() {
+  const env = { ...process.env };
+  delete env.CLAUDECODE;
+  for (const k of Object.keys(env)) if (/AUTH|ANTHROPIC_API_KEY|OPENAI_API_KEY/i.test(k)) delete env[k];
+  return env;
+}
+function settingsState() {
+  const id = providerId();
+  const p = providerOf(id);
+  const hasKey = Boolean(process.env[p.keyEnv]);
+  const model = process.env.LLM_MODEL || (id === "anthropic" ? process.env.CLAUDE_MODEL : "") || (hasKey || id === "openai" ? p.defaultModel : "default");
+  const via = id === "anthropic" && !hasKey ? "cli" : "api";
+  const configured = hasKey || (id === "anthropic" && CLI_FOUND);
+  return { provider: id, model, hasKey, via, configured, editable: SETTINGS_EDITABLE, providers: PROVIDERS };
+}
+// Replace or add KEY=value lines in .env, keeping every other line as it is.
+function writeEnvLines(pairs) {
+  let text = fs.existsSync(ENV_FILE) ? fs.readFileSync(ENV_FILE, "utf8") : fs.existsSync(ENV_EXAMPLE) ? fs.readFileSync(ENV_EXAMPLE, "utf8") : "";
+  const lines = text.split(/\r?\n/);
+  if (lines.length && lines[lines.length - 1] === "") lines.pop();
+  for (const [key, value] of Object.entries(pairs)) {
+    const line = `${key}=${value}`;
+    let found = false;
+    for (let i = 0; i < lines.length; i++) {
+      if (new RegExp(`^\\s*#?\\s*${key}=`).test(lines[i]) && !found) {
+        lines[i] = line;
+        found = true;
+      }
+    }
+    if (!found) lines.push(line);
+  }
+  fs.writeFileSync(ENV_FILE, lines.join("\n") + "\n", { mode: 0o600 });
+  try {
+    fs.chmodSync(ENV_FILE, 0o600);
+  } catch {}
+  for (const [key, value] of Object.entries(pairs)) process.env[key] = value;
+}
+// The agent's verifyProviderKey (agent/claude.ts), loaded on first use through tsx (already a dev
+// dependency: the server starts the agent with it).
+let claudeModule = null;
+async function verifyKey(provider, key, model) {
+  if (!claudeModule) {
+    const { tsImport } = await import("tsx/esm/api");
+    claudeModule = await tsImport(path.join(ROOT, "agent", "claude.ts"), import.meta.url);
+  }
+  return claudeModule.verifyProviderKey(provider, key, model);
 }
 const INPUT_DIR = path.join(ROOT, "input");
 const RUN_FILE = "input/ui-run.json";
@@ -430,6 +506,40 @@ const server = http.createServer(async (req, res) => {
     return res.end(JSON.stringify({ user }));
   }
 
+  if (req.method === "GET" && p === "/api/settings") return json(res, 200, settingsState());
+
+  if (req.method === "POST" && (p === "/api/settings/verify" || p === "/api/settings")) {
+    if (!SETTINGS_EDITABLE) return json(res, 403, { error: "Model settings can only be changed on a personal machine (no login, not hosted). Set the key in .env on the server." });
+    let body;
+    try {
+      body = JSON.parse(await readBody(req));
+    } catch {
+      return json(res, 400, { error: "Request body must be JSON" });
+    }
+    const provider = String((body && body.provider) || "").trim().toLowerCase();
+    const key = String((body && body.key) || "").trim();
+    const model = String((body && body.model) || "").trim();
+    if (!PROVIDERS.some((x) => x.id === provider)) return json(res, 400, { error: "provider must be anthropic or openai" });
+    if (!/^[A-Za-z0-9._:-]{8,300}$/.test(key)) return json(res, 400, { error: "That does not look like an API key. Paste the whole key with no spaces." });
+    if (model && !/^[A-Za-z0-9._-]{1,80}$/.test(model)) return json(res, 400, { error: "The model name may only contain letters, numbers, dots, dashes and underscores." });
+    let check;
+    try {
+      check = await verifyKey(provider, key, model);
+    } catch (err) {
+      return json(res, 500, { error: `Could not verify the key: ${String(err && err.message ? err.message : err).split(key).join("<redacted>").slice(0, 200)}` });
+    }
+    if (p === "/api/settings/verify") return json(res, 200, check);
+    if (!check.ok) return json(res, 400, { error: check.error, check });
+    const pairs = { LLM_PROVIDER: provider, LLM_MODEL: model, [providerOf(provider).keyEnv]: key };
+    try {
+      writeEnvLines(pairs);
+    } catch (err) {
+      return json(res, 500, { error: `Could not write .env: ${String(err && err.message ? err.message : err).split(key).join("<redacted>")}` });
+    }
+    console.log(`UI: model settings saved (${provider}, ${model || providerOf(provider).defaultModel}) to ${path.basename(ENV_FILE)}`);
+    return json(res, 200, settingsState());
+  }
+
   if (req.method === "POST" && p === "/api/logout") {
     if (session) sessions.delete(session.sid);
     res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", "Set-Cookie": sessionCookie(req, "", 0) });
@@ -686,5 +796,7 @@ if (LOGIN_REQUIRED) {
 server.listen(PORT, HOST, () => {
   const where = HOST === "127.0.0.1" || HOST === "localhost" ? `http://localhost:${PORT}` : `http://${HOST}:${PORT}`;
   const mode = HOSTED ? `hosted mode: login required, ${USERS.size} user(s), ${RUNS_PER_HOUR} runs/hour, queue ${MAX_QUEUE}, local hosts refused` : LOGIN_REQUIRED ? `login required, ${USERS.size} user(s)` : "local demo, no login";
-  console.log(`API Test Agent UI running on ${where} (${mode})`);
+  const st = settingsState();
+  const modelLine = st.configured ? `model: ${st.provider} ${st.model} (${st.via === "cli" ? "Claude Code login" : "API key"})` : `model: not set up yet (${SETTINGS_EDITABLE ? "the page will ask for a key" : "set a key in .env"})`;
+  console.log(`API Test Agent UI running on ${where} (${mode}); ${modelLine}`);
 });

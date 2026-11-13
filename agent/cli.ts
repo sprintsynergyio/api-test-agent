@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, sep } from 'node:path';
 import { extraRoles, pickAuthEnv, secretValues } from './auth';
-import { BudgetExceeded, claudeBudget, claudeCallsUsed, claudeEnv, hostedWithoutApiKeyProblem, promptRedaction, redact, usingApiKey } from './claude';
+import { BudgetExceeded, claudeBudget, claudeCallsUsed, claudeEnv, describeModelChoice, hostedWithoutApiKeyProblem, modelChoice, promptRedaction, redact, usingApiKey } from './claude';
 import { apiName, loadConfig, selectionLine, takeSelectFlag, type Config, type Endpoint } from './config';
 import { frameworkFor, type FrameworkAdapter, type FrameworkInfo, type TestOutcome } from './frameworks';
 import { generateEndpoint } from './generate';
@@ -134,8 +134,9 @@ function cleanError(text: string, secrets: string[]): string {
   return relativePaths(redact(stripAnsi(text), secrets));
 }
 
-// Every plan and spec needs the claude CLI. Check that it starts, with the same child environment as
-// the real calls, before probing, so a missing CLI ends the run with one clear message.
+// Every plan and spec needs a model. Check the provider setup (and, on the CLI path, that claude starts
+// with the same child environment as the real calls) before probing, so a missing key or CLI ends the
+// run with one clear message.
 function claudeCliProblem(): string | null {
   const hosted = hostedWithoutApiKeyProblem();
   if (hosted) return hosted;
@@ -167,9 +168,11 @@ function writeSummary(o: {
   cleanup: CleanupTotals;
 }) {
   const { status, inputFile, config, startedAt, states, outcomes, findings, framework, allureReport, secrets, safety, requestsSent, testFramework, redactionReplaced, cleanup } = o;
+  const choice = modelChoice();
   const summary = {
     status,
     testFramework,
+    model: { provider: choice.provider, model: choice.model, via: choice.via },
     inputFile,
     baseUrl: config.baseUrl,
     selection: config.selection ?? null,
@@ -315,6 +318,7 @@ async function main() {
   console.log('=== PROBING ===');
   console.log(`safety: ${safety.hostClass} host, ${safety.mode} mode`);
   console.log(`framework: ${fw.name}`);
+  console.log(describeModelChoice());
   const selected = selectionLine(config);
   if (selected) console.log(selected);
   if (safety.hostClass === 'production' && safety.mode === 'full') console.log(PRODUCTION_WRITES_WARNING);
