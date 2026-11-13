@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { z } from 'zod';
 
+import { authRoles, DEFAULT_ROLE, type AuthConfig } from './auth';
 import { applyProfile, pathParams, setupSteps, type Selection } from './model';
 
 const SetupSchema = z.object({
@@ -41,6 +42,38 @@ const ProfileSchema = z.object({
     .optional(),
 });
 
+// Auth (agent/auth.ts). An auth section without "type" is the original { header, valueEnv } form.
+const RoleSchema = z.object({
+  valueEnv: z.string().min(1).optional(),
+  credentialsEnv: z.record(z.string().min(1), z.string().min(1)).optional(),
+});
+const roles = z.record(z.string().min(1), RoleSchema).optional();
+const ApplySchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('header'), header: z.string().min(1), prefix: z.string().optional() }),
+  z.object({ type: z.literal('cookie'), name: z.string().min(1) }),
+  z.object({ type: z.literal('query'), param: z.string().min(1) }),
+]);
+const AuthUnion = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('header'), header: z.string().min(1), valueEnv: z.string().min(1), roles }),
+  z.object({ type: z.literal('query'), param: z.string().min(1), valueEnv: z.string().min(1), roles }),
+  z.object({ type: z.literal('cookie'), name: z.string().min(1), valueEnv: z.string().min(1), roles }),
+  z.object({
+    type: z.literal('login'),
+    request: z.object({
+      method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']),
+      path: z.string().startsWith('/'),
+      body: z.record(z.string(), z.unknown()).optional(),
+      headers: z.record(z.string(), z.string()).optional(),
+    }),
+    credentialsEnv: z.record(z.string().min(1), z.string().min(1)),
+    tokenPath: z.string().min(1),
+    apply: ApplySchema,
+    refresh: z.object({ statuses: z.array(z.number().int().min(100).max(599)).min(1), once: z.literal(true).optional() }).optional(),
+    roles,
+  }),
+]);
+const AuthSchema = z.preprocess((raw) => (raw && typeof raw === 'object' && !Array.isArray(raw) && !('type' in raw) ? { ...raw, type: 'header' } : raw), AuthUnion);
+
 export const ConfigSchema = z.object({
   name: z.string().regex(/^[a-z0-9-]+$/, 'must use lowercase letters, numbers and dashes only').optional(),
   // One of baseUrl or profile is required (checked in configProblems). With a profile, baseUrl is the
@@ -48,12 +81,7 @@ export const ConfigSchema = z.object({
   baseUrl: z.url().optional(),
   profile: ProfileSchema.optional(),
   defaultHeaders: z.record(z.string(), z.string()),
-  auth: z
-    .object({
-      header: z.string().min(1),
-      valueEnv: z.string().min(1),
-    })
-    .optional(),
+  auth: AuthSchema.optional(),
   // Safety guard (agent/safety.ts). Missing means false.
   allowProduction: z.boolean().optional(),
   allowWrites: z.boolean().optional(),
@@ -79,7 +107,7 @@ export type Setup = z.infer<typeof SetupSchema>;
 export type Profile = z.infer<typeof ProfileSchema>;
 // A loaded config always has a concrete baseUrl (resolved from the profile when there is one) and the
 // selection that produced it (null without a profile).
-export type Config = Omit<z.infer<typeof ConfigSchema>, 'baseUrl'> & { baseUrl: string; selection?: Selection | null };
+export type Config = Omit<z.infer<typeof ConfigSchema>, 'baseUrl' | 'auth'> & { baseUrl: string; auth?: AuthConfig; selection?: Selection | null };
 
 // The API name: config.name, else the input file name. A UI run without a name is "custom-api".
 // Used for the framework folder and the Allure epic.
@@ -113,6 +141,7 @@ export function configProblems(config: Omit<Config, 'baseUrl' | 'selection'> & {
       problems.push(`field "endpoints[${i}].requiresAuth" endpoint "${ep.id}" requires auth but the input has no auth section`);
     }
   });
+  problems.push(...authProblems(config.auth));
   config.endpoints.forEach((ep, i) => {
     if (!ep.setup) return;
     const params = pathParams(ep.path);
@@ -136,6 +165,38 @@ export function configProblems(config: Omit<Config, 'baseUrl' | 'selection'> & {
       }
     });
   });
+  return problems;
+}
+
+// Role shapes must match the auth type: a login auth needs credentialsEnv with the same fields per
+// role, the other types need valueEnv. "default" is the main auth section and cannot be a role name.
+export function authProblems(auth: AuthConfig | undefined): string[] {
+  const problems: string[] = [];
+  if (!auth) return problems;
+  if (auth.type === 'login') {
+    if (!Object.keys(auth.credentialsEnv).length) problems.push('field "auth.credentialsEnv" must name at least one field');
+    if (auth.request.body) {
+      for (const field of Object.keys(auth.credentialsEnv)) {
+        if (field in auth.request.body) problems.push(`field "auth.request.body.${field}" is also in credentialsEnv; credential values come from the environment only`);
+      }
+    }
+  }
+  for (const role of authRoles(auth)) {
+    if (role === DEFAULT_ROLE) continue;
+    const r = auth.roles![role];
+    if (auth.type === 'login') {
+      const fields = Object.keys(auth.credentialsEnv).sort();
+      const own = Object.keys(r.credentialsEnv ?? {}).sort();
+      if (JSON.stringify(fields) !== JSON.stringify(own)) {
+        problems.push(`field "auth.roles.${role}.credentialsEnv" must name the same fields as auth.credentialsEnv (${fields.join(', ')})`);
+      }
+      if (r.valueEnv) problems.push(`field "auth.roles.${role}.valueEnv" is not used by a login auth; use credentialsEnv`);
+    } else {
+      if (!r.valueEnv) problems.push(`field "auth.roles.${role}.valueEnv" is required for a ${auth.type} auth`);
+      if (r.credentialsEnv) problems.push(`field "auth.roles.${role}.credentialsEnv" is not used by a ${auth.type} auth; use valueEnv`);
+    }
+  }
+  if (auth.roles && DEFAULT_ROLE in auth.roles) problems.push(`field "auth.roles.${DEFAULT_ROLE}" is reserved for the main auth section`);
   return problems;
 }
 

@@ -85,6 +85,12 @@ null for an input file with a plain baseUrl (every UI run). For an input file wi
 for that selection; the console then prints "selection: env=staging, brand=alpha -> https://..." right
 after the framework line. The UI does not read it.
 
+Since Phase 5 a finding's "type" can also be "authz" (a request by another auth role that should have
+been rejected). Rule 4 for it is the same as for auth and invalid-input: a 2xx actual status is a
+"suspected API finding", a 403 or 404 is a pass, anything else "needs review". The expectedStatus string
+for it is "403|404". Inputs with auth types other than the fixed header (query, cookie, login) and with
+auth.roles are CLI only for now: the UI's input check still accepts only auth { header, valueEnv }.
+
 probeStatus is null when the probe failed. specFile is null when no spec was written.
 classification is "suspected API finding" or "needs review".
 skippedReason is null, or "skipped: read-only mode" for an endpoint the safety guard did not run (section 7).

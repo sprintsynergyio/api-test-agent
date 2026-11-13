@@ -4,6 +4,23 @@ import { join } from 'node:path';
 import pactum from 'pactum';
 import { assessSafety, endpointAllowed, ProductionRefused, READ_METHODS, ReadOnlyBlocked, refusalMessage, type Safety } from '../../agent/safety';
 import { applyProfile, pathParams, queryString, resolvePath, setupSteps, type Profile, type Query, type Selection, type Setup } from '../../agent/model';
+import {
+  authRoles,
+  createAuthenticator,
+  DEFAULT_ROLE,
+  normalizeAuth,
+  pickAuthEnv,
+  readCredentials,
+  redactHeaders as redactAuthHeaders,
+  redactLoginRequest,
+  redactLoginResponse,
+  redactQuery,
+  scrubSecrets,
+  secretValues,
+  type AuthConfig,
+  type Authenticator,
+  type AuthRequest,
+} from '../../agent/auth';
 import { redactHeaders, redactText, redactValue, type RedactionConfig } from '../../agent/redact';
 
 // The Pactum equivalent of tests/fixtures/ctx.ts: the ONLY Pactum test-side file that reads process.env
@@ -19,14 +36,13 @@ const REPORT_DIR = 'reports/pactum';
 const STATUS_FILE = join(REPORT_DIR, 'status.json');
 const EVIDENCE_DIR = join(REPORT_DIR, 'evidence');
 const MAX_BODY_CHARS = 5 * 1024;
-const REDACTED = '<redacted>';
 export type Config = {
   name?: string;
   baseUrl: string;
   profile?: Profile;
   selection: Selection | null;
   defaultHeaders: Record<string, string>;
-  auth?: { header: string; valueEnv: string };
+  auth?: AuthConfig;
   allowProduction?: boolean;
   allowWrites?: boolean;
   redaction?: RedactionConfig;
@@ -55,17 +71,18 @@ function loadConfig(file: string): Config {
     throw new Error(`Invalid input file ${file}: needs baseUrl (or a profile) and a non-empty endpoints array`);
   }
   try {
-    return applyProfile({ ...c, defaultHeaders: c.defaultHeaders ?? {} }, process.env.AGENT_SELECT) as Config;
+    const loaded = applyProfile({ ...c, defaultHeaders: c.defaultHeaders ?? {} }, process.env.AGENT_SELECT) as Config;
+    // An auth section without "type" is the original header form.
+    return { ...loaded, auth: normalizeAuth(loaded.auth) };
   } catch (err) {
     throw new Error(`Invalid input file ${file}: ${(err as Error).message}`);
   }
 }
 
 const config = loadConfig(INPUT_FILE);
-const authValue = config.auth ? process.env[config.auth.valueEnv] : undefined;
-if (config.auth && !authValue) {
-  throw new Error(`Missing auth value: environment variable ${config.auth.valueEnv} is not set (required by ${INPUT_FILE}). Add it to .env.`);
-}
+// Only the environment variables the auth section names leave this file (the auth module). A missing
+// one throws with its name before any request.
+const authEnv = pickAuthEnv(config.auth, process.env);
 
 // The safety guard, once at load: a refused host stops the whole run before any request.
 // AGENT_FORCE_PRODUCTION=1 (testing only) treats every host as production.
@@ -99,6 +116,8 @@ export type Ctx = {
   baseUrl: string;
   api: Client;
   noAuthApi: Client;
+  // A client authenticated as another role from the input's auth.roles (for [authz] tests).
+  as: (role: string) => Client;
   createResource: (endpointId: string) => Promise<string>;
   // Runs this spec's endpoint setup steps in order and returns every path placeholder value, for
   // example { id: '4', reviewId: '7' } for /products/{id}/reviews/{reviewId}.
@@ -127,53 +146,51 @@ function toJsonOrText(text: string): unknown {
   }
 }
 
-// One JSON file per exchange in reports/pactum/evidence/, redacted (see redact.ts): the auth header and
-// credential-looking headers, personal or secret-looking values in bodies and errors, plus the per-API
-// rules in config.redaction. The raw auth value is scrubbed from everything else.
-function writeEvidence(method: string, path: string, headers: Record<string, string>, body: unknown, status: number | null, text: string, error?: string) {
-  const authHeader = config.auth?.header.toLowerCase();
-  const shownHeaders = redactHeaders(
-    Object.fromEntries(Object.entries(headers).map(([k, v]) => [k, k.toLowerCase() === authHeader ? REDACTED : v])),
-    redaction,
-  );
-  const shownBody = toJsonOrText(text);
+// Every secret value seen so far: credential values from the environment and tokens from logins.
+const authenticators: Record<string, Authenticator> = {};
+function secrets(): string[] {
+  return [...new Set([...secretValues(config.auth, authEnv), ...Object.values(authenticators).flatMap((a) => a.secrets())])];
+}
+
+// One JSON file per exchange in reports/pactum/evidence/, redacted twice: the auth rules (sensitive
+// headers and query values for the configured auth type, login credentials and tokens) and the
+// redact.ts rules (credential-looking headers, personal or secret-looking values in bodies, paths and
+// errors, plus the per-API rules in config.redaction). Every secret value is scrubbed from the rest.
+function writeEvidence(method: string, path: string, role: string | null, headers: Record<string, string>, body: unknown, status: number | null, text: string, error?: string) {
+  const shownPath = redactText(redactQuery(config.auth, path), redaction);
+  const shownHeaders = redactHeaders(redactAuthHeaders(config.auth, headers), redaction) ?? {};
+  const shownBody = toJsonOrText(role === 'login' ? redactLoginResponse(config.auth, text) : text);
+  const requestBody = role === 'login' ? redactLoginRequest(config.auth, body) : body ?? null;
   const evidence = {
     test: current ? { file: current.file, title: current.title } : null,
-    request: { method, path: redactText(path, redaction), headers: shownHeaders, body: redactValue(body ?? null, config.redaction, redaction, 'request') },
+    request: { method, path: shownPath, role, headers: shownHeaders, body: redactValue(requestBody ?? null, config.redaction, redaction, 'request') },
     response: error
       ? { error: redactText(error, redaction) }
       : { status, body: typeof shownBody === 'string' ? redactText(shownBody, redaction) : redactValue(shownBody, config.redaction, redaction) },
   };
-  let out = JSON.stringify(evidence, null, 2);
-  if (authValue) out = out.split(authValue).join(REDACTED);
+  const out = scrubSecrets(JSON.stringify(evidence, null, 2), secrets());
   mkdirSync(EVIDENCE_DIR, { recursive: true });
-  const name = `${String(++evidenceIndex).padStart(3, '0')}-${method}-${path.replace(/[^a-zA-Z0-9]+/g, '_').slice(0, 40)}-${error ? 'failed' : status}.json`;
+  const name = `${String(++evidenceIndex).padStart(3, '0')}-${method}-${shownPath.replace(/[^a-zA-Z0-9]+/g, '_').slice(0, 40)}-${error ? 'failed' : status}.json`;
   writeFileSync(join(EVIDENCE_DIR, name), out + '\n');
   current?.evidence.push(name);
 }
 
-// The one guarded request path. Blocks writes in read-only mode before anything is sent, counts what is
-// sent, and wraps Pactum's response.
-async function send(method: string, path: string, body: unknown, withAuth: boolean, options: RequestOptions = {}): Promise<ApiResponse> {
-  const m = method.toUpperCase();
-  const fullPath = path + queryString(options.params);
-  if (safety.mode !== 'full' && !READ_METHODS.has(m)) throw new ReadOnlyBlocked(m, fullPath);
-  const headers: Record<string, string> = { ...config.defaultHeaders, ...(options.headers ?? {}) };
-  if (withAuth && config.auth && authValue) headers[config.auth.header] = authValue;
+// Sends one request with the headers and query exactly as given. Counts it and writes evidence.
+async function transmit(m: string, path: string, headers: Record<string, string>, query: Query | undefined, body: unknown, role: string | null): Promise<ApiResponse> {
+  const fullPath = path + queryString(query);
   counter.sent++;
-
   let s = pactum.spec().withMethod(m).withPath(config.baseUrl + fullPath).withHeaders(headers);
   if (body !== undefined) s = s.withJson(body as Record<string, unknown>);
   let res: PactumResponse;
   try {
     res = (await s.toss()) as unknown as PactumResponse;
   } catch (err) {
-    const message = String((err as Error)?.message ?? err).split('\n')[0];
-    writeEvidence(m, fullPath, headers, body, null, '', message);
-    throw new Error(`request ${m} ${fullPath} failed: ${message}`);
+    const message = scrubSecrets(String((err as Error)?.message ?? err).split('\n')[0], secrets());
+    writeEvidence(m, fullPath, role, headers, body, null, '', message);
+    throw new Error(`request ${m} ${redactQuery(config.auth, fullPath)} failed: ${message}`);
   }
   const text = typeof res.text === 'string' ? res.text : res.body === undefined || res.body === '' ? '' : JSON.stringify(res.body);
-  writeEvidence(m, fullPath, headers, body, res.statusCode, text);
+  writeEvidence(m, fullPath, role, headers, body, res.statusCode, text);
   return {
     status: () => res.statusCode,
     ok: () => res.statusCode >= 200 && res.statusCode < 300,
@@ -183,20 +200,59 @@ async function send(method: string, path: string, body: unknown, withAuth: boole
   };
 }
 
-function client(withAuth: boolean): Client {
+// The one guarded request path. Blocks writes in read-only mode before anything is sent (a login
+// request is not a data write and is let through), applies the role's auth (logging in first when
+// needed) and re-sends once after a refresh status. role null: no auth (noAuthApi).
+async function send(method: string, path: string, body: unknown, role: string | null, options: RequestOptions = {}, login = false): Promise<ApiResponse> {
+  const m = method.toUpperCase();
+  if (safety.mode !== 'full' && !READ_METHODS.has(m) && !login) throw new ReadOnlyBlocked(m, path + queryString(options.params));
+  const auth = role ? authenticators[role] : null;
+  if (role && !auth) throw new Error(`ctx.as: unknown auth role "${role}" (roles: ${authRoles(config.auth).join(', ') || 'none'})`);
+  const base: AuthRequest = { method: m, path, headers: { ...config.defaultHeaders, ...(options.headers ?? {}) }, query: options.params, body };
+  const once = async () => {
+    const req = auth ? await auth.decorate(base) : base;
+    return transmit(m, path, req.headers, req.query, body, login ? 'login' : role);
+  };
+  let response = await once();
+  if (auth && auth.shouldRefresh(response.status())) {
+    auth.invalidate();
+    response = await once();
+  }
+  return response;
+}
+
+// The login transport for the login auth type: a guarded, recorded request with no auth of its own.
+const transport = async (req: AuthRequest) => {
+  const res = await send(req.method, req.path, req.body, null, { headers: req.headers, params: req.query }, true);
+  return { status: res.status(), text: await res.text() };
+};
+if (config.auth) {
+  for (const role of authRoles(config.auth)) {
+    authenticators[role] = createAuthenticator(config.auth, readCredentials(config.auth, authEnv, role), transport);
+  }
+}
+
+function client(role: string | null): Client {
   return {
-    get: (path, options) => send('GET', path, undefined, withAuth, options),
-    delete: (path, options) => send('DELETE', path, undefined, withAuth, options),
-    post: (path, body, options) => send('POST', path, body, withAuth, options),
-    put: (path, body, options) => send('PUT', path, body, withAuth, options),
-    patch: (path, body, options) => send('PATCH', path, body, withAuth, options),
-    fetch: (path, options = {}) => send(options.method ?? 'GET', path, options.data, withAuth, options),
+    get: (path, options) => send('GET', path, undefined, role, options),
+    delete: (path, options) => send('DELETE', path, undefined, role, options),
+    post: (path, body, options) => send('POST', path, body, role, options),
+    put: (path, body, options) => send('PUT', path, body, role, options),
+    patch: (path, body, options) => send('PATCH', path, body, role, options),
+    fetch: (path, options = {}) => send(options.method ?? 'GET', path, options.data, role, options),
   };
 }
 
-const api = client(true);
+const noAuthApi = client(null);
 // Without an auth section, api and noAuthApi are the same.
-const noAuthApi = config.auth ? client(false) : api;
+const api = config.auth ? client(DEFAULT_ROLE) : noAuthApi;
+const roleClients: Record<string, Client> = {};
+for (const role of authRoles(config.auth)) roleClients[role] = client(role);
+function as(role: string): Client {
+  const c = roleClients[role];
+  if (!c) throw new Error(`ctx.as: unknown auth role "${role}" (roles: ${authRoles(config.auth).join(', ') || 'none'})`);
+  return c;
+}
 
 // The idField for a setup endpoint: declared by the first setup step anywhere that references it.
 function declaredIdField(endpointId: string): string | undefined {
@@ -223,7 +279,7 @@ async function createResource(endpointId: string, idField?: string, params: Reco
     headers: endpoint.headers,
   });
   const text = await response.text();
-  if (!response.ok()) throw new Error(`createResource(${endpointId}) failed: status ${response.status()}, body: ${text}`);
+  if (!response.ok()) throw new Error(`createResource(${endpointId}) failed: status ${response.status()}, body: ${scrubSecrets(text, secrets())}`);
   let id: unknown;
   try {
     id = (JSON.parse(text) as Record<string, unknown>)?.[field];
@@ -231,7 +287,7 @@ async function createResource(endpointId: string, idField?: string, params: Reco
     id = undefined;
   }
   if (id === undefined || id === null || id === '') {
-    throw new Error(`createResource(${endpointId}) returned no "${field}": status ${response.status()}, body: ${text}`);
+    throw new Error(`createResource(${endpointId}) returned no "${field}": status ${response.status()}, body: ${scrubSecrets(text, secrets())}`);
   }
   created.push({ endpointId, id: String(id), params: own });
   return String(id);
@@ -323,7 +379,7 @@ async function setup(): Promise<Record<string, string>> {
   return runSetup(endpoint);
 }
 
-export const ctx: Ctx = { baseUrl: config.baseUrl, api, noAuthApi, createResource: (endpointId) => createResource(endpointId), setup };
+export const ctx: Ctx = { baseUrl: config.baseUrl, api, noAuthApi, as, createResource: (endpointId) => createResource(endpointId), setup };
 
 // Records the real status of the request under test. Call it before the first expect, like the
 // actual-status annotation in the Playwright tests. The finding rules only trust tests that record it.

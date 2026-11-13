@@ -124,7 +124,7 @@ const endpoint: Endpoint = {
   body: { email: 'jane@client.com', card: '4242424242424242', note: 'rush' },
   headers: { 'X-Trace': '10.9.8.7' },
 };
-const config: Config = { baseUrl: 'http://localhost:4700', defaultHeaders: {}, auth: { header: 'Authorization', valueEnv: 'X' }, endpoints: [endpoint], selection: null };
+const config: Config = { baseUrl: 'http://localhost:4700', defaultHeaders: {}, auth: { type: 'header', header: 'Authorization', valueEnv: 'X' }, endpoints: [endpoint], selection: null };
 const rawProbe: ProbeResult = {
   endpointId: 'create-order',
   method: 'POST',
@@ -151,7 +151,7 @@ check('redactProbe hides the response values and keeps status, shape and timesta
 });
 
 check('the plan prompt carries none of the client values', () => {
-  const prompt = buildPlanPrompt(endpoint, redactProbe(rawProbe, config, counter()));
+  const prompt = buildPlanPrompt(endpoint, redactProbe(rawProbe, config, counter()), []);
   for (const s of SECRETS) assert.ok(!prompt.includes(s), `plan prompt contains ${s}`);
   assert.ok(prompt.includes('redacted@example.com'), 'the sample body keeps a valid stand-in');
 });
@@ -172,6 +172,7 @@ check('evidence attachments are redacted, with the per-API field rules', () => {
     {
       method: 'POST',
       path: '/orders',
+      role: 'default',
       requestHeaders: { Authorization: 'Bearer real-token', 'X-Trace': '10.9.8.7' },
       requestBody: endpoint.body,
       status: 201,
@@ -188,7 +189,7 @@ check('evidence attachments are redacted, with the per-API field rules', () => {
 });
 
 check('a failed exchange redacts the error text too', () => {
-  const { body } = formatExchange(config, { method: 'GET', path: '/orders', requestHeaders: {}, requestBody: null, status: null, responseBody: '', error: 'connect to 10.9.8.7 failed for jane@client.com' }, undefined);
+  const { body } = formatExchange(config, { method: 'GET', path: '/orders', role: null, requestHeaders: {}, requestBody: null, status: null, responseBody: '', error: 'connect to 10.9.8.7 failed for jane@client.com' }, undefined);
   assert.ok(!body.includes('10.9.8.7') && !body.includes('jane@client.com'));
 });
 

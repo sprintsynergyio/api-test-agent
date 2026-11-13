@@ -131,7 +131,7 @@ for (const [i, f] of findings.entries()) {
   field(where, f, 'actualStatus', ['number', 'null']);
   field(where, f, 'classification', ['string'], ['suspected API finding', 'needs review']);
   const actual = typeof f.actualStatus === 'number' ? f.actualStatus : null;
-  const apiFinding = actual !== null && (actual >= 500 || ((f.type === 'auth' || f.type === 'invalid-input') && actual >= 200 && actual < 300));
+  const apiFinding = actual !== null && (actual >= 500 || ((f.type === 'auth' || f.type === 'authz' || f.type === 'invalid-input') && actual >= 200 && actual < 300));
   need((f.classification === 'suspected API finding') === apiFinding, `${where}: classification "${f.classification}" breaks rule 4 for type ${f.type}, actual ${actual}`);
   need(!skippedIds.has(String(f.endpointId)), `${where}: finding for a skipped endpoint`);
 }

@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, sep } from 'node:path';
+import { extraRoles, pickAuthEnv, secretValues } from './auth';
 import { BudgetExceeded, claudeBudget, claudeCallsUsed, claudeEnv, hostedWithoutApiKeyProblem, promptRedaction, redact, usingApiKey } from './claude';
 import { apiName, loadConfig, selectionLine, takeSelectFlag, type Config, type Endpoint } from './config';
 import { frameworkFor, type FrameworkAdapter, type FrameworkInfo, type TestOutcome } from './frameworks';
@@ -54,7 +55,7 @@ function oneLine(text: string): string {
   return text.replace(/\s*\n\s*/g, ' ');
 }
 
-async function planPhase(states: EndpointState[]) {
+async function planPhase(states: EndpointState[], roles: string[]) {
   await forEachLimited(states, CONCURRENCY, async (s) => {
     const id = s.endpoint.id;
     if (s.skippedReason) {
@@ -67,7 +68,7 @@ async function planPhase(states: EndpointState[]) {
       return;
     }
     try {
-      const result = await planEndpoint(s.endpoint, s.probe!);
+      const result = await planEndpoint(s.endpoint, s.probe!, { roles });
       if (result.ok) {
         s.plan = result.plan;
         console.log(`${id} OK ${result.plan.cases.length} cases`);
@@ -217,15 +218,16 @@ function writeSummary(o: {
   return summary;
 }
 
+// Rule 4: a 5xx, or a 2xx where a rejection was expected (auth, authz, invalid-input), is an API finding.
 function classify(type: string, actual: number | null): Finding['classification'] {
   if (actual === null) return 'needs review';
   if (actual >= 500) return 'suspected API finding';
-  if ((type === 'auth' || type === 'invalid-input') && actual >= 200 && actual < 300) return 'suspected API finding';
+  if ((type === 'auth' || type === 'authz' || type === 'invalid-input') && actual >= 200 && actual < 300) return 'suspected API finding';
   return 'needs review';
 }
 
 function toFinding(o: TestOutcome, plan: Plan | undefined): Finding {
-  const type = o.title.match(/^\[(happy|schema|invalid-input|auth)\]/)?.[1] ?? 'unknown';
+  const type = o.title.match(/^\[(happy|schema|invalid-input|auth|authz)\]/)?.[1] ?? 'unknown';
   const planCase = plan?.cases.find((c) => c.title === o.title) ?? plan?.cases.find((c) => c.type === type);
   return {
     endpointId: o.endpointId,
@@ -276,11 +278,12 @@ async function main() {
     return;
   }
 
-  const authValue = config.auth ? process.env[config.auth.valueEnv] : undefined;
-  if (config.auth && !authValue) {
-    throw new Error(`Missing auth value: environment variable ${config.auth.valueEnv} is not set (required by ${inputFile}).`);
-  }
-  const secrets = authValue ? [authValue] : [];
+  // Only the environment variables the auth section names (agent/auth.ts); a missing one is reported
+  // by name before any request. secrets: every secret credential value (passwords, keys, header
+  // values; not plain usernames), plus the tokens the probe logins produce.
+  const authEnv = pickAuthEnv(config.auth, process.env);
+  const secrets = secretValues(config.auth, authEnv);
+  const roles = extraRoles(config.auth);
 
   const claudeProblem = claudeCliProblem();
   if (claudeProblem) {
@@ -315,7 +318,8 @@ async function main() {
   const selected = selectionLine(config);
   if (selected) console.log(selected);
   if (safety.hostClass === 'production' && safety.mode === 'full') console.log(PRODUCTION_WRITES_WARNING);
-  const probeRun = await probeAll(config, authValue, { forceProduction });
+  const probeRun = await probeAll(config, authEnv, { forceProduction });
+  for (const s of probeRun.secrets) if (!secrets.includes(s)) secrets.push(s);
   let requestsSent = probeRun.requestsSent;
   let redactionReplaced = probeRun.redaction.replaced;
   const cleanup = addCleanup(emptyCleanup(), probeRun.cleanup);
@@ -331,7 +335,7 @@ async function main() {
   }
 
   console.log('=== PLANNING ===');
-  await planPhase(states);
+  await planPhase(states, roles);
 
   console.log('=== GENERATING ===');
   await generatePhase(fw, states);
@@ -373,7 +377,7 @@ async function main() {
     framework = fw.exportFramework({
       config,
       inputFile,
-      authValue,
+      secrets,
       // The export README lists endpoints without a spec with their reason, read-only skips included.
       endpoints: states.map((s) => ({ ...s, failureReason: s.failureReason ?? s.skippedReason })),
       findings: findings.filter((f) => f.classification === 'suspected API finding'),

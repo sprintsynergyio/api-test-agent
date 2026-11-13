@@ -47,6 +47,13 @@ const AUTH = `  it('[auth] delete-product rejects a request without auth', async
     expect([401, 403]).toContain(response.status());
   });`;
 
+const AUTHZ = `  it('[authz] delete-product rejects a viewer deleting another role\\'s product', async () => {
+    const id = await ctx.createResource('create-product');
+    const response = await ctx.as('viewer').delete(\`/products/\${id}\`);
+    recordStatus(response.status());
+    expect([403, 404]).toContain(response.status());
+  });`;
+
 const ALL = ['happy', 'schema', 'invalid-input', 'auth'];
 const opts = (planTypes: string[] = ALL, probeStatus: number | null = 204) => ({ name: 'pactum-gate-test', planTypes, probeStatus });
 
@@ -72,6 +79,11 @@ accepts(
   opts(ALL, 200),
 );
 
+accepts('an authz test that uses ctx.as and expects 403 or 404', spec(AUTHZ), opts(['authz']));
+accepts('a file with one test of each of the five types', spec([HAPPY, SCHEMA, INVALID, AUTH, AUTHZ].join('\n\n')), opts([...ALL, 'authz']));
+rejects('an authz test that sends the request with ctx.api', spec(AUTHZ.replace("ctx.as('viewer')", 'ctx.api')), 'uses ctx.api, the default role', opts(['authz']));
+rejects('an authz test that expects 2xx', spec(AUTHZ.replace('expect([403, 404]).toContain(response.status());', 'expect(response.status()).toBe(204);')), 'must be expect([403, 404]).toContain(response.status())', opts(['authz']));
+rejects('an authz test that uses ctx.noAuthApi', spec(AUTHZ.replace("ctx.as('viewer')", 'ctx.noAuthApi')), 'uses ctx.noAuthApi; that is an [auth] test', opts(['authz']));
 rejects('a file that imports pactum directly', `import { spec } from 'pactum';\n${spec(HAPPY)}`, 'imports pactum directly', opts(['happy']));
 rejects('a file that requires pactum', `const pactum = require('pactum');\n${spec(HAPPY)}`, 'imports pactum directly', opts(['happy']));
 rejects('a file that imports node:assert', `import assert from 'node:assert';\n${spec(HAPPY)}`, 'assertion library', opts(['happy']));

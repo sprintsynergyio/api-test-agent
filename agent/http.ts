@@ -1,12 +1,28 @@
 import { request, type APIRequestContext, type APIResponse } from '@playwright/test';
+import {
+  createAuthenticator,
+  DEFAULT_ROLE,
+  authRoles,
+  readCredentials,
+  redactHeaders as redactAuthHeaders,
+  redactLoginRequest,
+  redactLoginResponse,
+  redactQuery,
+  scrubSecrets,
+  secretValues,
+  type Authenticator,
+  type AuthRequest,
+} from './auth';
 import type { Config } from './config';
 import { pathParams, queryString, resolvePath, setupSteps } from './model';
 import { redactHeaders, redactText, redactValue, type RedactionCounter } from './redact';
 import { assessSafety, ProductionRefused, READ_METHODS, ReadOnlyBlocked, refusalMessage, type Safety } from './safety';
 
 // Shared HTTP logic for the ctx fixture and the agent. Never reads process.env or files:
-// callers pass the auth value in. Without an auth section, api and noAuthApi are the same.
-// The safety guard lives here, so it covers every request: probe, createResource and tests.
+// callers pass the auth environment in (only the variables the auth section names).
+// Without an auth section, api and noAuthApi are the same.
+// The safety guard lives here, so it covers every request: probe, createResource, login and tests.
+// Auth (header, query, cookie, login with roles) is applied per request by ./auth.
 
 export type RequestCounter = { sent: number };
 
@@ -14,11 +30,21 @@ export type RequestCounter = { sent: number };
 export type CreatedResource = { endpointId: string; id: string; params: Record<string, string> };
 
 export type Clients = {
-  api: APIRequestContext;
+  api: APIRequestContext; // the default role
   noAuthApi: APIRequestContext;
+  // One client per role; as('default') is api. Unknown role: throws.
+  as(role: string): APIRequestContext;
+  roles: string[];
   safety: Safety;
-  counter: RequestCounter; // requests actually sent through api and noAuthApi
+  counter: RequestCounter; // requests actually sent, login requests included
   created: CreatedResource[]; // everything createResource made, newest last
+  // Every secret value seen so far (credential values and tokens), for redaction.
+  secrets(): string[];
+  // Login requests made so far, all roles.
+  loginCount(): number;
+  // Internal: the client login requests go through (replaced by recordClients so logins are recorded too).
+  _box: { noAuthApi: APIRequestContext };
+  _auth: Record<string, Authenticator>;
 };
 
 export type ClientOptions = { timeoutMs?: number; forceProduction?: boolean; hosted?: boolean };
@@ -32,6 +58,8 @@ type RequestOptions = {
   data?: unknown;
   form?: unknown;
   multipart?: unknown;
+  // Set by the auth login transport: the request is a login, allowed in read-only mode (it changes no data).
+  authLogin?: boolean;
 };
 type UrlOrRequest = string | { url(): string; method?(): string };
 
@@ -42,54 +70,120 @@ function requestMethod(prop: string, urlOrRequest: UrlOrRequest, options: Reques
   return 'GET';
 }
 
-// Blocks writes in read-only mode before anything leaves the process, and counts what is sent.
-function guarded(context: APIRequestContext, safety: Safety, counter: RequestCounter): APIRequestContext {
+const urlOf = (u: UrlOrRequest) => (typeof u === 'string' ? u : u.url());
+
+// Playwright errors append a call log with request headers. Keep the first line, secrets scrubbed.
+function cleanRequestError(err: unknown, secrets: () => string[]): Error {
+  const first = String((err as Error)?.message ?? err).split('\n')[0];
+  const e = new Error(scrubSecrets(first, secrets()));
+  e.name = (err as Error)?.name ?? 'Error';
+  return e;
+}
+
+// Blocks writes in read-only mode before anything leaves the process, counts what is sent, applies
+// the role's auth (logging in first when needed) and retries once after a refresh status.
+function guarded(context: APIRequestContext, safety: Safety, counter: RequestCounter, auth: Authenticator | null, secrets: () => string[]): APIRequestContext {
   return new Proxy(context, {
     get(target, prop) {
       const value = Reflect.get(target, prop, target);
       if (typeof value !== 'function') return value;
       if (typeof prop !== 'string' || !REQUEST_METHODS.has(prop)) return value.bind(target);
-      return async (urlOrRequest: UrlOrRequest, options?: RequestOptions): Promise<APIResponse> => {
+      return async (urlOrRequest: UrlOrRequest, options: RequestOptions = {}): Promise<APIResponse> => {
         const method = requestMethod(prop, urlOrRequest, options);
-        if (safety.mode !== 'full' && !READ_METHODS.has(method)) {
-          throw new ReadOnlyBlocked(method, typeof urlOrRequest === 'string' ? urlOrRequest : urlOrRequest.url());
+        if (safety.mode !== 'full' && !READ_METHODS.has(method) && !options.authLogin) {
+          throw new ReadOnlyBlocked(method, urlOf(urlOrRequest));
         }
-        counter.sent++;
-        return value.call(target, urlOrRequest, options);
+        const { authLogin: _login, ...rest } = options;
+        const send = async (): Promise<APIResponse> => {
+          let opts: RequestOptions = rest;
+          if (auth) {
+            const req = await auth.decorate({ method, path: urlOf(urlOrRequest), headers: { ...(rest.headers ?? {}) }, query: rest.params });
+            opts = { ...rest, headers: req.headers, ...(req.query ? { params: req.query } : {}) };
+          }
+          counter.sent++;
+          try {
+            return await value.call(target, urlOrRequest, opts);
+          } catch (err) {
+            throw cleanRequestError(err, secrets);
+          }
+        };
+        let response = await send();
+        if (auth && auth.shouldRefresh(response.status())) {
+          auth.invalidate();
+          response = await send();
+        }
+        return response;
       };
     },
   });
 }
 
 // Throws ProductionRefused before any context exists when the host is production and the config
-// does not allow it. forceProduction can only make the guard stricter.
-export async function createClients(config: Config, authValue: string | undefined, opts: ClientOptions = {}): Promise<Clients> {
+// does not allow it. forceProduction can only make the guard stricter. authEnv holds the values of
+// the environment variables the auth section names (pickAuthEnv), never anything else.
+export async function createClients(config: Config, authEnv: Record<string, string | undefined> = {}, opts: ClientOptions = {}): Promise<Clients> {
   const safety = assessSafety(config, { forceProduction: opts.forceProduction, hosted: opts.hosted });
   if (safety.mode === 'refused') throw new ProductionRefused(refusalMessage(safety));
-  if (config.auth && !authValue) {
-    throw new Error(`Missing auth value for header ${config.auth.header} (environment variable ${config.auth.valueEnv})`);
-  }
-  const authHeaders: Record<string, string> = config.auth && authValue ? { [config.auth.header]: authValue } : {};
-  const api = await request.newContext({
-    baseURL: config.baseUrl,
-    extraHTTPHeaders: { ...config.defaultHeaders, ...authHeaders },
-    timeout: opts.timeoutMs,
-  });
-  const noAuthApi = await request.newContext({
-    baseURL: config.baseUrl,
-    extraHTTPHeaders: { ...config.defaultHeaders },
-    timeout: opts.timeoutMs,
-  });
+
   const counter: RequestCounter = { sent: 0 };
-  return { api: guarded(api, safety, counter), noAuthApi: guarded(noAuthApi, safety, counter), safety, counter, created: [] };
+  const authenticators: Record<string, Authenticator> = {};
+  const secrets = () => [...new Set([...secretValues(config.auth, authEnv), ...Object.values(authenticators).flatMap((a) => a.secrets())])];
+
+  const newContext = () => request.newContext({ baseURL: config.baseUrl, extraHTTPHeaders: { ...config.defaultHeaders }, timeout: opts.timeoutMs });
+
+  const rawNoAuth = await newContext();
+  const noAuthApi = guarded(rawNoAuth, safety, counter, null, secrets);
+  const box = { noAuthApi };
+  // The login transport: a guarded, recorded request with no auth of its own.
+  const transport = async (req: AuthRequest) => {
+    const loginOptions: RequestOptions = { method: req.method, headers: req.headers, data: req.body, params: req.query, authLogin: true };
+    const response = await box.noAuthApi.fetch(req.path, loginOptions as Parameters<APIRequestContext['fetch']>[1]);
+    return { status: response.status(), text: await response.text() };
+  };
+
+  const clientsByRole: Record<string, APIRequestContext> = {};
+  const contexts: APIRequestContext[] = [rawNoAuth];
+  if (config.auth) {
+    for (const role of authRoles(config.auth)) {
+      const creds = readCredentials(config.auth, authEnv, role);
+      authenticators[role] = createAuthenticator(config.auth, creds, transport);
+      const raw = await newContext();
+      contexts.push(raw);
+      clientsByRole[role] = guarded(raw, safety, counter, authenticators[role], secrets);
+    }
+  }
+  const api = config.auth ? clientsByRole[DEFAULT_ROLE] : noAuthApi;
+
+  const clients: Clients = {
+    api,
+    noAuthApi,
+    roles: authRoles(config.auth),
+    as(role) {
+      const c = clientsByRole[role];
+      if (!c) throw new Error(`ctx.as: unknown auth role "${role}" (roles: ${authRoles(config.auth).join(', ') || 'none'})`);
+      return c;
+    },
+    safety,
+    counter,
+    created: [],
+    secrets,
+    loginCount: () => Object.values(authenticators).reduce((n, a) => n + a.loginCount(), 0),
+    _box: box,
+    _auth: authenticators,
+  };
+  disposables.set(clients, contexts);
+  return clients;
 }
 
+const disposables = new WeakMap<Clients, APIRequestContext[]>();
+
 // Evidence: every request and response made through the clients, for test reports.
-// The auth header value is always shown as <redacted>.
+// Sensitive header values are shown as <redacted> and every secret value is scrubbed.
 
 export type Exchange = {
   method: string;
   path: string;
+  role: string | null; // which role's client sent it; null for noAuthApi
   requestHeaders: Record<string, string>;
   requestBody: unknown;
   status: number | null;
@@ -99,13 +193,8 @@ export type Exchange = {
 
 const RECORDED_METHODS = new Set(['get', 'post', 'put', 'patch', 'delete', 'head', 'fetch']);
 const MAX_BODY_CHARS = 5 * 1024;
-const REDACTED = '<redacted>';
 
-function recorded(
-  context: APIRequestContext,
-  baseHeaders: Record<string, string>,
-  onExchange: (exchange: Exchange) => Promise<void>,
-): APIRequestContext {
+function recorded(context: APIRequestContext, role: string | null, baseHeaders: Record<string, string>, onExchange: (exchange: Exchange) => Promise<void>): APIRequestContext {
   return new Proxy(context, {
     get(target, prop) {
       const value = Reflect.get(target, prop, target);
@@ -115,6 +204,7 @@ function recorded(
         const exchange: Exchange = {
           method: (prop === 'fetch' ? options.method ?? 'GET' : prop).toUpperCase(),
           path: (typeof urlOrRequest === 'string' ? urlOrRequest : urlOrRequest.url()) + (options.params ? queryString(options.params) : ''),
+          role: options.authLogin ? 'login' : role,
           requestHeaders: { ...baseHeaders, ...(options.headers ?? {}) },
           requestBody: options.data ?? options.form ?? options.multipart ?? null,
           status: null,
@@ -137,31 +227,43 @@ function recorded(
   });
 }
 
-// Wraps both clients so every call (including createResource) is passed to onExchange.
-export function recordClients(
-  config: Config,
-  clients: Clients,
-  authValue: string | undefined,
-  onExchange: (exchange: Exchange) => Promise<void>,
-): Clients {
-  const authHeaders: Record<string, string> = config.auth && authValue ? { [config.auth.header]: authValue } : {};
-  return {
+// Wraps every client (roles and login transport included) so each call is passed to onExchange.
+export function recordClients(config: Config, clients: Clients, onExchange: (exchange: Exchange) => Promise<void>): Clients {
+  const base = { ...config.defaultHeaders };
+  const byRole: Record<string, APIRequestContext> = {};
+  for (const role of clients.roles) byRole[role] = recorded(clients.as(role), role, base, onExchange);
+  const noAuthApi = recorded(clients.noAuthApi, null, base, onExchange);
+  clients._box.noAuthApi = noAuthApi;
+  const out: Clients = {
     ...clients,
-    api: recorded(clients.api, { ...config.defaultHeaders, ...authHeaders }, onExchange),
-    noAuthApi: recorded(clients.noAuthApi, { ...config.defaultHeaders }, onExchange),
+    api: config.auth ? byRole[DEFAULT_ROLE] : noAuthApi,
+    noAuthApi,
+    as(role) {
+      const c = byRole[role];
+      if (!c) throw new Error(`ctx.as: unknown auth role "${role}" (roles: ${clients.roles.join(', ') || 'none'})`);
+      return c;
+    },
   };
+  disposables.set(out, disposables.get(clients) ?? []);
+  return out;
 }
 
 // One report attachment per exchange: JSON with the request and the response (body cut to 5 KB).
-// Everything written is redacted (see redact.ts): the auth header, credential-looking headers, and
-// personal or secret-looking values in bodies and errors; config.redaction adds the per-API rules.
-export function formatExchange(config: Config, exchange: Exchange, authValue: string | undefined, counter: RedactionCounter = { replaced: 0 }): { name: string; body: string } {
-  const authHeader = config.auth?.header.toLowerCase();
-  const headers = redactHeaders(
-    Object.fromEntries(Object.entries(exchange.requestHeaders).map(([k, v]) => [k, k.toLowerCase() === authHeader ? REDACTED : v])),
-    counter,
-  );
-  const text = exchange.responseBody;
+// Everything written is redacted twice: the auth rules (sensitive headers and query params for the
+// configured auth type, login credentials and tokens, every secret value seen so far) and the
+// redact.ts rules (credential-looking headers, personal or secret-looking values in bodies, paths
+// and errors; config.redaction adds the per-API rules). The per-request auth headers (login tokens)
+// are not in exchange.requestHeaders, and every secret value is scrubbed from the text anyway.
+export function formatExchange(
+  config: Config,
+  exchange: Exchange,
+  secrets: string[] | string | undefined,
+  counter: RedactionCounter = { replaced: 0 },
+): { name: string; body: string } {
+  const list = typeof secrets === 'string' ? [secrets] : (secrets ?? []);
+  const headers = redactHeaders(redactAuthHeaders(config.auth, exchange.requestHeaders), counter) ?? {};
+  const path = redactText(redactQuery(config.auth, exchange.path), counter);
+  const text = exchange.role === 'login' ? redactLoginResponse(config.auth, exchange.responseBody) : exchange.responseBody;
   let responseBody: unknown = text.length > MAX_BODY_CHARS ? redactText(`${text.slice(0, MAX_BODY_CHARS)}... [truncated, ${text.length} characters]`, counter) : text;
   if (text.length > 0 && text.length <= MAX_BODY_CHARS) {
     try {
@@ -170,35 +272,35 @@ export function formatExchange(config: Config, exchange: Exchange, authValue: st
       responseBody = redactText(text, counter);
     }
   }
+  const requestBody = exchange.role === 'login' ? redactLoginRequest(config.auth, exchange.requestBody) : exchange.requestBody;
   const evidence = {
-    request: { method: exchange.method, path: redactText(exchange.path, counter), headers, body: redactValue(exchange.requestBody, config.redaction, counter, 'request') },
+    request: { method: exchange.method, path, role: exchange.role, headers, body: redactValue(requestBody, config.redaction, counter, 'request') },
     response: exchange.error ? { error: redactText(exchange.error, counter) } : { status: exchange.status, body: responseBody },
   };
-  let body = JSON.stringify(evidence, null, 2);
-  if (authValue) body = body.split(authValue).join(REDACTED);
+  const body = scrubSecrets(JSON.stringify(evidence, null, 2), list);
   const outcome = exchange.error ? 'request failed' : String(exchange.status);
-  return { name: `${exchange.method} ${exchange.path} -> ${outcome}`, body };
+  const who = exchange.role === 'login' ? ' (auth login)' : exchange.role && exchange.role !== DEFAULT_ROLE ? ` (as ${exchange.role})` : '';
+  return { name: scrubSecrets(`${exchange.method} ${path}${who} -> ${outcome}`, list), body };
 }
 
 // Allure labels for one test: epic = API name, feature = endpoint id (first word of the describe
-// title), story = type tag, severity = critical for auth and invalid-input tests.
+// title), story = type tag, severity = critical for auth, authz and invalid-input tests.
 export function reportLabels(apiName: string, titlePath: string[], file: string): { name: string; value: string }[] {
   const title = titlePath[titlePath.length - 1] ?? '';
   const describe = titlePath.length > 2 ? titlePath[titlePath.length - 2] : undefined;
   const feature = describe?.split(' ')[0] || (file.split(/[\\/]/).pop() ?? file).replace(/\.spec\.ts$/, '');
-  const type = title.match(/^\[(happy|schema|invalid-input|auth)\]/)?.[1];
+  const type = title.match(/^\[(happy|schema|invalid-input|auth|authz)\]/)?.[1];
   const labels = [
     { name: 'epic', value: apiName },
     { name: 'feature', value: feature },
-    { name: 'severity', value: type === 'auth' || type === 'invalid-input' ? 'critical' : 'normal' },
+    { name: 'severity', value: type === 'auth' || type === 'authz' || type === 'invalid-input' ? 'critical' : 'normal' },
   ];
   if (type) labels.push({ name: 'story', value: type });
   return labels;
 }
 
 export async function disposeClients(clients: Clients): Promise<void> {
-  await clients.api.dispose();
-  await clients.noAuthApi.dispose();
+  for (const c of disposables.get(clients) ?? []) await c.dispose();
 }
 
 export { resolvePath };
@@ -234,7 +336,7 @@ export async function createResource(
   const response = await client.fetch(path, { method: endpoint.method, data: endpoint.body, params: endpoint.query, headers: endpoint.headers });
   const text = await response.text();
   if (!response.ok()) {
-    throw new Error(`createResource(${endpointId}) failed: status ${response.status()}, body: ${text}`);
+    throw new Error(`createResource(${endpointId}) failed: status ${response.status()}, body: ${scrubSecrets(text, clients.secrets())}`);
   }
   let id: unknown;
   try {
@@ -243,7 +345,7 @@ export async function createResource(
     id = undefined;
   }
   if (id === undefined || id === null || id === '') {
-    throw new Error(`createResource(${endpointId}) returned no "${field}": status ${response.status()}, body: ${text}`);
+    throw new Error(`createResource(${endpointId}) returned no "${field}": status ${response.status()}, body: ${scrubSecrets(text, clients.secrets())}`);
   }
   clients.created.push({ endpointId, id: String(id), params: own });
   return String(id);

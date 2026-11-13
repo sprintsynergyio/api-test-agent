@@ -104,7 +104,8 @@ export function fromAnswer(answer: TextAnswer, original: string, removed: string
     }
   }
 
-  const authHeader = answer.auth?.header && !answer.auth.header.includes(REMOVED) ? answer.auth.header : 'Authorization';
+  const answered = answer.auth && answer.auth.type === 'header' ? answer.auth.header : undefined;
+  const authHeader = answered && !answered.includes(REMOVED) ? answered : 'Authorization';
   // Credential headers never come from Claude's defaultHeaders: auth is set from requiresAuth.
   const headers = Object.entries(answer.defaultHeaders ?? {})
     .filter(([name]) => !/^(accept|content-type)$/i.test(name) && !isCredentialHeader(name))

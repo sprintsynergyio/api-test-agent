@@ -43,7 +43,8 @@ export type ExportFinding = { endpointId: string; testTitle: string; expectedSta
 export type ExportOptions = {
   config: Config;
   inputFile: string;
-  authValue: string | undefined;
+  // Every credential value and token seen in the run; none may appear in the exported files.
+  secrets: string[];
   endpoints: ExportEndpoint[];
   findings: ExportFinding[];
 };

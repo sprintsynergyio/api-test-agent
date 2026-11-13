@@ -92,7 +92,7 @@ export function importPostman(content: string): ImportResult {
       const params = Object.fromEntries(Object.entries(authParams(auth)).map(([k, v]) => [k, resolve(v)]));
       for (const [k, v] of Object.entries(params)) if (/token|secret|password|^value$/i.test(k) && v) secrets.push(v);
       if (auth.type === 'apikey') credentials.push({ name: params.key || 'X-API-Key', where: params.in === 'query' ? 'query' : 'header' });
-      else credentials.push({ name: 'Authorization', where: 'header' });
+      else credentials.push({ name: 'Authorization', where: 'header', scheme: auth.type === 'bearer' ? 'bearer' : auth.type === 'oauth2' ? 'oauth2' : undefined });
     }
 
     let body: RawBody | undefined;

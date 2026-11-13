@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 // Static gate for a generated spec. No Claude call. Returns every reason, not just the first.
 
-const TYPES = ['happy', 'schema', 'invalid-input', 'auth'] as const;
+const TYPES = ['happy', 'schema', 'invalid-input', 'auth', 'authz'] as const;
 type CaseType = (typeof TYPES)[number];
 const TAGS = TYPES.map((t) => `[${t}]`);
 // Generated specs live in generated/, one level below the root. tsc resolves imports relative
@@ -143,6 +143,29 @@ function checkTypeRules(type: CaseType, title: string, body: string, code: strin
     }
     if (!/\bctx\s*\.\s*noAuthApi\b/.test(body)) {
       reasons.push(`[${type}] test "${title}": does not send its request with ctx.noAuthApi`);
+    }
+  }
+
+  if (type === 'authz') {
+    // Another role tries the request; only a rejection is a pass. 404 is allowed: many APIs hide
+    // resources the caller may not see.
+    const isAuthzStatus = (a: StatusAssertion) =>
+      (a.kind === 'oneOf' && a.codes.length > 0 && a.codes.every((c) => c === 403 || c === 404)) ||
+      (a.kind === 'exact' && (a.code === 403 || a.code === 404));
+    for (const { call, a } of found) {
+      if (!isAuthzStatus(a)) bad(call, 'status assertion must be expect([403, 404]).toContain(response.status())');
+    }
+    if (!found.some(({ a }) => isAuthzStatus(a))) {
+      reasons.push(`[${type}] test "${title}": must assert expect([403, 404]).toContain(response.status())`);
+    }
+    if (!/\bctx\s*\.\s*as\s*\(\s*['"][^'"]+['"]\s*\)/.test(body)) {
+      reasons.push(`[${type}] test "${title}": does not send its request with ctx.as('<role>')`);
+    }
+    if (/\bctx\s*\.\s*api\b/.test(body) || /\{[^}]*\bapi\b[^}]*\}\s*=\s*ctx\b/.test(body) || /\bctx\s*:\s*\{[^}]*\bapi\b/.test(body)) {
+      reasons.push(`[${type}] test "${title}": uses ctx.api, the default role; authz tests send the request under test with ctx.as('<role>') (resources come from ctx.createResource)`);
+    }
+    if (/\bctx\s*\.\s*noAuthApi\b/.test(body)) {
+      reasons.push(`[${type}] test "${title}": uses ctx.noAuthApi; that is an [auth] test, authz tests use ctx.as('<role>')`);
     }
   }
 }

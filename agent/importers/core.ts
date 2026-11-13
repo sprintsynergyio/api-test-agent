@@ -12,7 +12,9 @@ export type Skipped = { item: string; reason: string };
 export type ImportResult = { input: Config; skipped: Skipped[]; warnings: string[] };
 
 // declared: the source says auth is needed (OpenAPI security, a ticket text) but held no value.
-export type Credential = { name: string; where: 'header' | 'query'; value?: string; declared?: boolean };
+// where: header, query (an API key parameter) or cookie (one named cookie; a whole Cookie header
+// stays a header credential). scheme: a hint from the source (bearer, oauth2, ...) for the warnings.
+export type Credential = { name: string; where: 'header' | 'query' | 'cookie'; value?: string; declared?: boolean; scheme?: string };
 export type RawBody = { text: string; contentType?: string } | { json: unknown } | { unsupported: string };
 
 export type RawRequest = {
@@ -325,7 +327,7 @@ const canonical = (n: string) => ({ authorization: 'Authorization', cookie: 'Coo
 
 // "Authorization header", "query parameter access_token": names only, never values.
 function credentialLabel(c: Credential): string {
-  return c.where === 'query' ? `query parameter ${c.name}` : `${canonical(c.name)} header`;
+  return c.where === 'query' ? `query parameter ${c.name}` : c.where === 'cookie' ? `cookie ${c.name}` : `${canonical(c.name)} header`;
 }
 
 function countLabel(n: number, word: string): string {
@@ -471,36 +473,52 @@ export function buildInput(requests: RawRequest[], opts: BuildOptions = {}): Imp
     );
   }
 
-  // Auth: one header for the whole input. The most common credential name wins.
+  // Auth: one credential for the whole input. The most common credential name wins. Its place
+  // (header, query parameter or cookie) becomes the auth type; a header keeps the original
+  // { header, valueEnv } shape (type header is the default), the others carry their type.
   let auth: Config['auth'];
   const authUsers = onBase.filter((k) => k.requiresAuth);
   if (authUsers.length) {
-    const names = new Map<string, { name: string; where: Credential['where']; count: number }>();
+    const names = new Map<string, { name: string; where: Credential['where']; count: number; schemes: Set<string> }>();
     for (const k of authUsers) {
       const seen = new Set<string>();
       for (const c of k.credentials) {
         const key = `${c.where}:${c.name.toLowerCase()}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        const entry = names.get(key) ?? { name: c.name, where: c.where, count: 0 };
+        const entry = names.get(key) ?? { name: c.name, where: c.where, count: 0, schemes: new Set<string>() };
         entry.count++;
+        if (c.scheme) entry.schemes.add(c.scheme);
         names.set(key, entry);
       }
     }
     const ranked = [...names.values()].sort((a, b) => b.count - a.count);
     const chosen = ranked[0];
-    const header = chosen ? canonical(chosen.name) : opts.authHeader ?? 'Authorization';
-    auth = { header, valueEnv: VALUE_ENV };
+    let kept: string;
+    if (chosen?.where === 'query') {
+      auth = { type: 'query', param: chosen.name, valueEnv: VALUE_ENV };
+      kept = `query parameter ${chosen.name}`;
+    } else if (chosen?.where === 'cookie') {
+      auth = { type: 'cookie', name: chosen.name, valueEnv: VALUE_ENV };
+      kept = `cookie ${chosen.name}`;
+    } else {
+      const header = chosen ? canonical(chosen.name) : opts.authHeader ?? 'Authorization';
+      // The original shape: no "type" field, which means header (agent/auth.ts normalizeAuth).
+      auth = { header, valueEnv: VALUE_ENV } as unknown as Config['auth'];
+      kept = `${header} header`;
+    }
     const removed = authUsers.some((k) => k.credentials.some((c) => !c.declared));
     warnings.push(removed ? AUTH_REMOVED : AUTH_NEEDED);
     if (ranked.length > 1) {
-      const list = ranked.map((e) => (e.where === 'query' ? `query parameter ${e.name}` : canonical(e.name))).join(', ');
+      const list = ranked.map((e) => (e.where === 'query' ? `query parameter ${e.name}` : e.where === 'cookie' ? `cookie ${e.name}` : canonical(e.name))).join(', ');
       warnings.push(
-        `Credentials used more than one name (${list}). Kept ${header}, used by ${chosen.count} of ${authUsers.length} requests that need auth; requests that used another name may fail their auth check.`,
+        `Credentials used more than one name (${list}). Kept the ${kept}, used by ${chosen.count} of ${authUsers.length} requests that need auth; requests that used another name may fail their auth check.`,
       );
     }
-    if (chosen?.where === 'query') {
-      warnings.push(`The credential was sent as the query parameter ${chosen.name}, but the agent sends auth as a header named ${header}. Check that the API accepts it as a header before running.`);
+    const schemes = chosen ? [...chosen.schemes] : [];
+    if (schemes.includes('bearer')) warnings.push(`The ${kept} uses a bearer token: set ${VALUE_ENV} to the whole value including the "Bearer " prefix.`);
+    if (schemes.some((sch) => sch === 'oauth2' || sch === 'openIdConnect')) {
+      warnings.push(`The API uses ${schemes.filter((sch) => sch === 'oauth2' || sch === 'openIdConnect').join(' and ')}: the import keeps a fixed ${kept}. To let the agent log in itself, change auth to the login type by hand (see CLAUDE.md, Auth).`);
     }
   }
   if (dropped.size) warnings.push(`${CREDENTIALS_DROPPED} ${[...dropped].sort().join(', ')}.`);
@@ -539,5 +557,12 @@ export function buildInput(requests: RawRequest[], opts: BuildOptions = {}): Imp
   if (!parsed.success) throw new ImportError(`The imported input is invalid: ${zodProblems(parsed.error).join('; ')}`);
   const problems = configProblems(parsed.data);
   if (problems.length) throw new ImportError(`The imported input is invalid: ${problems.join('; ')}`);
-  return { input: parsed.data, skipped: cleanSkipped, warnings: cleanWarnings };
+  // A header auth keeps the original { header, valueEnv } shape in the output (type header is the
+  // default, agent/auth.ts normalizeAuth); query and cookie auth carry their type.
+  const out = parsed.data as Config;
+  if (out.auth && out.auth.type === 'header') {
+    const { type: _type, ...rest } = out.auth;
+    out.auth = rest as unknown as Config['auth'];
+  }
+  return { input: out, skipped: cleanSkipped, warnings: cleanWarnings };
 }

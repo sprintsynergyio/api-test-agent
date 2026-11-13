@@ -1,3 +1,4 @@
+import { normalizeAuth } from './auth';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -25,7 +26,8 @@ async function check(name: string, fn: () => Promise<void> | void) {
   }
 }
 
-const AUTH = 'Bearer hackathon-demo-token';
+// The auth environment createClients reads (only the variable the input's auth section names).
+const AUTH = { LOCAL_API_AUTH_VALUE: 'Bearer hackathon-demo-token' };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function freePort(): Promise<number> {
@@ -60,7 +62,7 @@ async function startApi(env: Record<string, string> = {}): Promise<Api> {
 
 function shopConfig(port: number, extra: Partial<Config> = {}): Config {
   const base = JSON.parse(readFileSync('input/local-shop.json', 'utf8')) as Config;
-  return { ...base, baseUrl: `http://localhost:${port}`, selection: null, ...extra };
+  return { ...base, baseUrl: `http://localhost:${port}`, selection: null, auth: normalizeAuth(base.auth), ...extra };
 }
 
 async function get(port: number, path: string): Promise<number> {
@@ -110,7 +112,8 @@ await check('createResource then cleanupResources: 3 created, 3 DELETEs in the A
 await check('nested: the review is deleted before its product, both through the guard', async () => {
   const api = await startApi();
   try {
-    const nested = { ...JSON.parse(readFileSync('input/local-shop-nested.json', 'utf8')), selection: null } as Config;
+    const raw = JSON.parse(readFileSync('input/local-shop-nested.json', 'utf8')) as Config;
+    const nested = { ...raw, selection: null, auth: normalizeAuth(raw.auth) } as Config;
     nested.baseUrl = `http://localhost:${api.port}`;
     nested.endpoints.push({ id: 'delete-product', method: 'DELETE', path: '/products/{id}', requiresAuth: true });
     const clients = await createClients(nested, AUTH);
@@ -230,7 +233,7 @@ await check('Playwright run: the spec creates 3 products, the fixture deletes th
     mkdirSync('generated', { recursive: true });
     writeFileSync('generated/get-product.spec.ts', PW_SPEC);
     const res = spawnSync('node_modules/.bin/playwright', ['test', '-c', 'playwright.generated.config.ts'], {
-      env: { ...process.env, INPUT_FILE: inputFile, LOCAL_API_AUTH_VALUE: AUTH },
+      env: { ...process.env, INPUT_FILE: inputFile, ...AUTH },
       encoding: 'utf8',
       timeout: 120_000,
     });
@@ -261,7 +264,7 @@ await check('Mocha run: the spec creates 3 products, the root hook deletes them,
     mkdirSync('generated', { recursive: true });
     writeFileSync('generated/get-product.spec.ts', MOCHA_SPEC);
     const res = spawnSync('node_modules/.bin/mocha', ['--config', '.mocharc.pactum.json', 'generated/**/*.spec.ts'], {
-      env: { ...process.env, INPUT_FILE: inputFile, LOCAL_API_AUTH_VALUE: AUTH },
+      env: { ...process.env, INPUT_FILE: inputFile, ...AUTH },
       encoding: 'utf8',
       timeout: 120_000,
     });
