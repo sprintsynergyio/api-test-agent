@@ -274,3 +274,28 @@ answer 403 and the page hides the card.
 - The page shows the card when `configured` is false and `editable` is true, and a one-line status with a
   "Change" link otherwise.
 
+
+## 11. Scope, checkpoint and resume (additive)
+
+On every run the summary also has:
+
+- "scope": { "mode": "fresh" | "resume" | "only-new", "endpoints": [ "<id>", ... ] | null,
+  "reused": { "probes": <count>, "plans": <count>, "specs": <count> }, "resumable": <boolean>,
+  "fakeModel": <boolean>, "concurrency": <count>, "testWorkers": <count> }.
+  mode says how the run was scoped: "fresh" (the default, everything regenerated), "resume" (the last run
+  of the same input continued from out/checkpoint.json) or "only-new" (only endpoints whose definition
+  changed were regenerated). endpoints is the --endpoints list when one was given, else null; the
+  summary's "endpoints" array then holds only those. reused counts the probes, plans and specs taken from
+  the checkpoint. resumable is true only on a run the budget stopped (status "stopped-budget", or
+  "no-tests" when it stopped before the first spec) whose checkpoint can be continued with --resume; the
+  console prints "stopped at budget: run again with --resume to continue" right after "STOPPED: budget
+  reached" and again in the summary block. fakeModel is true only for FAKE_MODEL=1 test runs (never in
+  hosted mode); such a run proves the pipeline, not the model, and the UI may label it.
+- Per-endpoint console lines keep their shape. An endpoint taken from the checkpoint prints
+  "<id> OK <status> (from checkpoint)", "<id> OK <n> cases (from checkpoint)" or
+  "<id> OK written generated/<id>.spec.ts (from checkpoint)" in the matching phase.
+- Right after the model line the agent may print "resume: N of M endpoints already done (reusing P probes,
+  Q plans, N specs)" (or "only-new: ..."), "endpoints: a, b" for a restricted run, and in the summary block
+  "Scope: <mode>[, endpoints a, b][, reused P probes, Q plans, N specs]".
+
+out/checkpoint.json itself (agent/checkpoint.ts) is not read by the UI.

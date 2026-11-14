@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fakeModelAnswer } from './fake-model';
 import { redactText, type RedactionCounter } from './redact';
 
 // Calls the model one of three ways, chosen by the environment (see modelChoice):
@@ -15,7 +16,9 @@ import { redactText, type RedactionCounter } from './redact';
 // line (the label stays "[claude]" because the UI reads it, see ui/CONTRACT.md).
 
 const TIMEOUT_MS = 180_000;
-const DEFAULT_BUDGET = 30;
+// Raised from 30 in the scale work: about 2 calls per endpoint, so 60 covers roughly 25 endpoints.
+// --budget N or MAX_CLAUDE_CALLS overrides it per run.
+const DEFAULT_BUDGET = 60;
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
 const ANTHROPIC_DEFAULT_MODEL = 'claude-sonnet-5-5';
@@ -80,9 +83,17 @@ export function providerProblem(): string | null {
   return null;
 }
 
+// FAKE_MODEL=1 answers every prompt locally (agent/fake-model.ts). Test mode only: refused when hosted.
+export function fakeModelEnabled(): boolean {
+  return process.env.FAKE_MODEL === '1';
+}
+
 export function hostedWithoutApiKeyProblem(): string | null {
   const p = providerProblem();
   if (p) return p;
+  if (process.env.HOSTED === '1' && fakeModelEnabled()) {
+    return 'FAKE_MODEL=1 is a test mode and is refused in hosted mode: a shared server never reports fake results.';
+  }
   if (process.env.HOSTED === '1' && !usingApiKey()) {
     return 'HOSTED=1 requires ANTHROPIC_API_KEY (or LLM_PROVIDER=openai with OPENAI_API_KEY): the hosted agent never uses a personal Claude login.';
   }
@@ -163,6 +174,13 @@ export const promptRedaction: RedactionCounter = { replaced: 0 };
 async function runClaude(stepName: string, endpointId: string, system: string, user: string, counter: string): Promise<string> {
   const safeSystem = redactText(system, promptRedaction);
   const safeUser = redactText(user, promptRedaction);
+  if (fakeModelEnabled()) {
+    if (process.env.HOSTED === '1') throw new Error('FAKE_MODEL=1 is refused in hosted mode');
+    const started = Date.now();
+    const text = await fakeModelAnswer(stepName, safeSystem, safeUser);
+    console.log(`[claude] ${stepName} ${endpointId} ${((Date.now() - started) / 1000).toFixed(1)}s fake model (${counter})`);
+    return text;
+  }
   const choice = modelChoice();
   if (choice.provider === 'openai') return runOpenAiApi(stepName, endpointId, safeSystem, safeUser, counter, choice.model);
   if (choice.via === 'api') return runClaudeApi(stepName, endpointId, safeSystem, safeUser, counter, choice.model);

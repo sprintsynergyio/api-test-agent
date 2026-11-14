@@ -178,6 +178,8 @@ Pulled forward from Phases 4 and 5 because the first real client (multi-brand, m
 
 **Goal:** the generated suite lives in the client's pipeline and stays current.
 
+**Scale part built (Phase 9 PR):** `out/checkpoint.json` after every stage, `--resume`, `--only-new` (per-endpoint hash), `--endpoints`, `--budget` (default 60), `--concurrency`, `--test-workers` (Playwright; Pactum stays serial), the UI import cap lifted, and `FAKE_MODEL=1` so the pipeline is tested offline (`npm run test:checkpoint`). Still open here: the "never overwrite a human-edited test" marker, CI files in exports, the Jira draft.
+
 **Deliverables**
 - Exported frameworks include CI files for GitHub Actions and Azure DevOps.
 - Update mode: given a new spec version, generate tests only for new or changed endpoints, and never overwrite tests a human has edited (generated files carry a marker; edited files lose it).

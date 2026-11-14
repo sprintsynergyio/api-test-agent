@@ -52,7 +52,8 @@
     "test:settings": "node ui/settings.test.mjs",
     "test:claude-api": "tsx agent/claude-api.test.ts",
     "ui:hash": "node ui/hash-password.mjs",
-    "check:contract": "tsx agent/check-contract.ts"
+    "check:contract": "tsx agent/check-contract.ts",
+    "test:checkpoint": "tsx agent/checkpoint.test.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",

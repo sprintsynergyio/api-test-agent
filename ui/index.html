@@ -1642,7 +1642,8 @@
       const res = await fetch("/api/import", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type: source, content }) });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) { impMessage("bad", body.error || `Import failed (${res.status})`); return; }
-      imp = { ...body, checked: body.input.endpoints.map((_, i) => i < 12) };
+      // Every imported endpoint is selected; the budget warning below says what a big run costs.
+      imp = { ...body, checked: body.input.endpoints.map(() => true) };
       $("impName").value = body.input.name || "";
       $("impBase").value = body.input.baseUrl || "";
       $("impToken").value = "";
@@ -1683,8 +1684,8 @@
     const n = imp.checked.filter(Boolean).length;
     const found = imp.input.endpoints.length;
     $("impCount").textContent = `${found} endpoint${found === 1 ? "" : "s"} found, ${n} selected`;
-    $("impBudget").classList.toggle("hidden", n <= 12);
-    $("impBudget").textContent = `${n} endpoints selected. Each endpoint costs about 2 Claude calls of the 30-call budget, so this needs about ${n * 2} calls and the run may stop early. 12 or fewer is safe.`;
+    $("impBudget").classList.toggle("hidden", n <= 50);
+    $("impBudget").textContent = `${n} endpoints selected. Each endpoint costs about 2 model calls, so this run needs about ${n * 2} calls; the default budget is 60 (MAX_CLAUDE_CALLS in .env). A run that stops at the budget can be continued from the terminal with npm run agent -- <input> --resume.`;
     $("impBaseHint").classList.toggle("hidden", !!$("impBase").value.trim());
     $("impUse").disabled = running || n === 0;
   }
