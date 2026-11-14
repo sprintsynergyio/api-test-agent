@@ -23,7 +23,7 @@ Give the agent a base URL and a list of API endpoints, and it writes an API test
 ## Requirements
 
 - Node 20 or newer.
-- A Claude or OpenAI API key, or a Claude Code login, if you want the agent to generate tests. Typechecking, the offline test suites and the hand-written template tests do not need a key.
+- A Claude or OpenAI API key, or a Claude Code login, if you want the agent to generate tests. Typechecking, the offline test suites and the hand-written template tests do not need a key. See [Model providers](#model-providers) for which one is used when several are set and what each costs.
 
 ## Setup
 
@@ -136,11 +136,15 @@ Then run `npm run agent path/to/my-api.json`.
 | `ANTHROPIC_API_KEY=sk-ant-...` | Claude through the Messages API, billed to that key; `LLM_MODEL` picks the model (default `claude-sonnet-5-5`) |
 | `LLM_PROVIDER=openai` and `OPENAI_API_KEY=sk-...` | OpenAI through Chat Completions; `LLM_MODEL` picks the model (default `gpt-6.1-sol`) |
 
+Which one wins when several are set: `LLM_PROVIDER=openai` always selects OpenAI (and requires `OPENAI_API_KEY`). Otherwise an `ANTHROPIC_API_KEY` beats the Claude Code login, and the login is used only when no key is set. The agent prints `model: <provider> <model> (API key|Claude Code login)` at the start of every run, so the choice is never silent.
+
+Cost: a run on a 5-endpoint API makes about 10 model calls (two per endpoint, plus one retry each when the static gate rejects a spec), roughly 70 thousand input and 10 thousand output tokens. With a Claude or OpenAI key that is a few cents per run; with the Claude Code login it counts against your plan. `MAX_CLAUDE_CALLS` caps the calls per run.
+
 The UI's setup card writes these lines for you. The prompts were tuned against Claude; use `npm run eval -- --provider openai` to see the detection table for OpenAI before standardising on it.
 
 ## Test rules
 
-Every generated spec must pass a static gate before it is kept. If it fails, generation is retried once with the reasons. If it fails again, the spec is not written.
+Every generated spec must pass the static gate (`agent/validate.ts`) before it is kept. The gate runs inside the GENERATING phase, right after the model returns a spec and before anything is written to `generated/`: it checks the rules below and runs a TypeScript typecheck on the candidate. If it fails, generation is retried once with the reasons. If it fails again, the spec is not written and the console shows `FAILED static gate: <reasons>` for that endpoint. The same name is used in the code, the console output and this document.
 
 - No hardcoded hosts: paths are relative, and the base URL comes from the fixture.
 - No `process.env` in tests: everything comes from the `ctx` fixture.
@@ -153,9 +157,13 @@ A failed test is a **suspected API finding** when the API returned a 5xx, or ret
 
 ## Results so far
 
-**Local shop API** (`input/local-shop.json`, two planted bugs):
-- Bugs on: 5 specs, 25 tests. Exactly the 2 planted bugs found (price sent as text returns 500; DELETE without a token returns 204). Every other test passes.
-- Bugs off (`npm run api:local:fixed`): 0 findings, 0 failures.
+All numbers below come from runs on a developer Mac with Claude (`claude-sonnet-5-5`), framework Playwright, between 9 and 13 November 2026. They are single runs, not averages; the eval harness (`npm run eval`) is the tool for repeated runs with detection, false alarm and flakiness rates per provider.
+
+**Local shop API** (`input/local-shop.json`, two planted bugs, `npm run api:local`, 13 Nov 2026):
+- Bugs on: 5 endpoints, 25 tests, 23 passed, 2 failed. Exactly the 2 planted bugs found (price sent as text returns 500; DELETE without a token returns 204). Every other test passes. 10 model calls, 79 seconds.
+- Bugs off (`npm run api:local:fixed`, 9 Nov 2026): 0 findings, 0 failures.
+- Login and roles (`input/local-shop-login.json` with the planted bug `viewer-can-delete` on, 13 Nov 2026): 5 endpoints, 27 tests, 3 findings: the two above plus `[authz]` viewer can delete (expected 403 or 404, got 204). 59 values redacted before the model, 15 records created and 15 deleted.
+- Pactum on the same API (9 Nov 2026): 27 tests, the same 2 findings.
 - The exported framework, run on its own outside this repo, gives the same results.
 
 **Restful Booker** (`input/demo-small.json`, public API): 3 real bugs found in POST /booking, confirmed with direct requests:
