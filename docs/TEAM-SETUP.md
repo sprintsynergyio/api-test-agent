@@ -75,20 +75,27 @@ Run again: 0 findings.
 
 ## Testing your own API
 
-Click the **Custom API** tab.
+Click the **Build** tab.
 
 1. **Name**: anything, for example `orders-staging`.
-2. **Base URL**: the API's root, for example `https://api-staging.example.com`. Do not put a path or query string here.
-3. **Auth header** (optional): the header name, usually `Authorization`, and the value, for example `Bearer eyJ...`. The value is used for this one run only; it is never saved to disk, never shown in reports and never sent to the model.
-4. **Endpoints**: add each one with method, path and, for POST and PUT, a sample JSON body. Use `{id}` in a path for an id, and pick the endpoint that creates that record as its setup (the agent creates a fresh record before each test that needs one, and deletes it afterwards).
+2. **Base URL**: the API's root, for example `https://api-staging.example.com`. Do not put a path or query string here. A badge next to it tells you whether the agent sees a local, non-production or production host.
+3. **Auth**: pick how the API is protected.
+   - **Header**: the header name, usually `Authorization`, and the value, for example `Bearer eyJ...`. The value is used for this one run only; it is never saved to disk, never shown in reports and never sent to the model.
+   - **Query parameter** or **Cookie**: the parameter or cookie name, and the value for this run only, the same way.
+   - **Login call**: the agent calls your login endpoint first and uses the token it returns. Fill in the method and path, the body fields and which `.env` variables hold their values (for example `username=API_USER, password=API_PASSWORD`), where the token sits in the response (`data.token`) and how to send it (a header with a prefix, a cookie or a query parameter). The credentials themselves go in `.env`; the page lists the variable names and has a **Copy .env snippet** button.
+   - **Roles** (optional): add a second user with fewer rights, for example `viewer`, and the `.env` variable names for its key or credentials. The agent then writes permission tests: that user must get 403 or 404 on the main user's data.
+4. **Endpoints**: add each one with method, path and, for POST and PUT, a sample JSON body. The list icon opens query parameters, extra headers and setup. Use `{id}` in a path for an id, and pick the endpoint that creates that record as its setup (the agent creates a fresh record before each test that needs one, and deletes it afterwards).
 
-   Or pick a **Source** and import: an OpenAPI or Swagger file, a Postman collection, cURL commands, a browser HAR capture, or ticket text. Credentials in the import are dropped automatically and the import tells you what it removed.
+   Or click the **Import** tab, pick a **Source** and import: an OpenAPI or Swagger file, a Postman collection, cURL commands, a browser HAR capture, or ticket text. Credentials in the import are dropped automatically and the import tells you what it removed.
 
-5. Click **Generate tests**.
+5. **Run options**: the test framework (**Playwright** or **Pactum**), and redaction. Standard redaction replaces emails, phone numbers, card numbers, tokens and IP addresses before anything reaches the model; **Strict** sends only the shape of the response data. Add field paths such as `customer.name, address.*` to hide more.
+6. Click **Generate tests**.
 
-**Save as input file** stores the configuration (without any auth value) under `input/<name>.json`, so next time it is in the Saved API list. Put your real auth value in `.env` as the variable the file names, for example `CUSTOM_API_AUTH=Bearer ...`.
+**Save as input file** stores the configuration (without any auth value) under `input/<name>.json`, so next time it is in the Saved list. Put your real auth values in `.env` as the variables the file names, for example `CUSTOM_API_AUTH=Bearer ...`. The Saved tab shows which variables an input reads and highlights the ones your `.env` does not have yet.
 
-Login-based auth (a call to `/auth/login` that returns a token), API keys in the query string, cookies and a second user role for permission tests are supported from the terminal: see the Auth section of `CLAUDE.md` and `input/local-shop-login.json` for the shape.
+**Several environments, brands or regions.** An input file can carry a `profile` instead of one base URL (see `input/example-profile.json`). The Saved tab then shows one dropdown per dimension; the resolved base URL and its host badge update as you pick, and the run uses that selection.
+
+**After a run.** Each finding card has **Show request and response** (what was sent, what came back, already redacted), **Copy as Jira ticket** and **Copy as Markdown**. Click an endpoint row to see its tests. **Recent runs** lists the last 20 runs; **Load** brings one back.
 
 ## The safety guard, in plain words
 

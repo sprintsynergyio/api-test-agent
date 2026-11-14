@@ -57,12 +57,14 @@ npm run api:local
 npm run ui            # then open http://localhost:3000
 ```
 
-- **Saved API** tab: pick an input file from `input/` (or edit its JSON) and click **Generate tests**. The log streams live, then the page shows the findings, the generated code, **Open Playwright report**, and **Download framework (.zip)**.
-- **Custom API** tab: enter a name, base URL, optional auth header, and endpoints in a form. The auth value is passed to that one run through an environment variable and is never written to disk. **Save as input file** stores the config (without any auth value) in `input/<name>.json`. Or pick another **Source** to import the endpoints (see Importers).
+- **Saved** tab: pick an input file from `input/` (or edit its JSON) and click **Generate tests**. Inputs with a profile get one dropdown per dimension; the page shows which `.env` variables the auth section reads. The log streams live, then the page shows the findings with their request and response evidence (**Copy as Jira ticket**, **Copy as Markdown**), the generated code, **Open Playwright report**, and **Download framework (.zip)**. **Recent runs** keeps the last 20.
+- **Build** tab: enter a name, base URL, auth (header, query parameter, cookie or a login call, plus optional roles for permission tests) and endpoints in a form. A header, query or cookie value typed here is passed to that one run through an environment variable and is never written to disk; login credentials and role values are read from `.env`. **Save as input file** stores the config (without any auth value) in `input/<name>.json`.
+- **Import** tab: pick a **Source** to import the endpoints (see Importers).
+- **Run options**: the framework (Playwright or Pactum) and redaction (standard or strict, plus extra fields to hide).
 
 ## Importers
 
-Instead of writing the input file by hand, import the endpoints from something you already have. In the UI: **Custom API** tab, **Source**. From the terminal (prints `{ input, skipped, warnings }` as JSON; save `input` as an input file):
+Instead of writing the input file by hand, import the endpoints from something you already have. In the UI: **Import** tab, **Source**. From the terminal (prints `{ input, skipped, warnings }` as JSON; save `input` as an input file):
 
 ```
 npm run -s import postman < collection.json
@@ -103,7 +105,7 @@ It never imports from this repo. Copy it anywhere, `npm install`, fill in `.env`
 
 ## Point it at another API
 
-Write an input file (or use the Custom API tab):
+Write an input file (or use the Build tab in the UI):
 
 ```json
 {

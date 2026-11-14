@@ -6,181 +6,210 @@
 <title>API Test Agent</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Crect width=%2232%22 height=%2232%22 rx=%228%22 fill=%22%234f46e5%22/%3E%3Cpath d=%22M12 6h8M13 6v7l-6 11h18l-6-11V6%22 stroke=%22white%22 stroke-width=%222.5%22 fill=%22none%22 stroke-linejoin=%22round%22/%3E%3C/svg%3E">
 <style>
+  /* One accent colour, a small type scale (12, 13, 14, 16, 20, 28), 8px spacing, quiet cards. */
   :root {
-    --bg: #f4f5f9;
+    --bg: #f5f6f9;
     --card: #ffffff;
-    --ink: #0f172a;
-    --ink-2: #334155;
-    --muted: #64748b;
-    --line: #e2e8f0;
+    --ink: #111827;
+    --ink-2: #374151;
+    --muted: #6b7280;
+    --line: #e5e7eb;
+    --line-2: #d1d5db;
     --accent: #4f46e5;
+    --accent-ink: #3730a3;
     --accent-soft: #eef2ff;
-    --ok: #059669;
+    --accent-line: #c7d2fe;
+    --ok: #047857;
     --ok-soft: #ecfdf5;
-    --bad: #dc2626;
+    --ok-line: #a7f3d0;
+    --bad: #b91c1c;
     --bad-soft: #fef2f2;
+    --bad-line: #fecaca;
     --warn: #b45309;
     --warn-soft: #fffbeb;
-    --term: #0b1020;
+    --warn-line: #fde68a;
+    --term: #0f172a;
     --term-ink: #cbd5e1;
-    --radius: 14px;
-    --shadow: 0 1px 2px rgba(15, 23, 42, .04), 0 4px 16px rgba(15, 23, 42, .06);
+    --r: 12px;
+    --r-sm: 8px;
+    --shadow: 0 1px 2px rgba(17, 24, 39, .04), 0 2px 8px rgba(17, 24, 39, .04);
     --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; }
-  body {
-    background: var(--bg);
-    color: var(--ink);
-    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
-    -webkit-font-smoothing: antialiased;
-  }
+  body { background: var(--bg); color: var(--ink); font: 14px/1.5 var(--sans); -webkit-font-smoothing: antialiased; }
   button { font: inherit; cursor: pointer; }
-  .wrap { max-width: 1440px; margin: 0 auto; padding: 0 28px 48px; }
+  button:disabled { cursor: not-allowed; }
+  a { color: var(--accent); }
+  code { font: 12.5px var(--mono); background: #f3f4f6; padding: 2px 6px; border-radius: 6px; }
+  .hidden { display: none !important; }
+  .wrap { max-width: 1440px; margin: 0 auto; padding: 0 24px 56px; }
 
-  /* Header */
-  header {
-    display: flex; align-items: center; justify-content: space-between; gap: 16px;
-    padding: 22px 0 20px;
+  /* Header: compact, sticky */
+  .top {
+    position: sticky; top: 0; z-index: 20; background: rgba(245, 246, 249, .92); backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--line);
   }
-  .brand { display: flex; align-items: center; gap: 14px; }
-  .logo {
-    width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center;
-    background: linear-gradient(135deg, #4f46e5, #7c3aed); color: #fff;
-    box-shadow: 0 6px 18px rgba(79, 70, 229, .35);
-  }
-  .brand h1 { margin: 0; font-size: 26px; line-height: 1.1; letter-spacing: -.01em; }
-  .brand p { margin: 2px 0 0; color: var(--muted); font-size: 15px; }
-  .status-pill {
-    display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 999px;
-    background: var(--card); border: 1px solid var(--line); font-weight: 600; font-size: 14px; white-space: nowrap;
-  }
-  .dot { width: 9px; height: 9px; border-radius: 50%; background: #94a3b8; }
-  .status-pill.running .dot { background: var(--accent); animation: pulse 1.2s infinite; }
-  .status-pill.done .dot { background: var(--ok); }
-  .status-pill.error .dot { background: var(--bad); }
-  @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(79,70,229,.5); } 50% { box-shadow: 0 0 0 6px rgba(79,70,229,0); } }
+  .top-inner { max-width: 1440px; margin: 0 auto; padding: 0 24px; height: 56px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .logo { width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center; background: var(--accent); color: #fff; }
+  .brand h1 { margin: 0; font-size: 16px; line-height: 1.2; letter-spacing: -.01em; }
+  .brand p { margin: 0; color: var(--muted); font-size: 12px; }
+  .top-right { display: flex; align-items: center; gap: 12px; font-size: 13px; color: var(--muted); }
+  .chip { display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 999px; background: var(--card); border: 1px solid var(--line); font-weight: 600; font-size: 13px; color: var(--ink-2); white-space: nowrap; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #9ca3af; flex: none; }
+  .chip.running .dot { background: var(--accent); animation: pulse 1.2s infinite; }
+  .chip.done .dot { background: var(--ok); }
+  .chip.error .dot { background: var(--bad); }
+  @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(79,70,229,.45); } 50% { box-shadow: 0 0 0 6px rgba(79,70,229,0); } }
+  .link-btn { background: none; border: 0; color: var(--accent); font-weight: 600; font-size: 13px; padding: 0; }
+  .link-btn:hover { text-decoration: underline; }
 
-  /* Layout */
-  .grid { display: grid; grid-template-columns: 430px 1fr; gap: 22px; align-items: start; }
-  .setup { margin-bottom: 22px; border: 1px solid #c7d2fe; box-shadow: 0 8px 30px rgba(79, 70, 229, 0.10); }
-  .setup-inner { display: grid; grid-template-columns: 360px 1fr; gap: 28px; padding: 26px 28px; align-items: start; }
-  @media (max-width: 1050px) { .setup-inner { grid-template-columns: 1fr; } }
-  .setup-step { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #4f46e5; background: #eef2ff; border-radius: 999px; padding: 4px 10px; margin-bottom: 10px; }
-  .setup-text h2 { margin: 0 0 8px; font-size: 20px; }
-  .setup-text .hint { margin: 0; line-height: 1.5; }
-  .setup-fields { display: grid; grid-template-columns: 220px 1fr 220px; gap: 12px; }
-  @media (max-width: 1050px) { .setup-fields { grid-template-columns: 1fr; } }
-  .setup-fields .lbl { display: block; margin-bottom: 6px; }
-  .setup-fields select, .setup-fields .txt { width: 100%; box-sizing: border-box; }
-  .setup-actions { display: flex; align-items: center; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
-  .setup-actions #setupMsg { margin: 0 0 0 6px; }
+  /* Cards and layout */
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); box-shadow: var(--shadow); }
+  .card-h { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 14px 16px 0; }
+  .card-h h2 { margin: 0; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
+  .card-b { padding: 12px 16px 16px; }
+  .grid { display: grid; grid-template-columns: 440px minmax(0, 1fr); gap: 16px; align-items: start; margin-top: 16px; }
+  @media (max-width: 1024px) { .grid { grid-template-columns: 1fr; } }
   .grid.dimmed { opacity: .45; pointer-events: none; filter: grayscale(.2); }
-  @media (max-width: 1050px) { .grid { grid-template-columns: 1fr; } }
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
-  .card-h { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 18px 20px 0; }
-  .card-h h2 { margin: 0; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
-  .card-b { padding: 16px 20px 20px; }
+  .stack { display: grid; gap: 16px; }
+  .muted { color: var(--muted); }
+  .hint { font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+  .ok-msg { color: var(--ok); font-size: 13px; margin-top: 8px; }
+  .bad-msg { color: var(--bad); font-size: 13px; margin-top: 8px; }
+  .err-box { margin-top: 12px; padding: 10px 12px; border-radius: var(--r-sm); background: var(--bad-soft); color: var(--bad); font-size: 13px; border: 1px solid var(--bad-line); }
+  .warn-box { margin-top: 12px; padding: 10px 12px; border-radius: var(--r-sm); background: var(--warn-soft); color: var(--warn); font-size: 13px; border: 1px solid var(--warn-line); }
 
-  /* Input panel */
-  label.lbl { display: block; font-size: 13px; font-weight: 600; color: var(--ink-2); margin-bottom: 6px; }
-  select {
-    width: 100%; font: inherit; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line);
+  /* Form controls */
+  label.lbl { display: block; font-size: 12.5px; font-weight: 600; color: var(--ink-2); margin-bottom: 6px; }
+  select, input.txt, textarea {
+    width: 100%; font: inherit; padding: 9px 11px; border-radius: var(--r-sm); border: 1px solid var(--line-2);
     background: #fff; color: var(--ink);
   }
-  .base-url {
-    margin-top: 14px; padding: 10px 12px; border-radius: 10px; background: var(--accent-soft);
-    font-family: var(--mono); font-size: 14px; color: var(--accent); word-break: break-all;
+  select:focus, input.txt:focus, textarea:focus, select.sm:focus, input.sm:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+  textarea { min-height: 120px; font: 12.5px/1.5 var(--mono); resize: vertical; background: #fbfcfe; }
+  select.sm, input.sm { width: 100%; font: 13px var(--mono); padding: 7px 9px; border-radius: 7px; border: 1px solid var(--line-2); background: #fff; color: var(--ink); }
+  .field { margin-bottom: 12px; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+  .inline { display: flex; align-items: center; gap: 8px; }
+  .inline .txt { flex: 1; }
+  .seg { display: inline-grid; grid-auto-flow: column; gap: 2px; padding: 3px; border-radius: 9px; background: #eef0f4; }
+  .seg button { border: 0; background: transparent; padding: 6px 12px; border-radius: 7px; font-weight: 600; font-size: 13px; color: var(--muted); }
+  .seg button.on { background: #fff; color: var(--ink); box-shadow: 0 1px 2px rgba(17,24,39,.12); }
+  .tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; padding: 3px; border-radius: 9px; background: #eef0f4; margin-bottom: 14px; }
+  .tab { border: 0; background: transparent; padding: 8px 10px; border-radius: 7px; font-weight: 600; font-size: 13px; color: var(--muted); }
+  .tab.on { background: #fff; color: var(--ink); box-shadow: 0 1px 2px rgba(17,24,39,.12); }
+  .check { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--ink); cursor: pointer; }
+  .check input { accent-color: var(--accent); width: 15px; height: 15px; }
+
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    padding: 10px 16px; border-radius: 9px; border: 1px solid transparent; font-weight: 600; font-size: 14px;
+    transition: background .15s, box-shadow .15s;
   }
-  .ep-list { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 8px; }
-  .ep {
-    display: grid; grid-template-columns: 70px 1fr auto; align-items: center; gap: 10px;
-    padding: 9px 10px; border: 1px solid var(--line); border-radius: 10px; background: #fff;
-  }
-  .ep .path { font-family: var(--mono); font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .ep .lock { color: var(--muted); display: inline-flex; vertical-align: -2px; margin-left: 6px; }
-  .phase-dots { display: flex; gap: 4px; }
-  .pd { width: 10px; height: 10px; border-radius: 3px; background: var(--line); transition: background .25s; }
-  .pd.ok { background: var(--ok); }
-  .pd.fail { background: var(--bad); }
-  .pd.active { background: var(--accent); animation: blink 1s infinite; }
-  .pd.skip { background: var(--muted); opacity: .45; }
-  /* Production safety: host badge next to every base URL, and the consent box */
-  .host-row { display: flex; align-items: center; gap: 8px; }
-  .host-row .txt { flex: 1; }
-  .host-badge { font-size: 12px; font-weight: 700; padding: 4px 9px; border-radius: 999px; white-space: nowrap; }
-  .host-badge.local { background: var(--ok-soft); color: var(--ok); }
-  .host-badge.non-production { background: var(--warn-soft); color: var(--warn); }
-  .host-badge.production { background: var(--bad-soft); color: var(--bad); }
-  .prod-box { margin-top: 14px; padding: 12px 14px; border-radius: 10px; background: var(--bad-soft); color: var(--bad); border: 1px solid #fecaca; font-size: 13.5px; font-weight: 600; }
-  .prod-box label { display: flex; gap: 8px; align-items: center; margin-top: 8px; color: var(--ink); font-weight: 600; cursor: pointer; }
-  .skip-note { font-size: 13px; color: var(--muted); }
-  @keyframes blink { 50% { opacity: .35; } }
-  .m {
-    font-family: var(--mono); font-size: 12px; font-weight: 700; text-align: center; padding: 3px 0;
-    border-radius: 6px; letter-spacing: .03em;
-  }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { background: var(--accent-ink); }
+  .btn-primary:disabled { background: #a5b4fc; }
+  .btn-ghost { background: #fff; color: var(--ink-2); border-color: var(--line-2); }
+  .btn-ghost:hover { background: #f9fafb; }
+  .btn-danger { background: #fff; color: var(--bad); border-color: var(--bad-line); }
+  .btn-lg { padding: 12px 18px; font-size: 15px; }
+  .btn-sm { padding: 6px 10px; font-size: 12.5px; border-radius: 7px; }
+  .btn-block { width: 100%; }
+  .add-btn { width: 100%; border: 1.5px dashed var(--accent-line); background: #fff; color: var(--accent); border-radius: var(--r-sm); padding: 9px; font-weight: 600; margin-top: 4px; }
+  .add-btn:hover { background: var(--accent-soft); }
+  .icon-btn { width: 32px; height: 34px; border-radius: 7px; border: 1px solid var(--line-2); background: #fff; color: var(--muted); display: grid; place-items: center; padding: 0; }
+  .icon-btn:hover { background: #f9fafb; }
+  .icon-btn.on { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); }
+  .icon-btn.del:hover { color: var(--bad); border-color: var(--bad-line); background: var(--bad-soft); }
+
+  /* Badges */
+  .m { font-family: var(--mono); font-size: 11px; font-weight: 700; text-align: center; padding: 3px 7px; border-radius: 6px; letter-spacing: .03em; display: inline-block; min-width: 54px; }
   .m.GET { background: #e0f2fe; color: #0369a1; }
   .m.POST { background: #dcfce7; color: #15803d; }
   .m.PUT, .m.PATCH { background: #fef3c7; color: #b45309; }
   .m.DELETE { background: #fee2e2; color: #b91c1c; }
-  .legend { margin-top: 10px; font-size: 12px; color: var(--muted); }
+  .host-badge { font-size: 11.5px; font-weight: 700; padding: 3px 8px; border-radius: 999px; white-space: nowrap; }
+  .host-badge.local { background: var(--ok-soft); color: var(--ok); }
+  .host-badge.non-production { background: var(--warn-soft); color: var(--warn); }
+  .host-badge.production { background: var(--bad-soft); color: var(--bad); }
+  .tag { font-size: 11.5px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: #fff; border: 1px solid var(--line-2); color: var(--ink-2); }
+  .tag.bad { border-color: var(--bad-line); color: var(--bad); }
+  .tag.warn { border-color: var(--warn-line); color: var(--warn); }
+  .tag.ok { border-color: var(--ok-line); color: var(--ok); }
+  .lock { color: var(--muted); display: inline-flex; vertical-align: -2px; margin-left: 6px; }
 
-  .link-btn { background: none; border: 0; color: var(--accent); font-weight: 600; font-size: 14px; padding: 0; }
-  textarea {
-    width: 100%; min-height: 260px; margin-top: 12px; padding: 12px; border-radius: 10px;
-    border: 1px solid var(--line); font: 13px/1.5 var(--mono); color: var(--ink); resize: vertical; background: #fbfcfe;
-  }
-  textarea:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
-  .json-err { color: var(--bad); font-size: 13px; margin-top: 6px; }
+  /* First-run model setup */
+  .setup { margin-top: 16px; border-color: var(--accent-line); }
+  .setup-inner { display: grid; grid-template-columns: 340px 1fr; gap: 24px; padding: 20px 24px; align-items: start; }
+  @media (max-width: 1024px) { .setup-inner { grid-template-columns: 1fr; } }
+  .setup-step { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 3px 9px; margin-bottom: 8px; }
+  .setup-text h2 { margin: 0 0 6px; font-size: 20px; }
+  .setup-fields { display: grid; grid-template-columns: 200px 1fr 200px; gap: 10px; }
+  @media (max-width: 1024px) { .setup-fields { grid-template-columns: 1fr; } }
+  .setup-actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+  .setup-actions .ok-msg, .setup-actions .bad-msg, .setup-actions .hint { margin: 0; }
 
-  .actions { display: grid; gap: 10px; margin-top: 18px; }
-  .btn {
-    display: inline-flex; align-items: center; justify-content: center; gap: 10px;
-    padding: 14px 18px; border-radius: 12px; border: 1px solid transparent; font-weight: 700; font-size: 17px;
-    transition: transform .05s, box-shadow .2s, background .2s;
-  }
-  .btn:active { transform: translateY(1px); }
-  .btn-primary { background: var(--accent); color: #fff; box-shadow: 0 8px 20px rgba(79,70,229,.3); }
-  .btn-primary:hover { background: #4338ca; }
-  .btn-primary:disabled { background: #a5b4fc; box-shadow: none; cursor: not-allowed; }
-  .btn-ghost { background: #fff; color: var(--ink-2); border-color: var(--line); font-size: 15px; padding: 11px 16px; }
-  .btn-ghost:hover { background: #f8fafc; }
-  .btn-danger { background: #fff; color: var(--bad); border-color: #fecaca; font-size: 15px; padding: 11px 16px; }
-  .err-box {
-    margin-top: 12px; padding: 10px 12px; border-radius: 10px; background: var(--bad-soft);
-    color: var(--bad); font-size: 14px; border: 1px solid #fecaca;
-  }
+  /* Endpoint list (saved) */
+  .ep-list { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 6px; }
+  .ep { display: grid; grid-template-columns: 62px 1fr auto; align-items: center; gap: 8px; padding: 7px 9px; border: 1px solid var(--line); border-radius: var(--r-sm); background: #fff; }
+  .ep .path { font-family: var(--mono); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .phase-dots { display: flex; gap: 3px; }
+  .pd { width: 9px; height: 9px; border-radius: 3px; background: var(--line); transition: background .25s; }
+  .pd.ok { background: var(--ok); }
+  .pd.fail { background: var(--bad); }
+  .pd.active { background: var(--accent); animation: blink 1s infinite; }
+  .pd.skip { background: var(--muted); opacity: .45; }
+  @keyframes blink { 50% { opacity: .35; } }
+  .legend { margin-top: 8px; font-size: 12px; color: var(--muted); }
+  .json-err { color: var(--bad); font-size: 12.5px; margin-top: 6px; }
+
+  /* Summary boxes inside the input card */
+  .info-box { margin-top: 12px; padding: 10px 12px; border-radius: var(--r-sm); background: #f9fafb; border: 1px solid var(--line); font-size: 12.5px; }
+  .info-box .k { color: var(--muted); }
+  .info-box .env { font: 12px var(--mono); background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; margin: 2px 4px 2px 0; display: inline-block; }
+  .info-box .env.missing { border-color: var(--warn-line); background: var(--warn-soft); color: var(--warn); }
+  .prod-box { margin-top: 12px; padding: 10px 12px; border-radius: var(--r-sm); background: var(--bad-soft); color: var(--bad); border: 1px solid var(--bad-line); font-size: 13px; font-weight: 600; }
+  .prod-box .check { margin-top: 8px; font-weight: 600; }
+  .options { display: grid; gap: 12px; }
+  .opt-row { display: grid; grid-template-columns: 110px 1fr; gap: 10px; align-items: start; }
+  .opt-row .lbl { margin: 8px 0 0; }
+  .dim-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
+
+  /* Endpoint editor (build tab) */
+  .ep-edit { border: 1px solid var(--line); border-radius: var(--r-sm); padding: 8px; margin-bottom: 8px; background: #fbfcfe; }
+  .ep-edit .top { display: grid; grid-template-columns: 88px 1fr 32px 32px 32px; gap: 5px; align-items: center; }
+  .ep-more { display: none; margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); }
+  .ep-edit.open .ep-more { display: block; }
+  .ep-more textarea { min-height: 80px; margin-top: 4px; }
+  .ep-id { font: 11.5px var(--mono); color: var(--muted); margin-top: 6px; }
+  .role-row { display: grid; grid-template-columns: 1fr 1fr 32px; gap: 6px; margin-bottom: 6px; align-items: end; }
+  .role-row.login { grid-template-columns: 1fr 1fr 1fr 32px; }
+  .custom-links { display: flex; justify-content: space-between; margin-top: 10px; }
 
   /* Pipeline */
-  .pipeline { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; padding: 20px; }
+  .pipeline { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; padding: 14px 16px; }
   @media (max-width: 700px) { .pipeline { grid-template-columns: repeat(2, 1fr); } }
-  .step {
-    position: relative; padding: 16px; border-radius: 12px; border: 1px solid var(--line); background: #fafbfd;
-    transition: all .3s;
-  }
-  .step .ic {
-    width: 38px; height: 38px; border-radius: 10px; display: grid; place-items: center;
-    background: #eef1f6; color: var(--muted); margin-bottom: 10px; transition: all .3s;
-  }
-  .step .t { font-weight: 700; font-size: 17px; }
-  .step .s { color: var(--muted); font-size: 13px; min-height: 20px; }
-  .step.active { border-color: #c7d2fe; background: var(--accent-soft); box-shadow: 0 0 0 3px rgba(79,70,229,.08); }
+  .step { padding: 12px; border-radius: var(--r-sm); border: 1px solid var(--line); background: #fafbfc; transition: all .3s; }
+  .step .ic { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; background: #eef0f4; color: var(--muted); margin-bottom: 8px; transition: all .3s; }
+  .step .t { font-weight: 700; font-size: 14px; }
+  .step .s { color: var(--muted); font-size: 12px; min-height: 18px; }
+  .step.active { border-color: var(--accent-line); background: var(--accent-soft); }
   .step.active .ic { background: var(--accent); color: #fff; }
   .step.active .ic svg { animation: spin 1.4s linear infinite; }
-  .step.done { border-color: #a7f3d0; background: var(--ok-soft); }
+  .step.done { border-color: var(--ok-line); background: var(--ok-soft); }
   .step.done .ic { background: var(--ok); color: #fff; }
-  .step.failed { border-color: #fecaca; background: var(--bad-soft); }
+  .step.failed { border-color: var(--bad-line); background: var(--bad-soft); }
   .step.failed .ic { background: var(--bad); color: #fff; }
+  .step.mixed { border-color: var(--warn-line); background: var(--warn-soft); }
+  .step.mixed .ic { background: var(--warn); color: #fff; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .timer { font-family: var(--mono); font-size: 14px; color: var(--muted); }
-
-  /* Terminal */
-  .term-wrap { padding: 0 20px 20px; }
-  .term {
-    background: var(--term); color: var(--term-ink); border-radius: 12px; padding: 14px 16px;
-    font: 13.5px/1.6 var(--mono); height: 300px; overflow: auto; white-space: pre-wrap; word-break: break-word;
-  }
+  .timer { font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
+  .term-wrap { padding: 0 16px 16px; }
+  .term { background: var(--term); color: var(--term-ink); border-radius: var(--r-sm); padding: 12px 14px; font: 12.5px/1.6 var(--mono); height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
   .term .h { color: #a5b4fc; font-weight: 700; margin-top: 6px; }
   .term .ok { color: #6ee7b7; }
   .term .fail { color: #fca5a5; }
@@ -190,209 +219,151 @@
   .term::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 10px; }
 
   /* Results */
-  #results { margin-top: 22px; display: none; }
-  .banner {
-    padding: 14px 18px; border-radius: 12px; font-weight: 700; margin-bottom: 16px; border: 1px solid;
-  }
-  .banner.warn { background: var(--warn-soft); color: var(--warn); border-color: #fde68a; }
-  .banner.bad { background: var(--bad-soft); color: var(--bad); border-color: #fecaca; }
-  .hero {
-    display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap;
-    padding: 22px 24px; border-radius: var(--radius); margin-bottom: 18px; border: 1px solid;
-  }
-  .hero.bad { background: linear-gradient(135deg, #fef2f2, #fff); border-color: #fecaca; }
-  .hero.good { background: linear-gradient(135deg, #ecfdf5, #fff); border-color: #a7f3d0; }
-  .hero .big { font-size: 34px; font-weight: 800; letter-spacing: -.02em; line-height: 1.1; }
+  #results { margin-top: 16px; display: none; }
+  .banner { padding: 12px 16px; border-radius: var(--r); font-weight: 600; margin-bottom: 16px; border: 1px solid; }
+  .banner.warn { background: var(--warn-soft); color: var(--warn); border-color: var(--warn-line); }
+  .banner.bad { background: var(--bad-soft); color: var(--bad); border-color: var(--bad-line); }
+  .hero { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding: 18px 20px; border-radius: var(--r); margin-bottom: 16px; border: 1px solid; }
+  .hero.bad { background: var(--bad-soft); border-color: var(--bad-line); }
+  .hero.good { background: var(--ok-soft); border-color: var(--ok-line); }
+  .hero .big { font-size: 28px; font-weight: 800; letter-spacing: -.02em; line-height: 1.15; }
   .hero.bad .big { color: var(--bad); }
   .hero.good .big { color: var(--ok); }
-  .hero .sub { color: var(--ink-2); margin-top: 4px; }
-  .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 18px; }
+  .hero .sub { color: var(--ink-2); margin-top: 2px; }
+  .strip { display: flex; flex-wrap: wrap; gap: 8px 20px; padding: 12px 16px; margin-bottom: 16px; font-size: 13px; color: var(--muted); }
+  .strip b { color: var(--ink); font-weight: 600; }
+  .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
   @media (max-width: 800px) { .tiles { grid-template-columns: repeat(2, 1fr); } }
-  .tile { padding: 18px 20px; }
-  .tile .k { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600; }
-  .tile .v { font-size: 40px; font-weight: 800; letter-spacing: -.02em; line-height: 1.15; }
+  .tile { padding: 14px 16px; }
+  .tile .k { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600; }
+  .tile .v { font-size: 32px; font-weight: 800; letter-spacing: -.02em; line-height: 1.15; }
   .tile.pass .v { color: var(--ok); }
   .tile.fail .v { color: var(--bad); }
-  .bar { height: 8px; border-radius: 99px; background: #fee2e2; overflow: hidden; margin-top: 8px; }
+  .bar { height: 6px; border-radius: 99px; background: #fee2e2; overflow: hidden; margin-top: 8px; }
   .bar > span { display: block; height: 100%; background: var(--ok); border-radius: 99px; transition: width .8s ease; }
+  .res-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+  @media (max-width: 1024px) { .res-grid { grid-template-columns: 1fr; } }
 
-  .res-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; align-items: start; }
-  @media (max-width: 1050px) { .res-grid { grid-template-columns: 1fr; } }
-
-  .finding {
-    border: 1px solid #fecaca; background: var(--bad-soft); border-radius: 12px; padding: 14px 16px; margin-bottom: 10px;
-  }
-  .finding.review { border-color: #fde68a; background: var(--warn-soft); }
-  .finding .top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-  .tag {
-    font-size: 12px; font-weight: 700; padding: 3px 8px; border-radius: 999px; background: #fff; border: 1px solid #fecaca; color: var(--bad);
-  }
-  .finding.review .tag { border-color: #fde68a; color: var(--warn); }
+  .finding { border: 1px solid var(--bad-line); background: var(--bad-soft); border-radius: var(--r-sm); padding: 12px 14px; margin-bottom: 10px; }
+  .finding.review { border-color: var(--warn-line); background: var(--warn-soft); }
+  .finding .top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .finding .ttl { font-weight: 600; margin-top: 8px; }
-  .finding .st { margin-top: 8px; font-family: var(--mono); font-size: 14px; display: flex; gap: 14px; flex-wrap: wrap; }
-  .finding .st b { font-weight: 700; }
-  .exp { color: var(--ink-2); }
-  .got { color: var(--bad); }
-  .no-findings {
-    padding: 18px; border-radius: 12px; background: var(--ok-soft); color: var(--ok); font-weight: 700;
-    border: 1px solid #a7f3d0; text-align: center;
-  }
+  .finding .st { margin-top: 6px; font-family: var(--mono); font-size: 13px; display: flex; gap: 14px; flex-wrap: wrap; }
+  .finding .exp { color: var(--ink-2); }
+  .finding .got { color: var(--bad); }
+  .finding .tools { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  .evidence { margin-top: 10px; display: grid; gap: 8px; }
+  .xchg { background: #fff; border: 1px solid var(--line); border-radius: var(--r-sm); overflow: hidden; }
+  .xchg summary { cursor: pointer; padding: 8px 10px; font: 12.5px var(--mono); color: var(--ink-2); display: flex; gap: 10px; align-items: center; list-style: none; }
+  .xchg summary::-webkit-details-marker { display: none; }
+  .xchg summary .st-code { font-weight: 700; }
+  .xchg summary .st-code.bad { color: var(--bad); }
+  .xchg summary .st-code.ok { color: var(--ok); }
+  .xchg .body { padding: 0 10px 10px; display: grid; gap: 8px; }
+  .xchg .body h4 { margin: 6px 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+  .xchg pre { margin: 0; font: 12px/1.5 var(--mono); background: #f9fafb; border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow: auto; }
+  .no-findings { padding: 16px; border-radius: var(--r-sm); background: var(--ok-soft); color: var(--ok); font-weight: 600; border: 1px solid var(--ok-line); text-align: center; }
 
   table { width: 100%; border-collapse: collapse; }
-  th { text-align: left; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); padding: 10px 12px; border-bottom: 1px solid var(--line); }
-  td { padding: 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
-  tbody tr { cursor: pointer; transition: background .15s; }
-  tbody tr:hover { background: #f8fafc; }
-  tbody tr.sel { background: var(--accent-soft); }
+  th { text-align: left; font-size: 11.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  td { padding: 10px; border-bottom: 1px solid var(--line); vertical-align: middle; font-size: 13.5px; }
+  tbody tr.ep-row { cursor: pointer; }
+  tbody tr.ep-row:hover { background: #f9fafb; }
+  tbody tr.ep-row.sel { background: var(--accent-soft); }
+  tr.tests-row td { background: #fafbfc; padding: 8px 10px 10px 20px; }
+  .test-line { display: grid; grid-template-columns: 18px 1fr auto; gap: 8px; align-items: center; font-size: 13px; padding: 4px 0; }
+  .test-line .ic { font-weight: 700; }
+  .test-line .ic.p { color: var(--ok); }
+  .test-line .ic.f { color: var(--bad); }
+  .test-line .ic.s { color: var(--muted); }
   td.num { font-variant-numeric: tabular-nums; font-weight: 600; }
   td .p { color: var(--ok); }
   td .f { color: var(--bad); }
   .yes { color: var(--ok); font-weight: 700; }
   .no { color: var(--bad); font-weight: 700; }
-  .reason { font-size: 13px; color: var(--bad); margin-top: 2px; }
+  .reason { font-size: 12.5px; color: var(--bad); margin-top: 2px; }
+  .skip-note { font-size: 12.5px; color: var(--muted); }
 
   /* Code viewer */
-  #codeCard { margin-top: 22px; display: none; }
-  .code {
-    background: var(--term); color: #e2e8f0; border-radius: 12px; margin: 0 20px 20px; overflow: auto; max-height: 560px;
-    font: 13.5px/1.6 var(--mono);
-  }
+  #codeCard { margin-top: 16px; display: none; }
+  .code { background: var(--term); color: #e2e8f0; border-radius: var(--r-sm); margin: 0 16px 16px; overflow: auto; max-height: 560px; font: 12.5px/1.6 var(--mono); }
   .code table { border-collapse: collapse; width: auto; min-width: 100%; }
-  .code td { border: 0; padding: 0 14px; white-space: pre; cursor: default; }
-  .code tr { cursor: default; }
+  .code td { border: 0; padding: 0 12px; white-space: pre; cursor: default; font-size: 12.5px; }
   .code tr:hover { background: transparent; }
   .code td.ln { color: #475569; text-align: right; user-select: none; padding-right: 10px; width: 1%; }
-  .code tr:first-child td { padding-top: 14px; }
-  .code tr:last-child td { padding-bottom: 14px; }
+  .code tr:first-child td { padding-top: 12px; }
+  .code tr:last-child td { padding-bottom: 12px; }
   .tk-k { color: #c4b5fd; }
   .tk-s { color: #86efac; }
   .tk-c { color: #64748b; font-style: italic; }
   .tk-n { color: #fcd34d; }
   .tk-t { color: #f9a8d4; font-weight: 700; }
 
-  .meta-row { display: flex; gap: 18px; flex-wrap: wrap; color: var(--muted); font-size: 14px; margin-bottom: 14px; }
-  .meta-row b { color: var(--ink-2); }
-  .hidden { display: none !important; }
-
-  /* Tabs + custom API form */
-  .tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; border-radius: 12px; background: #eef1f6; margin-bottom: 18px; }
-  .tab { border: 0; background: transparent; padding: 9px 10px; border-radius: 9px; font-weight: 700; font-size: 15px; color: var(--muted); }
-  .tab.on { background: #fff; color: var(--ink); box-shadow: 0 1px 3px rgba(15,23,42,.1); }
-  .field { margin-bottom: 14px; }
-  input.txt {
-    width: 100%; font: inherit; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: #fff; color: var(--ink);
-  }
-  input.txt:focus, select.sm:focus, input.sm:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
-  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  .hint { font-size: 12.5px; color: var(--muted); }
-  .ep-edit { border: 1px solid var(--line); border-radius: 12px; padding: 10px; margin-bottom: 8px; background: #fbfcfe; }
-  .ep-edit .top { display: grid; grid-template-columns: 92px 1fr 32px 32px 32px; gap: 5px; align-items: center; }
-  select.sm, input.sm {
-    width: 100%; font: 14px var(--mono); padding: 8px 9px; border-radius: 8px; border: 1px solid var(--line); background: #fff; color: var(--ink);
-  }
-  .icon-btn {
-    width: 32px; height: 34px; border-radius: 8px; border: 1px solid var(--line); background: #fff; color: var(--muted);
-    display: grid; place-items: center; padding: 0;
-  }
-  .icon-btn:hover { background: #f8fafc; }
-  .icon-btn.on { color: var(--accent); border-color: #c7d2fe; background: var(--accent-soft); }
-  .icon-btn.del:hover { color: var(--bad); border-color: #fecaca; background: var(--bad-soft); }
-  .ep-more { display: none; margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); }
-  .ep-edit.open .ep-more { display: block; }
-  .ep-more textarea { min-height: 110px; margin-top: 4px; }
-  .ep-id { font: 12px var(--mono); color: var(--muted); margin-top: 6px; }
-  .add-btn {
-    width: 100%; border: 1.5px dashed #c7d2fe; background: #fff; color: var(--accent); border-radius: 10px;
-    padding: 10px; font-weight: 700; margin-top: 2px;
-  }
-  .add-btn:hover { background: var(--accent-soft); }
-  .custom-links { display: flex; justify-content: space-between; margin-top: 12px; }
-  .ok-msg { color: var(--ok); font-size: 13px; margin-top: 8px; }
-  .bad-msg { color: var(--bad); font-size: 13px; margin-top: 8px; }
-
   /* Framework card */
-  #fwCard { margin-bottom: 18px; }
-  .fw-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 20px; align-items: start; }
-  @media (max-width: 1050px) { .fw-grid { grid-template-columns: 1fr; } }
-  .fw-lead { margin: 0 0 14px; color: var(--ink-2); }
-  .fw-files {
-    font: 13.5px/1.75 var(--mono); background: var(--term); color: #cbd5e1; border-radius: 12px; padding: 14px 16px;
-    max-height: 320px; overflow: auto; white-space: pre;
-  }
+  .fw-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 16px; align-items: start; }
+  @media (max-width: 1024px) { .fw-grid { grid-template-columns: 1fr; } }
+  .fw-files { font: 12.5px/1.7 var(--mono); background: var(--term); color: #cbd5e1; border-radius: var(--r-sm); padding: 12px 14px; max-height: 300px; overflow: auto; white-space: pre; }
   .fw-files .dir { color: #a5b4fc; font-weight: 700; }
   .fw-files .spec { color: #86efac; }
-  .fw-steps { margin: 0 0 16px; padding: 0; list-style: none; display: grid; gap: 8px; }
-  .fw-steps li { display: grid; grid-template-columns: 26px 1fr; gap: 10px; align-items: start; }
-  .fw-steps .n {
-    width: 26px; height: 26px; border-radius: 50%; background: var(--accent-soft); color: var(--accent);
-    font-weight: 800; font-size: 13px; display: grid; place-items: center;
-  }
-  .fw-steps code { font: 13.5px var(--mono); background: #f1f5f9; padding: 3px 7px; border-radius: 6px; word-break: break-all; }
+  .fw-steps { margin: 0 0 14px; padding: 0; list-style: none; display: grid; gap: 8px; }
+  .fw-steps li { display: grid; grid-template-columns: 24px 1fr; gap: 8px; align-items: start; font-size: 13.5px; }
+  .fw-steps .n { width: 24px; height: 24px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-weight: 800; font-size: 12px; display: grid; place-items: center; }
 
-  /* Phase card: some endpoints failed in this phase */
-  .step.mixed { border-color: #fde68a; background: var(--warn-soft); }
-  .step.mixed .ic { background: var(--warn); color: #fff; }
-
-  /* Import (Custom API tab) */
+  /* Import (build tab) */
   .imp-file { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
-  .imp-file label { cursor: pointer; }
-  .imp-warnings { list-style: none; margin: 4px 0 14px; padding: 0; display: grid; gap: 6px; }
-  .imp-warnings li, .imp-budget {
-    padding: 8px 10px; border-radius: 10px; background: var(--warn-soft); color: var(--warn); border: 1px solid #fde68a; font-size: 13px;
-  }
+  .imp-warnings { list-style: none; margin: 4px 0 12px; padding: 0; display: grid; gap: 6px; }
+  .imp-warnings li, .imp-budget { padding: 8px 10px; border-radius: var(--r-sm); background: var(--warn-soft); color: var(--warn); border: 1px solid var(--warn-line); font-size: 12.5px; }
   .imp-budget { margin-bottom: 8px; }
   .imp-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
-  .imp-row {
-    display: grid; grid-template-columns: 18px 64px 1fr; gap: 8px; align-items: center; padding: 8px 10px;
-    border: 1px solid var(--line); border-radius: 10px; margin-bottom: 6px; background: #fff; cursor: pointer;
-  }
+  .imp-row { display: grid; grid-template-columns: 18px 62px 1fr; gap: 8px; align-items: center; padding: 7px 9px; border: 1px solid var(--line); border-radius: var(--r-sm); margin-bottom: 6px; background: #fff; cursor: pointer; }
   .imp-row input { accent-color: var(--accent); }
-  .imp-row .path { font-family: var(--mono); font-size: 13.5px; word-break: break-all; }
-  .imp-row .lock { color: var(--muted); display: inline-flex; vertical-align: -2px; margin-left: 6px; }
-  .imp-row .setup { display: block; font: 12px var(--mono); color: var(--muted); margin-top: 2px; }
-  .imp-skipped { margin-top: 10px; font-size: 13px; }
+  .imp-row .path { font-family: var(--mono); font-size: 12.5px; word-break: break-all; }
+  .imp-row .setup { display: block; font: 11.5px var(--mono); color: var(--muted); margin-top: 2px; }
+  .imp-skipped { margin-top: 10px; font-size: 12.5px; }
   .imp-skipped summary { cursor: pointer; font-weight: 600; color: var(--ink-2); }
   .imp-skipped ul { margin: 6px 0 0; padding-left: 18px; color: var(--muted); }
-  .imp-skipped li { margin-bottom: 4px; word-break: break-word; }
 
+  /* Run history */
+  .runs-table td { font-size: 13px; }
+  .runs-table .when { white-space: nowrap; color: var(--muted); }
 </style>
 </head>
 <body>
-<div class="wrap">
-  <header>
+<div class="top">
+  <div class="top-inner">
     <div class="brand">
       <div class="logo" aria-hidden="true">
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6"/><path d="M10 3v6.5L4.6 18.2A2 2 0 0 0 6.3 21h11.4a2 2 0 0 0 1.7-2.8L14 9.5V3"/><path d="M7.5 15h9"/></svg>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6"/><path d="M10 3v6.5L4.6 18.2A2 2 0 0 0 6.3 21h11.4a2 2 0 0 0 1.7-2.8L14 9.5V3"/><path d="M7.5 15h9"/></svg>
       </div>
       <div>
         <h1>API Test Agent</h1>
-        <p>From endpoints to a running Playwright suite, powered by Claude</p>
+        <p>Probe an API, write and run its tests, find real bugs</p>
       </div>
     </div>
-    <div style="display:flex;align-items:center;gap:12px">
-      <span id="modelStatus" class="hint hidden"></span>
+    <div class="top-right">
+      <span id="modelStatus" class="hidden"></span>
       <button id="modelChangeBtn" class="link-btn hidden" type="button">Change</button>
-      <span id="whoami" class="hint hidden"></span>
+      <span id="whoami" class="hidden"></span>
       <button id="logoutBtn" class="link-btn hidden" type="button">Sign out</button>
-      <div id="pill" class="status-pill"><span class="dot"></span><span id="pillText">Ready</span></div>
+      <div id="pill" class="chip"><span class="dot"></span><span id="pillText">Ready</span></div>
     </div>
-  </header>
+  </div>
+</div>
 
+<div class="wrap">
   <!-- Login: shown only when the server says a login is required (UI_USERS set). -->
-  <section id="loginWrap" class="card hidden" style="max-width:420px;margin:0 auto 20px">
+  <section id="loginWrap" class="card hidden" style="max-width:420px;margin:24px auto 0">
     <div class="card-h"><h2>Sign in</h2></div>
     <div class="card-b">
-      <label class="lbl" for="loginUser">User name</label>
-      <input id="loginUser" class="txt" type="text" autocomplete="username">
-      <label class="lbl" for="loginPass" style="margin-top:10px;display:block">Password</label>
-      <input id="loginPass" class="txt" type="password" autocomplete="current-password">
-      <button id="loginBtn" class="btn btn-primary" type="button" style="margin-top:14px">Sign in</button>
+      <div class="field"><label class="lbl" for="loginUser">User name</label><input id="loginUser" class="txt" type="text" autocomplete="username"></div>
+      <div class="field"><label class="lbl" for="loginPass">Password</label><input id="loginPass" class="txt" type="password" autocomplete="current-password"></div>
+      <button id="loginBtn" class="btn btn-primary btn-block" type="button">Sign in</button>
       <div id="loginMsg" class="bad-msg hidden"></div>
     </div>
   </section>
 
   <!-- Model setup: shown on a personal machine until a provider key is saved (or the claude CLI is found).
-       It is a first-run screen: full width, three fields in one row, the main grid dimmed until done. -->
+       A first-run step: full width, the main grid dimmed until it is done. -->
   <section id="setupWrap" class="card setup hidden">
     <div class="setup-inner">
       <div class="setup-text">
@@ -400,23 +371,12 @@
         <h2>Set up your model</h2>
         <p class="hint">The agent uses one model provider to plan and write the tests. Paste an API key, click Verify, then Save. The key is written only to <code>.env</code> on this machine and never leaves it.</p>
       </div>
-      <div class="setup-form">
+      <div>
         <div class="setup-fields">
-          <div>
-            <label class="lbl" for="setupProvider">Provider</label>
-            <select id="setupProvider">
-              <option value="anthropic">Claude (Anthropic)</option>
-              <option value="openai">OpenAI</option>
-            </select>
-          </div>
-          <div>
-            <label class="lbl" for="setupKey">API key</label>
-            <input id="setupKey" class="txt" type="password" autocomplete="off" spellcheck="false" placeholder="sk-...">
-          </div>
-          <div>
-            <label class="lbl" for="setupModel">Model <span class="hint" style="font-weight:400">(optional)</span></label>
-            <input id="setupModel" class="txt" type="text" autocomplete="off" spellcheck="false" placeholder="">
-          </div>
+          <div><label class="lbl" for="setupProvider">Provider</label>
+            <select id="setupProvider"><option value="anthropic">Claude (Anthropic)</option><option value="openai">OpenAI</option></select></div>
+          <div><label class="lbl" for="setupKey">API key</label><input id="setupKey" class="txt" type="password" autocomplete="off" spellcheck="false" placeholder="sk-..."></div>
+          <div><label class="lbl" for="setupModel">Model <span class="hint" style="font-weight:400">(optional)</span></label><input id="setupModel" class="txt" type="text" autocomplete="off" spellcheck="false" placeholder=""></div>
         </div>
         <div class="setup-actions">
           <button id="setupVerifyBtn" class="btn btn-ghost" type="button">Verify</button>
@@ -429,104 +389,144 @@
   </section>
 
   <div id="mainGrid" class="grid">
-    <!-- Input -->
-    <section class="card">
-      <div class="card-h"><h2>Input</h2><button id="toggleJson" class="link-btn">Edit JSON</button></div>
-      <div class="card-b">
-        <div class="tabs" role="tablist">
-          <button id="tabSaved" class="tab on" type="button">Saved API</button>
-          <button id="tabCustom" class="tab" type="button">Custom API</button>
-        </div>
+    <div class="stack">
+      <!-- Input -->
+      <section class="card">
+        <div class="card-h"><h2>API to test</h2><button id="toggleJson" class="link-btn" type="button">Edit JSON</button></div>
+        <div class="card-b">
+          <div class="tabs" role="tablist">
+            <button id="tabSaved" class="tab on" type="button">Saved</button>
+            <button id="tabCustom" class="tab" type="button">Build</button>
+            <button id="tabImport" class="tab" type="button">Import</button>
+          </div>
 
-        <div id="savedPane">
-          <label class="lbl" for="inputSel">API to test</label>
-          <select id="inputSel"></select>
-          <div class="field" style="margin:14px 0 0">
-            <label class="lbl" for="savedBase">Base URL</label>
-            <div class="host-row"><input id="savedBase" class="txt" placeholder="Loading..." autocomplete="off" spellcheck="false"><span id="savedBadge" class="host-badge hidden"></span></div>
-          </div>
-          <div id="savedTokenWrap" class="field hidden" style="margin-top:14px">
-            <label class="lbl" for="savedToken">Auth header value for this API</label>
-            <input id="savedToken" class="txt" type="password" placeholder="Bearer ..." autocomplete="off">
-            <div class="hint" style="margin-top:4px">Used for this run only. Never written to disk.</div>
-          </div>
-          <ul id="epList" class="ep-list"></ul>
-          <div class="legend">Squares show Probe, Plan, Generate for each endpoint</div>
-          <textarea id="jsonBox" class="hidden" spellcheck="false"></textarea>
-          <div id="jsonErr" class="json-err hidden"></div>
-          <div id="impSaved" class="custom-links hidden">
-            <span class="hint">Imported endpoints, not saved yet</span>
-            <button id="impSave" class="link-btn" type="button">Save as input file</button>
-          </div>
-          <div id="impSaveMsg"></div>
-        </div>
-
-        <div id="customPane" class="hidden">
-          <div class="field">
-            <label class="lbl" for="cSource">Source</label>
-            <select id="cSource">
-              <option value="manual">Manual</option>
-              <option value="postman">Postman collection</option>
-              <option value="openapi">OpenAPI / Swagger</option>
-              <option value="curl">cURL commands</option>
-              <option value="har">HAR (browser capture)</option>
-              <option value="text">Jira / Confluence text</option>
-            </select>
-          </div>
-          <div id="manualPane">
-          <div class="field">
-            <label class="lbl" for="cName">API name</label>
-            <input id="cName" class="txt" placeholder="orders-api" autocomplete="off">
-          </div>
-          <div class="field">
-            <label class="lbl" for="cBase">Base URL</label>
-            <div class="host-row"><input id="cBase" class="txt" placeholder="https://api.example.com" autocomplete="off" spellcheck="false"><span id="cBadge" class="host-badge hidden"></span></div>
-          </div>
-          <div class="field">
-            <label class="lbl" for="cAuth">Auth</label>
-            <select id="cAuth">
-              <option value="none">No auth</option>
-              <option value="header">Header token</option>
-            </select>
-          </div>
-          <div id="cAuthFields" class="hidden">
-            <div class="row2 field">
-              <div><label class="lbl" for="cAuthHeader">Header name</label><input id="cAuthHeader" class="txt" value="Authorization" autocomplete="off"></div>
-              <div><label class="lbl" for="cAuthValue">Header value</label><input id="cAuthValue" class="txt" type="password" placeholder="Bearer ..." autocomplete="off"></div>
+          <div id="savedPane">
+            <div class="field"><label class="lbl" for="inputSel">Saved input</label><select id="inputSel"></select></div>
+            <div class="field">
+              <label class="lbl" for="savedBase">Base URL</label>
+              <div class="inline"><input id="savedBase" class="txt" placeholder="Loading..." autocomplete="off" spellcheck="false"><span id="savedBadge" class="host-badge hidden"></span></div>
             </div>
-            <div class="hint" style="margin:-6px 0 14px">Passed to this run only. Never written to disk.</div>
+            <div id="profileBox" class="info-box hidden">
+              <div class="k" style="margin-bottom:6px">This input has a profile. Pick one value per dimension; the base URL above is the resolved one.</div>
+              <div id="profileDims" class="dim-row"></div>
+            </div>
+            <div id="authBox" class="info-box hidden"></div>
+            <div id="savedTokenWrap" class="field hidden" style="margin-top:12px">
+              <label class="lbl" for="savedToken">Auth value for this run</label>
+              <input id="savedToken" class="txt" type="password" placeholder="Bearer ..." autocomplete="off">
+              <div class="hint" style="margin-top:4px">Used for this run only. Never written to disk.</div>
+            </div>
+            <ul id="epList" class="ep-list"></ul>
+            <div class="legend">Squares show Probe, Plan, Generate for each endpoint</div>
+            <textarea id="jsonBox" class="hidden" spellcheck="false" style="min-height:260px;margin-top:12px"></textarea>
+            <div id="jsonErr" class="json-err hidden"></div>
+            <div id="impSaved" class="custom-links hidden">
+              <span class="hint">Imported endpoints, not saved yet</span>
+              <button id="impSave" class="link-btn" type="button">Save as input file</button>
+            </div>
+            <div id="impSaveMsg"></div>
           </div>
-          <label class="lbl">Endpoints</label>
-          <div id="cEps"></div>
-          <button id="cAdd" class="add-btn" type="button">+ Add endpoint</button>
-          <div class="custom-links">
-            <button id="cExample" class="link-btn" type="button">Fill example</button>
-            <button id="cSave" class="link-btn" type="button">Save as input file</button>
-          </div>
-          <div id="cMsg"></div>
+
+          <div id="customPane" class="hidden">
+            <div class="row2 field">
+              <div><label class="lbl" for="cName">API name</label><input id="cName" class="txt" placeholder="orders-api" autocomplete="off"></div>
+              <div><label class="lbl" for="cBase">Base URL</label><div class="inline"><input id="cBase" class="txt" placeholder="https://api-staging.example.com" autocomplete="off" spellcheck="false"><span id="cBadge" class="host-badge hidden"></span></div></div>
+            </div>
+
+            <div class="field">
+              <label class="lbl" for="cAuth">Auth</label>
+              <select id="cAuth">
+                <option value="none">No auth</option>
+                <option value="header">Header (token or API key in a header)</option>
+                <option value="query">Query parameter (API key in the URL)</option>
+                <option value="cookie">Cookie</option>
+                <option value="login">Login call (fetches a token first)</option>
+              </select>
+            </div>
+            <div id="cAuthHeader" class="auth-pane hidden">
+              <div class="row2 field">
+                <div><label class="lbl" for="cAuthHeaderName">Header name</label><input id="cAuthHeaderName" class="txt" value="Authorization" autocomplete="off"></div>
+                <div><label class="lbl" for="cAuthValue">Header value (this run only)</label><input id="cAuthValue" class="txt" type="password" placeholder="Bearer ..." autocomplete="off"></div>
+              </div>
+              <div class="hint" style="margin:-6px 0 12px">The value is passed to this run only and never written to disk. To save it for next time, put it in <code>.env</code> as <code>CUSTOM_API_AUTH</code>.</div>
+            </div>
+            <div id="cAuthQuery" class="auth-pane hidden">
+              <div class="row2 field">
+                <div><label class="lbl" for="cAuthParam">Query parameter name</label><input id="cAuthParam" class="txt" value="api_key" autocomplete="off"></div>
+                <div><label class="lbl" for="cAuthQueryValue">Value (this run only)</label><input id="cAuthQueryValue" class="txt" type="password" placeholder="the API key" autocomplete="off"></div>
+              </div>
+            </div>
+            <div id="cAuthCookie" class="auth-pane hidden">
+              <div class="row2 field">
+                <div><label class="lbl" for="cAuthCookieName">Cookie name</label><input id="cAuthCookieName" class="txt" value="session" autocomplete="off"></div>
+                <div><label class="lbl" for="cAuthCookieValue">Value (this run only)</label><input id="cAuthCookieValue" class="txt" type="password" placeholder="the cookie value" autocomplete="off"></div>
+              </div>
+            </div>
+            <div id="cAuthLogin" class="auth-pane hidden">
+              <div class="row2 field">
+                <div><label class="lbl" for="cLoginMethod">Login method</label><select id="cLoginMethod"><option>POST</option><option>GET</option><option>PUT</option></select></div>
+                <div><label class="lbl" for="cLoginPath">Login path</label><input id="cLoginPath" class="txt" value="/auth/login" autocomplete="off" spellcheck="false"></div>
+              </div>
+              <div class="field">
+                <label class="lbl" for="cLoginFields">Credential fields and the .env variables that hold them</label>
+                <input id="cLoginFields" class="txt" value="username=API_USER, password=API_PASSWORD" autocomplete="off" spellcheck="false">
+                <div class="hint" style="margin-top:4px">One pair per field: <code>bodyField=ENV_NAME</code>. The values go in <code>.env</code>, never here.</div>
+              </div>
+              <div class="row3 field">
+                <div><label class="lbl" for="cTokenPath">Token path in the response</label><input id="cTokenPath" class="txt" value="data.token" autocomplete="off" spellcheck="false"></div>
+                <div><label class="lbl" for="cApplyType">Apply token as</label><select id="cApplyType"><option value="header">Header</option><option value="cookie">Cookie</option><option value="query">Query parameter</option></select></div>
+                <div><label class="lbl" for="cApplyName" id="cApplyNameLbl">Header name</label><input id="cApplyName" class="txt" value="Authorization" autocomplete="off"></div>
+              </div>
+              <div class="row2 field">
+                <div><label class="lbl" for="cApplyPrefix">Prefix (header only)</label><input id="cApplyPrefix" class="txt" value="Bearer " autocomplete="off"></div>
+                <div><label class="lbl" for="cLoginBody">Extra login body (JSON, optional)</label><input id="cLoginBody" class="txt" placeholder='{ "remember": true }' autocomplete="off" spellcheck="false"></div>
+              </div>
+            </div>
+            <div id="cRolesWrap" class="field hidden">
+              <label class="lbl">Extra roles for permission tests <span class="hint" style="font-weight:400">(optional)</span></label>
+              <div id="cRoles"></div>
+              <button id="cAddRole" class="add-btn" type="button">+ Add a role</button>
+              <div class="hint" style="margin-top:6px">A second user with fewer rights. The agent writes <code>[authz]</code> tests: that role must get 403 or 404 on the main user's data.</div>
+            </div>
+
+            <label class="lbl">Endpoints</label>
+            <div id="cEps"></div>
+            <button id="cAdd" class="add-btn" type="button">+ Add endpoint</button>
+            <div class="custom-links">
+              <button id="cExample" class="link-btn" type="button">Fill example</button>
+              <button id="cSave" class="link-btn" type="button">Save as input file</button>
+            </div>
+            <div id="cEnvBox" class="info-box hidden"></div>
+            <div id="cMsg"></div>
           </div>
 
           <div id="importPane" class="hidden">
+            <div class="field">
+              <label class="lbl" for="cSource">Source</label>
+              <select id="cSource">
+                <option value="openapi">OpenAPI / Swagger</option>
+                <option value="postman">Postman collection</option>
+                <option value="curl">cURL commands</option>
+                <option value="har">HAR (browser capture)</option>
+                <option value="text">Jira / Confluence text</option>
+              </select>
+            </div>
             <div id="impHint" class="hint"></div>
-            <textarea id="impText" spellcheck="false"></textarea>
+            <textarea id="impText" spellcheck="false" style="margin-top:8px"></textarea>
             <div class="imp-file">
               <label id="impFileWrap" class="link-btn">Upload a file<input id="impFile" type="file" class="hidden"></label>
               <span id="impFileName" class="hint"></span>
             </div>
-            <button id="impBtn" class="btn btn-ghost" type="button" style="width:100%;margin-top:12px">Import endpoints</button>
+            <button id="impBtn" class="btn btn-ghost btn-block" type="button" style="margin-top:12px">Import endpoints</button>
             <div id="impMsg"></div>
-            <div id="impPreview" class="hidden" style="margin-top:16px">
-              <div class="field">
-                <label class="lbl" for="impName">API name</label>
-                <input id="impName" class="txt" placeholder="orders-api" autocomplete="off">
+            <div id="impPreview" class="hidden" style="margin-top:14px">
+              <div class="row2 field">
+                <div><label class="lbl" for="impName">API name</label><input id="impName" class="txt" placeholder="orders-api" autocomplete="off"></div>
+                <div><label class="lbl" for="impBase">Base URL</label><div class="inline"><input id="impBase" class="txt" placeholder="https://api.example.com" autocomplete="off" spellcheck="false"><span id="impBadge" class="host-badge hidden"></span></div></div>
               </div>
-              <div class="field">
-                <label class="lbl" for="impBase">Base URL</label>
-                <div class="host-row"><input id="impBase" class="txt" placeholder="https://api.example.com" autocomplete="off" spellcheck="false"><span id="impBadge" class="host-badge hidden"></span></div>
-                <div id="impBaseHint" class="bad-msg hidden">Enter the base URL. Generate stays disabled until it is set.</div>
-              </div>
+              <div id="impBaseHint" class="bad-msg hidden" style="margin:-6px 0 10px">Enter the base URL before using these endpoints.</div>
               <div id="impTokenWrap" class="field hidden">
-                <label class="lbl" for="impToken">Auth header value (<span id="impAuthHeader">Authorization</span>)</label>
+                <label class="lbl" for="impToken">Auth value for this run (<span id="impAuthHeader">Authorization</span>)</label>
                 <input id="impToken" class="txt" type="password" placeholder="Bearer ..." autocomplete="off">
                 <div class="hint" style="margin-top:4px">Some endpoints need auth. Used for this run only. Never written to disk.</div>
               </div>
@@ -535,55 +535,89 @@
               <div id="impBudget" class="imp-budget hidden"></div>
               <div id="impList"></div>
               <details id="impSkipped" class="imp-skipped hidden"><summary></summary><ul></ul></details>
-              <button id="impUse" class="btn btn-primary" type="button" style="width:100%;margin-top:14px">Use these endpoints</button>
+              <button id="impUse" class="btn btn-primary btn-block" type="button" style="margin-top:12px">Use these endpoints</button>
             </div>
           </div>
         </div>
+      </section>
 
-        <div id="prodBox" class="prod-box hidden">
-          <div>This looks like a production host. POST, PUT, PATCH and DELETE calls would change real data.</div>
-          <label><input id="prodOk" type="checkbox"> I understand this is a production host</label>
-          <label id="prodWritesLbl"><input id="prodWrites" type="checkbox"> Allow write requests</label>
-          <div class="hint" style="margin-top:6px;font-weight:400">Without write requests the run is read-only: only GET endpoints without setup are tested, the rest are skipped.</div>
-          <div id="hostedNote" class="hint hidden" style="margin-top:6px;font-weight:400">Hosted server: production hosts run read-only, and local or private addresses are refused.</div>
+      <!-- Run options -->
+      <section class="card">
+        <div class="card-h"><h2>Run options</h2></div>
+        <div class="card-b options">
+          <div class="opt-row">
+            <label class="lbl">Framework</label>
+            <div class="seg" id="fwToggle" role="radiogroup">
+              <button type="button" data-fw="playwright" class="on">Playwright</button>
+              <button type="button" data-fw="pactum">Pactum</button>
+            </div>
+          </div>
+          <div class="opt-row">
+            <label class="lbl" for="redactMode">Redaction</label>
+            <div>
+              <select id="redactMode">
+                <option value="standard">Standard: emails, phones, cards, tokens, IPs and secret fields are replaced</option>
+                <option value="strict">Strict: only the shape of response data reaches the model</option>
+              </select>
+              <input id="redactFields" class="txt" style="margin-top:8px" placeholder="Extra fields to hide, comma separated: customer.name, address.*" autocomplete="off" spellcheck="false">
+            </div>
+          </div>
+          <div id="prodBox" class="prod-box hidden">
+            <div>This looks like a production host. POST, PUT, PATCH and DELETE calls would change real data.</div>
+            <label class="check"><input id="prodOk" type="checkbox"> I understand this is a production host</label>
+            <label class="check" id="prodWritesLbl"><input id="prodWrites" type="checkbox"> Allow write requests</label>
+            <div class="hint" style="margin-top:6px;font-weight:400">Without write requests the run is read-only: only GET endpoints without setup are tested, the rest are skipped.</div>
+            <div id="hostedNote" class="hint hidden" style="margin-top:6px;font-weight:400">Hosted server: production hosts run read-only, and local or private addresses are refused.</div>
+          </div>
+          <div>
+            <button id="runBtn" class="btn btn-primary btn-lg btn-block" type="button">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>
+              Generate tests
+            </button>
+            <button id="stopBtn" class="btn btn-danger btn-block hidden" type="button" style="margin-top:8px">Stop run</button>
+            <div id="runHint" class="hint hidden" style="margin-top:8px;text-align:center"></div>
+            <div id="runErr" class="err-box hidden"></div>
+          </div>
         </div>
+      </section>
+    </div>
 
-        <div class="actions">
-          <button id="runBtn" class="btn btn-primary">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>
-            Generate tests
-          </button>
-          <button id="stopBtn" class="btn btn-danger hidden">Stop run</button>
-          <button id="lastBtn" class="btn btn-ghost">Load last run</button>
+    <div class="stack">
+      <!-- Pipeline + log -->
+      <section class="card">
+        <div class="card-h"><h2>Agent pipeline</h2><span id="timer" class="timer">00:00</span></div>
+        <div class="pipeline">
+          <div class="step" data-step="0">
+            <div class="ic"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></div>
+            <div class="t">Probe</div><div class="s">Call each endpoint</div>
+          </div>
+          <div class="step" data-step="1">
+            <div class="ic"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M9 6h11M9 12h11M9 18h11"/><path d="M4 6h.01M4 12h.01M4 18h.01"/></svg></div>
+            <div class="t">Plan</div><div class="s">Design test cases</div>
+          </div>
+          <div class="step" data-step="2">
+            <div class="ic"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m8 7-5 5 5 5"/><path d="m16 7 5 5-5 5"/></svg></div>
+            <div class="t">Generate</div><div class="s">Write the specs</div>
+          </div>
+          <div class="step" data-step="3">
+            <div class="ic"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></div>
+            <div class="t">Run tests</div><div class="s">Execute the suite</div>
+          </div>
         </div>
-        <div id="runHint" class="hint hidden" style="margin-top:8px;text-align:center"></div>
-        <div id="runErr" class="err-box hidden"></div>
-      </div>
-    </section>
+        <div class="term-wrap"><div id="term" class="term"><span class="empty">Pick an API and click Generate tests. Live agent output appears here.</span></div></div>
+      </section>
 
-    <!-- Pipeline + log -->
-    <section class="card">
-      <div class="card-h"><h2>Agent pipeline</h2><span id="timer" class="timer">00:00</span></div>
-      <div class="pipeline">
-        <div class="step" data-step="0">
-          <div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></div>
-          <div class="t">Probe</div><div class="s">Call each endpoint</div>
+      <!-- Run history -->
+      <section class="card" id="runsCard">
+        <div class="card-h"><h2>Recent runs</h2><button id="runsRefresh" class="link-btn" type="button">Refresh</button></div>
+        <div class="card-b" style="padding-top:6px">
+          <table class="runs-table">
+            <thead><tr><th>When</th><th>Input</th><th>Framework</th><th>Result</th><th></th></tr></thead>
+            <tbody id="runsBody"><tr><td colspan="5" class="hint">No runs yet.</td></tr></tbody>
+          </table>
         </div>
-        <div class="step" data-step="1">
-          <div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M9 6h11M9 12h11M9 18h11"/><path d="M4 6h.01M4 12h.01M4 18h.01"/></svg></div>
-          <div class="t">Plan</div><div class="s">Design test cases</div>
-        </div>
-        <div class="step" data-step="2">
-          <div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m8 7-5 5 5 5"/><path d="m16 7 5 5-5 5"/></svg></div>
-          <div class="t">Generate</div><div class="s">Write Playwright specs</div>
-        </div>
-        <div class="step" data-step="3">
-          <div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></div>
-          <div class="t">Run tests</div><div class="s">Execute the suite</div>
-        </div>
-      </div>
-      <div class="term-wrap"><div id="term" class="term"><span class="empty">Pick an API and click Generate tests. Live agent output appears here.</span></div></div>
-    </section>
+      </section>
+    </div>
   </div>
 
   <!-- Results -->
@@ -594,33 +628,12 @@
         <div id="heroBig" class="big"></div>
         <div id="heroSub" class="sub"></div>
       </div>
-      <div style="display:flex;gap:10px;flex-wrap:wrap">
-      <button id="allureBtn" class="btn btn-ghost hidden" style="font-size:17px;padding:14px 18px">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 5-6"/></svg>
-        Open Allure report
-      </button>
-      <button id="reportBtn" class="btn btn-primary">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3h7v7"/><path d="M10 14 21 3"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/></svg>
-        Open Playwright report
-      </button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button id="allureBtn" class="btn btn-ghost hidden" type="button">Open Allure report</button>
+        <button id="reportBtn" class="btn btn-primary" type="button">Open Playwright report</button>
       </div>
     </div>
-    <section id="fwCard" class="card hidden">
-      <div class="card-h"><h2>Playwright framework</h2><span id="fwPath" class="timer"></span></div>
-      <div class="card-b">
-        <p class="fw-lead">A standalone Playwright API test project for this API, ready to commit to your repo.</p>
-        <div class="fw-grid">
-          <div id="fwFiles" class="fw-files"></div>
-          <div>
-            <ol class="fw-steps" id="fwSteps"></ol>
-            <button id="fwDl" class="btn btn-primary" style="width:100%">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
-              Download framework (.zip)
-            </button>
-          </div>
-        </div>
-      </div>
-    </section>
+    <div id="strip" class="card strip"></div>
     <div class="tiles">
       <div class="card tile"><div class="k">Endpoints</div><div id="tEp" class="v">0</div></div>
       <div class="card tile"><div class="k">Tests generated</div><div id="tGen" class="v">0</div></div>
@@ -633,8 +646,8 @@
         <div class="card-b" id="findings"></div>
       </div>
       <div class="card">
-        <div class="card-h"><h2>Endpoints</h2><span class="timer">Click a row to see its tests</span></div>
-        <div class="card-b" style="padding-top:8px">
+        <div class="card-h"><h2>Endpoints</h2><span class="timer">Click a row for its tests</span></div>
+        <div class="card-b" style="padding-top:6px">
           <table>
             <thead><tr><th>Endpoint</th><th>Cases</th><th>Spec</th><th>Result</th></tr></thead>
             <tbody id="epTable"></tbody>
@@ -643,11 +656,23 @@
       </div>
     </div>
     <section id="codeCard" class="card">
-      <div class="card-h"><h2 id="codeTitle">Generated spec</h2><button id="copyBtn" class="link-btn">Copy</button></div>
-      <div style="height:16px"></div>
+      <div class="card-h"><h2 id="codeTitle">Generated spec</h2><button id="copyBtn" class="link-btn" type="button">Copy</button></div>
+      <div style="height:12px"></div>
       <div id="code" class="code"></div>
     </section>
-    <div class="meta-row" style="margin-top:18px" id="metaRow"></div>
+    <section id="fwCard" class="card hidden" style="margin-top:16px">
+      <div class="card-h"><h2 id="fwTitle">Exported framework</h2><span id="fwPath" class="timer"></span></div>
+      <div class="card-b">
+        <p class="fw-lead" style="margin:0 0 12px;color:var(--ink-2)">A standalone API test project for this API, ready to commit to your repo.</p>
+        <div class="fw-grid">
+          <div id="fwFiles" class="fw-files"></div>
+          <div>
+            <ol class="fw-steps" id="fwSteps"></ol>
+            <button id="fwDl" class="btn btn-primary btn-block" type="button">Download framework (.zip)</button>
+          </div>
+        </div>
+      </div>
+    </section>
   </section>
 </div>
 
@@ -656,29 +681,34 @@
   const $ = (id) => document.getElementById(id);
   const PHASES = ["PROBING", "PLANNING", "GENERATING", "RUNNING TESTS", "SUMMARY"];
   const PHASE_KEY = ["probe", "plan", "generate"];
-  const lockSvg = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>';
+  const lockSvg = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>';
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-  let config = null;
+  let config = null;           // the saved tab's parsed JSON
   let phaseIdx = -1;
-  let reachedRun = false; // the RUNNING TESTS phase started (it does not when no spec was written)
+  let reachedRun = false;
   let epState = {};
   let timerStart = null, timerHandle = null;
   let es = null;
   let termHasContent = false;
   let lastSpec = "";
   let running = false;
-  let lastStatus = null; // status of the last summary shown
+  let lastStatus = null;
+  let lastSummary = null;
+  let currentRunId = null;      // the run shown in the results (null: the latest)
+  let framework = "playwright"; // run option, written into the input JSON for the run
+  let selection = {};           // profile selection in the saved tab
+  let checked = null;           // last /api/validate-input result for the active input
+  let session = { loginRequired: false, hosted: false, user: null };
   const IMPORTED = "__imported__";
-  let importedJson = null; // the last "Use these endpoints" result, until it is saved
-
-  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  let importedJson = null;
 
   function setPill(kind, text) {
-    $("pill").className = "status-pill " + (kind || "");
+    $("pill").className = "chip " + (kind || "");
     $("pillText").textContent = text;
   }
 
-  // ---------- Input ----------
+  // ---------- Saved tab ----------
   async function loadInputs() {
     const res = await fetch("/api/inputs");
     const files = await res.json();
@@ -691,22 +721,29 @@
   }
 
   async function loadInput(name) {
+    selection = {};
     if (name === IMPORTED) {
       $("jsonBox").value = importedJson || "";
-      parseConfig();
-      return;
+    } else {
+      const res = await fetch("/api/input?name=" + encodeURIComponent(name));
+      const data = await res.json();
+      $("jsonBox").value = data.content;
     }
-    const res = await fetch("/api/input?name=" + encodeURIComponent(name));
-    const data = await res.json();
-    $("jsonBox").value = data.content;
     parseConfig();
+    await validateActive();
   }
 
   function parseConfig() {
     try {
       config = JSON.parse($("jsonBox").value);
       $("jsonErr").classList.add("hidden");
-      $("savedTokenWrap").classList.toggle("hidden", config?.auth?.valueEnv !== "CUSTOM_API_AUTH");
+      if (config && typeof config === "object") {
+        if (config.framework === "pactum" || config.framework === "playwright") setFramework(config.framework, false);
+        if (config.redaction) {
+          $("redactMode").value = config.redaction.mode || "standard";
+          $("redactFields").value = (config.redaction.fields || []).join(", ");
+        }
+      }
       renderEndpoints();
       updateRunButton();
       return true;
@@ -717,9 +754,9 @@
     }
   }
 
-  const STEP_LABELS = ["Call each endpoint", "Design test cases", "Write Playwright specs", "Execute the suite"];
+  const STEP_LABELS = ["Call each endpoint", "Design test cases", "Write the specs", "Execute the suite"];
   function updateStepText() {
-    const eps = config?.endpoints || [];
+    const eps = activeEndpoints();
     document.querySelectorAll(".step").forEach((el, i) => {
       const sEl = el.querySelector(".s");
       if (i > 2 || !eps.length) { sEl.textContent = STEP_LABELS[i]; return; }
@@ -731,10 +768,17 @@
     });
   }
 
+  function activeEndpoints() {
+    if (mode === "saved") return Array.isArray(config?.endpoints) ? config.endpoints : [];
+    if (mode === "custom") { const ids = epIds(); return cEps.map((e, i) => ({ id: ids[i], method: e.method, path: e.path, requiresAuth: e.auth })); }
+    return imp ? imp.input.endpoints.filter((_, i) => imp.checked[i]) : [];
+  }
+
   function renderEndpoints() {
     updateStepText();
-    // Do not overwrite the field while the user is typing in it.
-    if (document.activeElement !== $("savedBase")) $("savedBase").value = typeof config?.baseUrl === "string" ? config.baseUrl : "";
+    if (mode !== "saved") return;
+    if (document.activeElement !== $("savedBase")) $("savedBase").value = typeof config?.baseUrl === "string" ? config.baseUrl : (checked && checked.baseUrl) || "";
+    $("savedBase").readOnly = !!(config && config.profile);
     updateSafety();
     const eps = Array.isArray(config?.endpoints) ? config.endpoints : [];
     $("epList").innerHTML = eps.map((e) => {
@@ -748,6 +792,82 @@
     }).join("");
   }
 
+  // Asks the server to validate the active input with the agent's own schema. Updates the profile
+  // selectors, the auth summary, the resolved base URL and the host badge from the answer.
+  let validateTimer = null;
+  function scheduleValidate() { clearTimeout(validateTimer); validateTimer = setTimeout(validateActive, 250); }
+  async function validateActive() {
+    if (mode !== "saved") { checked = null; return; }
+    if (!config || typeof config !== "object") return;
+    const body = { json: $("jsonBox").value, selection: selectionText() || undefined };
+    let out;
+    try {
+      const res = await fetch("/api/validate-input", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (res.status === 401) return showLogin();
+      out = await res.json();
+    } catch { return; }
+    checked = out;
+    renderProfile(out);
+    renderAuthBox(out);
+    if (out.baseUrl && config.profile && document.activeElement !== $("savedBase")) $("savedBase").value = out.baseUrl;
+    const problems = (out.problems || []).filter((p) => p.path !== "profile");
+    $("jsonErr").classList.toggle("hidden", !problems.length);
+    if (problems.length) $("jsonErr").textContent = problems.map((p) => (p.path === "(root)" ? "" : p.path + ": ") + p.message).join(" ");
+    updateSafety();
+  }
+
+  function selectionText() {
+    const dims = config && config.profile ? Object.keys(config.profile.dimensions || {}) : [];
+    const parts = dims.filter((d) => selection[d]).map((d) => `${d}=${selection[d]}`);
+    return parts.join(",");
+  }
+
+  function renderProfile(out) {
+    const dims = out.dimensions;
+    $("profileBox").classList.toggle("hidden", !dims);
+    if (!dims) return;
+    $("profileDims").innerHTML = Object.entries(dims).map(([name, values]) => {
+      const current = selection[name] || (values.length === 1 ? values[0] : "");
+      return `<div><label class="lbl" for="dim-${esc(name)}">${esc(name)}</label>
+        <select id="dim-${esc(name)}" data-dim="${esc(name)}">
+          <option value="">Choose</option>
+          ${values.map((v) => `<option value="${esc(v)}" ${v === current ? "selected" : ""}>${esc(v)}</option>`).join("")}
+        </select></div>`;
+    }).join("");
+  }
+  $("profileDims").addEventListener("change", (ev) => {
+    const dim = ev.target.dataset.dim;
+    if (!dim) return;
+    selection[dim] = ev.target.value;
+    validateActive();
+  });
+
+  // What the run needs for auth: the type, the roles, and the .env variables it reads.
+  function renderAuthBox(out) {
+    const box = $("authBox");
+    const a = out.auth;
+    if (!a) { box.classList.add("hidden"); $("savedTokenWrap").classList.add("hidden"); return; }
+    const label = { header: "header", query: "query parameter", cookie: "cookie", login: "login call" }[a.type] || a.type;
+    const env = a.envNames.filter((n) => n !== "CUSTOM_API_AUTH");
+    box.classList.remove("hidden");
+    box.innerHTML = `<span class="k">Auth:</span> ${esc(label)}${a.roles.length ? `, roles: ${a.roles.map(esc).join(", ")} (permission tests on)` : ""}`
+      + (env.length ? `<div style="margin-top:6px"><span class="k">Reads from .env:</span> ${env.map((n) => `<span class="env ${(a.envMissing || []).includes(n) ? "missing" : ""}" title="${(a.envMissing || []).includes(n) ? "not set in .env" : "set"}">${esc(n)}</span>`).join("")}<button class="link-btn" type="button" data-copy-env="${esc(env.join(","))}" style="margin-left:6px">Copy .env snippet</button></div>` : "")
+      + ((a.envMissing || []).length ? `<div class="hint" style="margin-top:4px;color:var(--warn)">Highlighted variables are not set in .env. The run will stop at the first request without them.</div>` : "");
+    $("savedTokenWrap").classList.toggle("hidden", !a.oneRunValue);
+    if (a.oneRunValue) {
+      const what = a.type === "header" ? "Header value" : a.type === "query" ? "Query parameter value" : "Cookie value";
+      box.querySelector(".k").textContent = "Auth:";
+      $("savedTokenWrap").querySelector("label").textContent = `${what} for this run`;
+    }
+  }
+  document.addEventListener("click", async (ev) => {
+    const btn = ev.target.closest("[data-copy-env]");
+    if (!btn) return;
+    const snippet = btn.dataset.copyEnv.split(",").filter(Boolean).map((n) => `${n}=`).join("\n") + "\n";
+    try { await navigator.clipboard.writeText(snippet); btn.textContent = "Copied"; } catch { btn.textContent = "Copy failed"; }
+    setTimeout(() => (btn.textContent = "Copy .env snippet"), 1500);
+  });
+
   $("inputSel").addEventListener("change", (e) => {
     epState = {};
     $("impSaveMsg").textContent = "";
@@ -757,20 +877,59 @@
   $("jsonBox").addEventListener("input", () => {
     if ($("inputSel").value === IMPORTED) importedJson = $("jsonBox").value;
     parseConfig();
+    scheduleValidate();
   });
-  // Editing the base URL edits the JSON, so the run and Save use the new value.
   $("savedBase").addEventListener("input", () => {
-    if (!config || typeof config !== "object") return;
+    if (!config || typeof config !== "object" || config.profile) return;
     config.baseUrl = $("savedBase").value.trim();
     $("jsonBox").value = JSON.stringify(config, null, 2);
     if ($("inputSel").value === IMPORTED) importedJson = $("jsonBox").value;
     updateSafety();
+    scheduleValidate();
   });
   $("toggleJson").addEventListener("click", () => {
     const box = $("jsonBox");
     box.classList.toggle("hidden");
     $("toggleJson").textContent = box.classList.contains("hidden") ? "Edit JSON" : "Hide JSON";
   });
+
+  // ---------- Run options ----------
+  function setFramework(fw, writeJson) {
+    framework = fw;
+    document.querySelectorAll("#fwToggle button").forEach((b) => b.classList.toggle("on", b.dataset.fw === fw));
+    document.querySelector('.step[data-step="2"] .s').textContent = fw === "pactum" ? "Write Mocha specs" : "Write Playwright specs";
+    if (writeJson && mode === "saved" && config && typeof config === "object") {
+      if (fw === "playwright") delete config.framework; else config.framework = fw;
+      $("jsonBox").value = JSON.stringify(config, null, 2);
+      if ($("inputSel").value === IMPORTED) importedJson = $("jsonBox").value;
+    }
+  }
+  $("fwToggle").addEventListener("click", (ev) => {
+    const b = ev.target.closest("button[data-fw]");
+    if (b && !running) setFramework(b.dataset.fw, true);
+  });
+  function redactionBlock() {
+    const fields = $("redactFields").value.split(",").map((s) => s.trim()).filter(Boolean);
+    const m = $("redactMode").value;
+    if (m === "standard" && !fields.length) return null;
+    return { ...(m !== "standard" ? { mode: m } : {}), ...(fields.length ? { fields } : {}) };
+  }
+  // The run options (framework, redaction, production consent) applied to an input before a run.
+  function withRunOptions(cfg) {
+    const out = { ...cfg };
+    delete out.allowProduction;
+    delete out.allowWrites;
+    delete out.framework;
+    delete out.redaction;
+    if (framework !== "playwright") out.framework = framework;
+    const r = redactionBlock();
+    if (r) out.redaction = r;
+    if (activeIsProduction()) {
+      out.allowProduction = $("prodOk").checked;
+      if ($("prodWrites").checked) out.allowWrites = true;
+    }
+    return out;
+  }
 
   // ---------- Pipeline ----------
   function setPhase(i) {
@@ -782,13 +941,12 @@
       else if (idx === i) el.classList.add("active");
     });
     if (i >= 1 && i <= 3) {
-      // anything still active in the previous phase is finished
       const prev = PHASE_KEY[i - 1];
       if (prev) for (const id in epState) if (epState[id][prev] === "active") epState[id][prev] = "ok";
     }
     if (i >= 0 && i < 3) {
       const key = PHASE_KEY[i];
-      for (const e of config?.endpoints || []) {
+      for (const e of activeEndpoints()) {
         epState[e.id] = epState[e.id] || {};
         if (!epState[e.id][key]) epState[e.id][key] = "active";
       }
@@ -798,9 +956,8 @@
     markPhaseOutcomes();
   }
 
-  // A finished Probe, Plan or Generate card turns red when every endpoint failed in it, amber when some did.
   function markPhaseOutcomes() {
-    const eps = config?.endpoints || [];
+    const eps = activeEndpoints();
     document.querySelectorAll(".step").forEach((el, i) => {
       if (i > 2 || !eps.length || !el.classList.contains("done")) return;
       let ok = 0, fail = 0;
@@ -851,10 +1008,9 @@
     term.appendChild(div);
     if (atBottom) term.scrollTop = term.scrollHeight;
 
-    // per endpoint status lines: "<endpointId> OK ...", "<endpointId> FAILED ..." or "<endpointId> SKIPPED read-only mode"
     if (phaseIdx >= 0 && phaseIdx < 3) {
       const m = line.match(/([a-z0-9][a-z0-9-]*)\s+(OK|FAILED|SKIPPED)\b/i);
-      if (m && (config?.endpoints || []).some((e) => e.id === m[1])) {
+      if (m && activeEndpoints().some((e) => e.id === m[1])) {
         epState[m[1]] = epState[m[1]] || {};
         const word = m[2].toUpperCase();
         epState[m[1]][PHASE_KEY[phaseIdx]] = word === "OK" ? "ok" : word === "SKIPPED" ? "skip" : "fail";
@@ -862,31 +1018,16 @@
       }
     }
   }
+  function clearLog() { $("term").innerHTML = ""; termHasContent = true; }
 
-  function clearLog() {
-    $("term").innerHTML = "";
-    termHasContent = true;
-  }
-
-  // ---------- Run ----------
-  // Why Generate cannot run right now, or "" when it can.
-  function runBlocker() {
-    if (mode === "custom" && source !== "manual") return "Import, review, then click Use these endpoints.";
-    if (mode === "saved" && config && typeof config.baseUrl === "string" && !config.baseUrl.trim()) return "Enter the base URL before running.";
-    if (activeIsProduction() && !$("prodOk").checked) return 'Production host: tick "I understand this is a production host" to run.';
-    return "";
-  }
-
-  // ---------- Production safety (same rules as agent/safety.ts, from /host-class.mjs) ----------
-  // Until the rules have loaded, every host counts as production: the strict side.
+  // ---------- Safety (same rules as agent/safety.ts, from /host-class.mjs) ----------
   let classifyHost = () => "production";
   const BADGE = { local: "Local", "non-production": "Non-production", production: "Production" };
-  let consentHost = null; // the consent checkboxes are reset whenever the host changes
-
+  let consentHost = null;
   function hostKey(url) { try { return new URL(url).host.toLowerCase(); } catch { return ""; } }
   function activeBaseUrl() {
-    if (mode === "saved") return typeof config?.baseUrl === "string" ? config.baseUrl.trim() : "";
-    if (source === "manual") return $("cBase").value.trim();
+    if (mode === "saved") return config && config.profile ? (checked && checked.baseUrl) || "" : typeof config?.baseUrl === "string" ? config.baseUrl.trim() : "";
+    if (mode === "custom") return $("cBase").value.trim();
     return imp ? $("impBase").value.trim() : "";
   }
   function activeIsProduction() {
@@ -908,57 +1049,56 @@
     $("prodBox").classList.toggle("hidden", !prod);
     updateRunButton();
   }
-  // The checkboxes decide allowProduction and allowWrites for this run, whatever the JSON says.
-  function withSafetyFlags(cfg) {
-    const out = { ...cfg };
-    delete out.allowProduction;
-    delete out.allowWrites;
-    if (activeIsProduction()) {
-      out.allowProduction = $("prodOk").checked;
-      if ($("prodWrites").checked) out.allowWrites = true;
-    }
-    return out;
-  }
   $("prodOk").addEventListener("change", updateRunButton);
   ["cBase", "impBase"].forEach((id) => $(id).addEventListener("input", updateSafety));
 
+  function runBlocker() {
+    if (mode === "import") return imp ? "Review the import, then click Use these endpoints." : "Import endpoints first.";
+    if (mode === "saved" && config && config.profile) {
+      const dims = Object.keys(config.profile.dimensions || {});
+      const missing = dims.filter((d) => !selection[d] && (config.profile.dimensions[d] || []).length !== 1);
+      if (missing.length) return `Pick ${missing.join(", ")} for this run.`;
+    }
+    if (mode === "saved" && !activeBaseUrl()) return "Enter the base URL before running.";
+    if (activeIsProduction() && !$("prodOk").checked) return 'Production host: tick "I understand this is a production host" to run.';
+    return "";
+  }
   function updateRunButton() {
     const why = running ? "" : runBlocker();
     $("runBtn").disabled = running || !!why;
     $("runHint").textContent = why;
     $("runHint").classList.toggle("hidden", !why);
   }
-
   function setRunning(on) {
     running = on;
     updateRunButton();
     $("stopBtn").classList.toggle("hidden", !on);
     $("inputSel").disabled = on;
     $("jsonBox").readOnly = on;
-    $("tabSaved").disabled = on;
-    $("tabCustom").disabled = on;
-    document.querySelectorAll("#customPane input, #customPane select, #customPane textarea, #customPane button").forEach((el) => (el.disabled = on));
+    ["tabSaved", "tabCustom", "tabImport"].forEach((id) => ($(id).disabled = on));
+    document.querySelectorAll("#customPane input, #customPane select, #customPane textarea, #customPane button, #importPane input, #importPane select, #importPane textarea, #importPane button").forEach((el) => (el.disabled = on));
     if (!on) updateImportCount();
   }
 
+  // ---------- Run ----------
   async function startRun() {
     $("runErr").classList.add("hidden");
     let payload;
     if (mode === "custom") {
       const built = buildCustomConfig();
       if (built.errors.length) { showRunErr(built.errors.join(" ")); return; }
-      config = withSafetyFlags(built.config);
-      payload = { json: JSON.stringify(config, null, 2), authValue: built.authValue || undefined };
+      payload = { json: JSON.stringify(withRunOptions(built.config), null, 2), authValue: built.authValue || undefined };
     } else {
       if (!parseConfig()) { showRunErr("Fix the JSON before running."); return; }
-      const needsToken = config?.auth?.valueEnv === "CUSTOM_API_AUTH";
+      const needsToken = !!(checked && checked.auth && checked.auth.oneRunValue);
       const tok = $("savedToken").value.trim();
-      if (needsToken && !tok) { showRunErr("This API needs an auth header value. Enter it above."); return; }
-      // Unchanged text for a local or non-production host, so a saved API still runs from its own file.
-      const json = activeIsProduction() ? JSON.stringify(withSafetyFlags(config), null, 2) : $("jsonBox").value;
-      payload = { json, authValue: needsToken ? tok : undefined };
+      if (needsToken && !tok) { showRunErr("This API needs an auth value for this run. Enter it above."); return; }
+      // Unchanged text for a plain, non-production run, so a saved API still runs from its own file.
+      const options = withRunOptions(config);
+      const unchanged = JSON.stringify(options) === JSON.stringify(config);
+      const json = unchanged ? $("jsonBox").value : JSON.stringify(options, null, 2);
+      payload = { json, authValue: needsToken ? tok : undefined, selection: selectionText() || undefined };
     }
-    // Clear the previous result and log before the new run starts.
     $("results").style.display = "none";
     $("codeCard").style.display = "none";
     resetPipeline();
@@ -967,11 +1107,7 @@
     $("term").innerHTML = '<span class="empty">Starting the agent...</span>';
     termHasContent = false;
     setPill("", "Starting");
-    const res = await fetch("/api/run", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    }).catch(() => null);
+    const res = await fetch("/api/run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }).catch(() => null);
     if (!res || res.status !== 202) {
       const body = res ? await res.json().catch(() => ({})) : {};
       if (res && res.status === 401) return showLogin();
@@ -981,27 +1117,34 @@
       return;
     }
     const started = await res.json().catch(() => ({}));
+    currentRunId = null;
     if (started.queued) {
       $("term").innerHTML = '<span class="empty">Another run is in progress. Yours is queued at position ' + started.position + ' and starts automatically.</span>';
       setPill("", "Queued");
     }
   }
+  function showRunErr(msg) {
+    $("runErr").textContent = msg;
+    $("runErr").classList.remove("hidden");
+  }
 
-  // Login (only when the server has UI_USERS). The rest of the page waits until it succeeds.
+  // ---------- Login ----------
   function showLogin() {
     $("loginWrap").classList.remove("hidden");
     $("mainGrid").classList.add("hidden");
+    $("results").style.display = "none";
     $("loginUser").focus();
   }
-  function showApp(sessionInfo) {
+  function showApp(info) {
+    session = info || session;
     $("loginWrap").classList.add("hidden");
     $("mainGrid").classList.remove("hidden");
-    if (sessionInfo && sessionInfo.user) {
-      $("whoami").textContent = sessionInfo.user + (sessionInfo.hosted ? " (hosted, " + sessionInfo.runsPerHour + " runs/hour)" : "");
+    if (info && info.user) {
+      $("whoami").textContent = info.user + (info.hosted ? " (hosted, " + info.runsPerHour + " runs/hour)" : "");
       $("whoami").classList.remove("hidden");
       $("logoutBtn").classList.remove("hidden");
     }
-    if (sessionInfo && sessionInfo.hosted) {
+    if (info && info.hosted) {
       $("prodWritesLbl").classList.add("hidden");
       $("hostedNote").classList.remove("hidden");
     }
@@ -1009,17 +1152,9 @@
   async function login() {
     const msg = $("loginMsg");
     msg.classList.add("hidden");
-    const res = await fetch("/api/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user: $("loginUser").value.trim(), password: $("loginPass").value }),
-    }).catch(() => null);
+    const res = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user: $("loginUser").value.trim(), password: $("loginPass").value }) }).catch(() => null);
     const body = res ? await res.json().catch(() => ({})) : {};
-    if (!res || !res.ok) {
-      msg.textContent = body.error || "Could not sign in.";
-      msg.classList.remove("hidden");
-      return;
-    }
+    if (!res || !res.ok) { msg.textContent = body.error || "Could not sign in."; msg.classList.remove("hidden"); return; }
     $("loginPass").value = "";
     const info = await (await fetch("/api/session")).json();
     showApp(info);
@@ -1027,12 +1162,9 @@
   }
   $("loginBtn").addEventListener("click", login);
   $("loginPass").addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
-  $("logoutBtn").addEventListener("click", async () => {
-    await fetch("/api/logout", { method: "POST" }).catch(() => null);
-    window.location.reload();
-  });
+  $("logoutBtn").addEventListener("click", async () => { await fetch("/api/logout", { method: "POST" }).catch(() => null); window.location.reload(); });
 
-  // Model setup (personal machines only: the server says whether settings are editable).
+  // ---------- Model setup ----------
   let settings = null;
   function modelLabel(st) {
     const name = st.provider === "openai" ? "OpenAI" : "Claude";
@@ -1041,34 +1173,22 @@
   }
   function renderSettings(st) {
     settings = st;
-    const status = $("modelStatus");
-    if (st.configured) {
-      status.textContent = modelLabel(st);
-      status.classList.remove("hidden");
-    } else {
-      status.textContent = "Model not set up";
-      status.classList.remove("hidden");
-    }
+    $("modelStatus").textContent = st.configured ? modelLabel(st) : "Model not set up";
+    $("modelStatus").classList.remove("hidden");
     $("modelChangeBtn").classList.toggle("hidden", !st.editable);
     $("setupCloseBtn").classList.toggle("hidden", !st.configured);
     const providerSel = $("setupProvider");
     if (st.provider) providerSel.value = st.provider;
     const p = (st.providers || []).find((x) => x.id === providerSel.value);
     $("setupModel").placeholder = p ? p.defaultModel : "";
-    if (!st.configured && st.editable) showSetup();
-    else hideSetup();
+    if (!st.configured && st.editable) showSetup(); else hideSetup();
   }
   function showSetup() {
     $("setupWrap").classList.remove("hidden");
-    // Until a model is set the rest of the page cannot run anything, so it is dimmed, not hidden.
-    const firstRun = $("setupCloseBtn").classList.contains("hidden");
-    $("mainGrid").classList.toggle("dimmed", firstRun);
+    $("mainGrid").classList.toggle("dimmed", $("setupCloseBtn").classList.contains("hidden"));
     $("setupKey").focus();
   }
-  function hideSetup() {
-    $("setupWrap").classList.add("hidden");
-    $("mainGrid").classList.remove("dimmed");
-  }
+  function hideSetup() { $("setupWrap").classList.add("hidden"); $("mainGrid").classList.remove("dimmed"); }
   function setupMessage(text, kind) {
     const m = $("setupMsg");
     m.textContent = text;
@@ -1076,10 +1196,7 @@
     m.classList.remove("hidden");
   }
   async function loadSettings() {
-    try {
-      const st = await (await fetch("/api/settings")).json();
-      renderSettings(st);
-    } catch {}
+    try { renderSettings(await (await fetch("/api/settings")).json()); } catch {}
   }
   async function postSettings(route) {
     const body = { provider: $("setupProvider").value, key: $("setupKey").value.trim(), model: $("setupModel").value.trim() };
@@ -1111,11 +1228,7 @@
     $("setupModel").placeholder = p ? p.defaultModel : "";
   });
 
-  function showRunErr(msg) {
-    $("runErr").textContent = msg;
-    $("runErr").classList.remove("hidden");
-  }
-
+  // ---------- Stream ----------
   function connectStream() {
     if (es) es.close();
     es = new EventSource("/api/stream");
@@ -1131,30 +1244,29 @@
     });
     es.addEventListener("log", (ev) => appendLog(JSON.parse(ev.data)));
     es.addEventListener("done", async (ev) => {
-      const { exitCode } = JSON.parse(ev.data);
+      const { exitCode, runId } = JSON.parse(ev.data);
       stopTimer();
       setRunning(false);
-      if (exitCode === 0) {
-        setPhase(4);
-        setPill("done", "Run complete");
-      } else {
+      if (exitCode === 0) { setPhase(4); setPill("done", "Run complete"); }
+      else {
         document.querySelectorAll(".step.active").forEach((el) => { el.classList.remove("active"); el.classList.add("failed"); });
         setPill("error", "Run ended with errors");
       }
+      currentRunId = runId || null;
       await loadSummary(true);
       if (lastStatus === "refused") setPill("error", "Run refused");
+      loadRuns();
     });
   }
-
   $("runBtn").addEventListener("click", startRun);
   $("stopBtn").addEventListener("click", () => fetch("/api/stop", { method: "POST" }));
-  $("lastBtn").addEventListener("click", () => loadSummary(false));
-  $("reportBtn").addEventListener("click", () => window.open("/report/index.html", "_blank"));
-  $("allureBtn").addEventListener("click", () => window.open("/allure/index.html", "_blank"));
+  $("reportBtn").addEventListener("click", () => window.open("/report/index.html" + runQuery(), "_blank"));
+  $("allureBtn").addEventListener("click", () => window.open("/allure/index.html" + runQuery(), "_blank"));
+  function runQuery() { return currentRunId ? "?run=" + encodeURIComponent(currentRunId) : ""; }
 
   // ---------- Results ----------
   async function loadSummary(afterRun) {
-    const res = await fetch("/api/summary");
+    const res = await fetch("/api/summary" + runQuery());
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       if (!afterRun) showRunErr(body.error || "No previous run found.");
@@ -1168,25 +1280,21 @@
   }
 
   function renderSummary(s) {
+    lastSummary = s;
     const t = s.totals || {};
     const findings = Array.isArray(s.findings) ? s.findings : [];
     const apiFindings = findings.filter((f) => /api finding/i.test(f.classification || ""));
     const review = findings.filter((f) => !/api finding/i.test(f.classification || ""));
     const eps = Array.isArray(s.endpoints) ? s.endpoints : [];
 
-    // Banner
     const banner = $("banner");
     banner.className = "banner hidden";
-    if (s.status === "stopped-budget") { banner.textContent = "STOPPED: budget reached. Results below cover the tests generated before the limit."; banner.className = "banner warn"; }
-    if (s.status === "no-tests") { banner.textContent = "NO TESTS GENERATED. Check the log for the reason."; banner.className = "banner bad"; }
-    if (s.status === "refused") {
-      banner.textContent = eps.find((e) => e.failureReason)?.failureReason || "REFUSED: production host. No request was sent.";
-      banner.className = "banner bad";
-    }
+    if (s.status === "stopped-budget") { banner.textContent = "Stopped: the model call budget was reached. Results below cover the tests generated before the limit."; banner.className = "banner warn"; }
+    if (s.status === "no-tests") { banner.textContent = "No tests generated. Check the log for the reason."; banner.className = "banner bad"; }
+    if (s.status === "refused") { banner.textContent = eps.find((e) => e.failureReason)?.failureReason || "Refused: production host. No request was sent."; banner.className = "banner bad"; }
     const skipped = eps.filter((e) => e.skippedReason);
     const skipNote = skipped.length ? ` ${skipped.length} endpoint${skipped.length === 1 ? " was" : "s were"} skipped (read-only mode).` : "";
 
-    // Hero
     const hero = $("hero");
     const connRefused = eps.length > 0 && eps.every((e) => /ECONNREFUSED|ENOTFOUND|connect /i.test(e.failureReason || ""));
     if (s.status === "refused") {
@@ -1196,13 +1304,11 @@
     } else if (s.status === "no-tests") {
       hero.className = "hero bad";
       $("heroBig").textContent = connRefused ? "API not reachable" : "No tests generated";
-      $("heroSub").textContent = connRefused
-        ? `Could not connect to ${s.baseUrl || "the API"}. Is the API running?`
-        : "The agent could not plan any endpoint. The reasons are in the table below.";
+      $("heroSub").textContent = connRefused ? `Could not connect to ${s.baseUrl || "the API"}. Is the API running?` : "The agent could not plan any endpoint. The reasons are in the table below.";
     } else if (apiFindings.length) {
       hero.className = "hero bad";
-      $("heroBig").textContent = `${apiFindings.length} API bug${apiFindings.length === 1 ? "" : "s"} found`;
-      $("heroSub").textContent = `The agent wrote ${t.testsGenerated ?? 0} tests across ${eps.length - skipped.length} endpoints and caught behavior that breaks REST rules.${skipNote}`;
+      $("heroBig").textContent = `${apiFindings.length} suspected API bug${apiFindings.length === 1 ? "" : "s"}`;
+      $("heroSub").textContent = `${t.testsGenerated ?? 0} tests across ${eps.length - skipped.length} endpoints. The findings below name the request, the expected status and what the API did.${skipNote}`;
     } else if ((t.failed ?? 0) === 0 && (t.testsGenerated ?? 0) > 0) {
       hero.className = "hero good";
       $("heroBig").textContent = "All checks passed";
@@ -1213,7 +1319,25 @@
       $("heroSub").textContent = "No confirmed API bugs. Failures are listed below for review.";
     }
 
-    // Tiles
+    // Summary strip
+    const strip = [];
+    if (s.model) strip.push(`Model <b>${esc(s.model.provider === "openai" ? "OpenAI" : "Claude")} ${esc(s.model.model)}</b> <span>(${s.model.via === "cli" ? "Claude Code login" : "API key"})</span>`);
+    strip.push(`Framework <b>${esc(s.testFramework || "playwright")}</b>`);
+    if (s.selection) strip.push(`Selection <b>${esc(Object.entries(s.selection).map(([k, v]) => `${k}=${v}`).join(", "))}</b>`);
+    if (s.baseUrl) strip.push(`Base URL <b>${esc(s.baseUrl)}</b>`);
+    if (s.safety) strip.push(`Safety <b>${esc(s.safety.hostClass)} host, ${esc(s.safety.mode)} mode</b>`);
+    if (s.redaction) strip.push(`Redaction <b>${esc(s.redaction.mode)}, ${esc(s.redaction.replaced)} value${s.redaction.replaced === 1 ? "" : "s"} replaced</b>`);
+    if (s.cleanup) strip.push(`Cleanup <b>${esc(s.cleanup.deleted)} of ${esc(s.cleanup.created)} records deleted${s.cleanup.failed ? `, ${esc(s.cleanup.failed)} failed` : ""}</b>`);
+    if (s.requestsSent != null) strip.push(`Requests <b>${esc(s.requestsSent)}</b>`);
+    if (s.durationSec != null) strip.push(`Duration <b>${esc(s.durationSec)}s</b>`);
+    if (s.claudeCalls) {
+      const est = (s.claudeCalls.used || 0) * 0.015;
+      strip.push(`Model calls <b>${esc(s.claudeCalls.used)} / ${esc(s.claudeCalls.budget)}</b> <span title="A rough estimate: about 7,000 input and 1,000 output tokens per call at mid-range prices">(about $${est.toFixed(2)}, estimate)</span>`);
+    }
+    if (s.inputFile) strip.push(`Input <b>${esc(s.inputFile)}</b>`);
+    if (s.startedAt) strip.push(`Started <b>${esc(new Date(s.startedAt).toLocaleString())}</b>`);
+    $("strip").innerHTML = strip.map((m) => `<span>${m}</span>`).join("");
+
     animateNum($("tEp"), t.endpoints ?? eps.length);
     animateNum($("tGen"), t.testsGenerated ?? 0);
     animateNum($("tPass"), t.passed ?? 0);
@@ -1221,77 +1345,87 @@
     const total = (t.passed ?? 0) + (t.failed ?? 0);
     requestAnimationFrame(() => { $("passBar").style.width = total ? Math.round(((t.passed ?? 0) / total) * 100) + "%" : "0"; });
 
-    // Findings
+    // Findings, each with its evidence loaded on demand
     $("findCount").textContent = apiFindings.length ? `${apiFindings.length} suspected` : "";
-    const card = (f, isApi) => `
-      <div class="finding ${isApi ? "" : "review"}">
+    const card = (f, isApi, i) => `
+      <div class="finding ${isApi ? "" : "review"}" data-f="${i}">
         <div class="top">
-          <span class="tag">${isApi ? "Suspected API bug" : "Needs review"}</span>
-          <span class="m ${esc(methodOf(f.endpointId, eps))}" style="padding:3px 8px">${esc(methodOf(f.endpointId, eps))}</span>
+          <span class="tag ${isApi ? "bad" : "warn"}">${isApi ? "Suspected API bug" : "Needs review"}</span>
+          <span class="m ${esc(methodOf(f.endpointId, eps))}">${esc(methodOf(f.endpointId, eps))}</span>
           <strong>${esc(f.endpointId)}</strong>
+          <span class="tag">${esc(f.type || "")}</span>
         </div>
         <div class="ttl">${esc(f.testTitle)}</div>
-        <div class="st"><span class="exp">Expected <b>${esc(f.expectedStatus ?? "?")}</b></span><span class="got">Got <b>${esc(f.actualStatus ?? "?")}</b></span></div>
+        <div class="st"><span class="exp">Expected <b>${esc(f.expectedStatus ?? "?")}</b></span><span class="got">Got <b>${esc(f.actualStatus ?? "no status")}</b></span></div>
+        ${f.error ? `<div class="hint" style="margin-top:6px;white-space:pre-wrap">${esc(String(f.error).slice(0, 300))}</div>` : ""}
+        <div class="tools">
+          <button class="btn btn-ghost btn-sm" type="button" data-act="evidence">Show request and response</button>
+          <button class="btn btn-ghost btn-sm" type="button" data-act="jira">Copy as Jira ticket</button>
+          <button class="btn btn-ghost btn-sm" type="button" data-act="md">Copy as Markdown</button>
+        </div>
+        <div class="evidence hidden"></div>
       </div>`;
+    const all = [...apiFindings.map((f) => ({ f, isApi: true })), ...review.map((f) => ({ f, isApi: false }))];
     let html = "";
-    if (apiFindings.length) html += apiFindings.map((f) => card(f, true)).join("");
-    else html += `<div class="no-findings">No API bugs found</div>`;
-    if (review.length) html += `<div style="margin:16px 0 8px;font-weight:700;color:var(--ink-2)">Other failures</div>` + review.map((f) => card(f, false)).join("");
+    if (apiFindings.length) html += all.filter((x) => x.isApi).map((x, i) => card(x.f, true, i)).join("");
+    else html += `<div class="no-findings">No suspected API bugs</div>`;
+    if (review.length) html += `<div style="margin:14px 0 8px;font-weight:600;color:var(--ink-2)">Other failures</div>` + all.filter((x) => !x.isApi).map((x) => card(x.f, false, all.indexOf(x))).join("");
     $("findings").innerHTML = html;
+    $("findings").querySelectorAll(".finding").forEach((el) => {
+      const f = all[+el.dataset.f].f;
+      el.querySelector('[data-act="evidence"]').addEventListener("click", () => toggleEvidence(el, f));
+      el.querySelector('[data-act="jira"]').addEventListener("click", (ev) => copyTicket(ev.target, f, "jira"));
+      el.querySelector('[data-act="md"]').addEventListener("click", (ev) => copyTicket(ev.target, f, "md"));
+    });
 
-    // Endpoint table
+    // Endpoint table with expandable test lists
     $("epTable").innerHTML = eps.map((e) => {
       const spec = e.specWritten ? `<span class="yes">Yes</span>` : `<span class="no">No</span>`;
-      const result = e.skippedReason
-        ? `<span class="skip-note">Skipped: read-only mode</span>`
-        : e.specWritten
-        ? `<span class="p">${e.passed ?? 0} passed</span>${(e.failed ?? 0) ? ` <span class="f">· ${e.failed} failed</span>` : ""}`
+      const result = e.skippedReason ? `<span class="skip-note">Skipped: read-only mode</span>`
+        : e.specWritten ? `<span class="p">${e.passed ?? 0} passed</span>${(e.failed ?? 0) ? ` <span class="f">· ${e.failed} failed</span>` : ""}`
         : `<span class="f">Not run</span>`;
-      return `<tr data-spec="${esc(e.specFile || "")}">
-        <td><span class="m ${esc((e.method || "").toUpperCase())}" style="padding:3px 8px;margin-right:8px">${esc((e.method || "").toUpperCase())}</span><strong>${esc(e.id)}</strong>
+      return `<tr class="ep-row" data-spec="${esc(e.specFile || "")}" data-id="${esc(e.id)}">
+        <td><span class="m ${esc((e.method || "").toUpperCase())}" style="margin-right:8px">${esc((e.method || "").toUpperCase())}</span><strong>${esc(e.id)}</strong>
           ${e.failureReason ? `<div class="reason">${esc(e.failureReason)}</div>` : ""}</td>
         <td class="num">${e.casesPlanned ?? 0}</td>
         <td>${spec}</td>
         <td class="num">${result}</td>
       </tr>`;
     }).join("");
-    document.querySelectorAll("#epTable tr").forEach((tr) => tr.addEventListener("click", () => {
-      document.querySelectorAll("#epTable tr").forEach((r) => r.classList.remove("sel"));
+    document.querySelectorAll("#epTable tr.ep-row").forEach((tr) => tr.addEventListener("click", () => {
+      const open = tr.nextElementSibling && tr.nextElementSibling.classList.contains("tests-row");
+      document.querySelectorAll("#epTable tr.tests-row").forEach((r) => r.remove());
+      document.querySelectorAll("#epTable tr.ep-row").forEach((r) => r.classList.remove("sel"));
+      if (open) return;
       tr.classList.add("sel");
-      if (tr.dataset.spec) showSpec(tr.dataset.spec);
+      const id = tr.dataset.id;
+      const own = findings.filter((f) => f.endpointId === id);
+      const ep = eps.find((e) => e.id === id) || {};
+      const lines = [];
+      for (const f of own) lines.push(`<div class="test-line"><span class="ic f">✘</span><span>${esc(f.testTitle)}</span><span class="hint">got ${esc(f.actualStatus ?? "no status")}</span></div>`);
+      const passed = ep.passed ?? 0;
+      if (passed) lines.push(`<div class="test-line"><span class="ic p">✓</span><span>${passed} passing test${passed === 1 ? "" : "s"}${tr.dataset.spec ? " (open the spec below for the full list)" : ""}</span><span></span></div>`);
+      if (ep.skippedReason) lines.push(`<div class="test-line"><span class="ic s">·</span><span>${esc(ep.skippedReason)}</span><span></span></div>`);
+      if (!lines.length) lines.push(`<div class="hint">No tests ran for this endpoint.</div>`);
+      const row = document.createElement("tr");
+      row.className = "tests-row";
+      row.innerHTML = `<td colspan="4">${lines.join("")}${tr.dataset.spec ? `<button class="link-btn" type="button" style="margin-top:6px">View generated spec</button>` : ""}</td>`;
+      tr.after(row);
+      const btn = row.querySelector("button");
+      if (btn) btn.addEventListener("click", () => showSpec(tr.dataset.spec));
     }));
 
-    // Meta
-    const meta = [];
-    if (s.inputFile) {
-      meta.push(`Input <b>${esc(s.inputFile)}</b>`);
-    }
-    if (s.baseUrl) meta.push(`Base URL <b>${esc(s.baseUrl)}</b>`);
-    if (s.safety) meta.push(`Safety <b>${esc(s.safety.hostClass)} host, ${esc(s.safety.mode)} mode</b>`);
-    if (s.requestsSent != null) meta.push(`Requests sent <b>${esc(s.requestsSent)}</b>`);
-    if (s.durationSec != null) meta.push(`Duration <b>${esc(s.durationSec)}s</b>`);
-    if (s.claudeCalls) meta.push(`Claude calls <b>${esc(s.claudeCalls.used)} / ${esc(s.claudeCalls.budget)}</b>`);
-    if (s.startedAt) meta.push(`Started <b>${esc(new Date(s.startedAt).toLocaleTimeString())}</b>`);
-    $("metaRow").innerHTML = meta.map((m) => `<span>${m}</span>`).join("");
-
-    // Mark endpoint dots from the summary when loading a past run
     if (phaseIdx < 0) {
       epState = {};
       for (const e of eps) {
-        epState[e.id] = e.skippedReason
-          ? { probe: "skip", plan: "skip", generate: "skip" }
-          : {
-              probe: e.probeStatus == null ? "fail" : "ok",
-              plan: (e.casesPlanned ?? 0) > 0 ? "ok" : "fail",
-              generate: e.specWritten ? "ok" : "fail",
-            };
+        epState[e.id] = e.skippedReason ? { probe: "skip", plan: "skip", generate: "skip" }
+          : { probe: e.probeStatus == null ? "fail" : "ok", plan: (e.casesPlanned ?? 0) > 0 ? "ok" : "fail", generate: e.specWritten ? "ok" : "fail" };
       }
       renderEndpoints();
     }
 
-    renderFramework(s.framework);
+    renderFramework(s.framework, s.testFramework);
     $("allureBtn").classList.toggle("hidden", !s.allureReport);
-    // A Pactum run (summary.testFramework) has no Playwright HTML report.
     $("reportBtn").classList.toggle("hidden", !((t.testsGenerated ?? 0) > 0) || s.testFramework === "pactum");
     $("results").style.display = "block";
     $("codeCard").style.display = "none";
@@ -1299,12 +1433,11 @@
   }
 
   function methodOf(id, eps) {
-    const e = eps.find((x) => x.id === id) || (config?.endpoints || []).find((x) => x.id === id);
+    const e = eps.find((x) => x.id === id) || activeEndpoints().find((x) => x.id === id);
     return (e?.method || "").toUpperCase();
   }
-
   function animateNum(el, to) {
-    const from = 0, dur = 700, t0 = performance.now();
+    const from = 0, dur = 600, t0 = performance.now();
     const step = (now) => {
       const p = Math.min(1, (now - t0) / dur);
       el.textContent = Math.round(from + (to - from) * (1 - Math.pow(1 - p, 3)));
@@ -1313,9 +1446,75 @@
     requestAnimationFrame(step);
   }
 
+  // ---------- Evidence and tickets ----------
+  const evidenceCache = {};
+  async function fetchEvidence(title) {
+    const key = (currentRunId || "latest") + "|" + title;
+    if (evidenceCache[key]) return evidenceCache[key];
+    const res = await fetch("/api/evidence?test=" + encodeURIComponent(title) + (currentRunId ? "&run=" + encodeURIComponent(currentRunId) : ""));
+    if (!res.ok) return [];
+    const data = await res.json();
+    evidenceCache[key] = data.exchanges || [];
+    return evidenceCache[key];
+  }
+  function pretty(v) {
+    if (v === null || v === undefined || v === "") return "(empty)";
+    const text = typeof v === "string" ? v : JSON.stringify(v, null, 2);
+    return text.length > 2048 ? text.slice(0, 2048) + `\n... [${text.length - 2048} more characters, open the full file]` : text;
+  }
+  async function toggleEvidence(el, f) {
+    const box = el.querySelector(".evidence");
+    const btn = el.querySelector('[data-act="evidence"]');
+    if (!box.classList.contains("hidden")) { box.classList.add("hidden"); btn.textContent = "Show request and response"; return; }
+    btn.textContent = "Loading...";
+    const xs = await fetchEvidence(f.testTitle);
+    btn.textContent = "Hide request and response";
+    box.classList.remove("hidden");
+    if (!xs.length) { box.innerHTML = `<div class="hint">No recorded request for this test. Open the report for details.</div>`; return; }
+    box.innerHTML = xs.map((x, i) => {
+      const st = x.response && x.response.status != null ? x.response.status : null;
+      const stClass = st == null ? "bad" : st >= 500 ? "bad" : st >= 400 ? "" : "ok";
+      // The full, untruncated record: the Pactum evidence file when there is one, else the test's exchanges as JSON.
+      const run = currentRunId ? "&run=" + encodeURIComponent(currentRunId) : "";
+      const fileLink = ` <a href="/api/evidence?${x.file ? "file=" + encodeURIComponent(x.file) : "test=" + encodeURIComponent(f.testTitle)}${run}" target="_blank">open full</a>`;
+      const headers = x.request && x.request.headers ? Object.entries(x.request.headers).map(([k, v]) => `${k}: ${v}`).join("\n") : "";
+      return `<details class="xchg" ${i === xs.length - 1 ? "open" : ""}>
+        <summary><span>${esc(x.request ? `${x.request.method} ${x.request.path}` : x.name)}</span>${x.request && x.request.role && x.request.role !== "default" ? `<span class="tag">${esc(x.request.role)}</span>` : ""}<span class="st-code ${stClass}">${st == null ? "failed" : st}</span>${fileLink}</summary>
+        <div class="body">
+          ${headers ? `<div><h4>Request headers</h4><pre>${esc(headers)}</pre></div>` : ""}
+          ${x.request && x.request.body != null ? `<div><h4>Request body</h4><pre>${esc(pretty(x.request.body))}</pre></div>` : ""}
+          <div><h4>Response ${st != null ? st : ""}</h4><pre>${esc(x.response ? (x.response.error ? x.response.error : pretty(x.response.body)) : "(none)")}</pre></div>
+        </div>
+      </details>`;
+    }).join("");
+  }
+  function ticketText(f, xs, format) {
+    const s = lastSummary || {};
+    const last = xs.length ? xs[xs.length - 1] : null;
+    const req = last && last.request ? `${last.request.method} ${s.baseUrl || ""}${last.request.path}` : `${methodOf(f.endpointId, s.endpoints || [])} ${f.endpointId}`;
+    const body = last && last.request && last.request.body != null && last.request.body !== "" ? pretty(last.request.body) : null;
+    const resp = last && last.response ? (last.response.error ? last.response.error : pretty(last.response.body)) : null;
+    const title = `${f.endpointId}: ${f.type} check got ${f.actualStatus ?? "no status"} instead of ${f.expectedStatus ?? "the expected status"}`;
+    if (format === "md") {
+      return [`## ${title}`, "", `**Test:** ${f.testTitle}`, `**Environment:** ${s.baseUrl || "(see input)"}${s.selection ? ` (${Object.entries(s.selection).map(([k, v]) => `${k}=${v}`).join(", ")})` : ""}`, "",
+        "**Steps**", "", "```", req, ...(body ? ["", body] : []), "```", "", `**Expected:** status ${f.expectedStatus ?? "?"}`, `**Actual:** status ${f.actualStatus ?? "no status"}`,
+        ...(resp ? ["", "**Response**", "", "```", resp, "```"] : []), "", `_Found by API Test Agent on ${s.startedAt ? new Date(s.startedAt).toLocaleString() : "the last run"}; evidence is attached to the test in the report._`].join("\n");
+    }
+    return [`Summary: ${title}`, "", `Test: ${f.testTitle}`, `Environment: ${s.baseUrl || "(see input)"}${s.selection ? ` (${Object.entries(s.selection).map(([k, v]) => `${k}=${v}`).join(", ")})` : ""}`, "",
+      "Steps to reproduce:", `1. Send ${req}`, ...(body ? ["   with body:", "   " + body.split("\n").join("\n   ")] : []), "", `Expected: status ${f.expectedStatus ?? "?"}`, `Actual: status ${f.actualStatus ?? "no status"}`,
+      ...(resp ? ["", "Response:", resp] : []), "", `Found by API Test Agent on ${s.startedAt ? new Date(s.startedAt).toLocaleString() : "the last run"}. Request and response evidence is attached to the test in the report.`].join("\n");
+  }
+  async function copyTicket(btn, f, format) {
+    const label = btn.textContent;
+    btn.textContent = "Preparing...";
+    const xs = await fetchEvidence(f.testTitle);
+    try { await navigator.clipboard.writeText(ticketText(f, xs, format)); btn.textContent = "Copied"; } catch { btn.textContent = "Copy failed"; }
+    setTimeout(() => (btn.textContent = label), 1500);
+  }
+
   // ---------- Code viewer ----------
   async function showSpec(name) {
-    const res = await fetch("/api/spec?name=" + encodeURIComponent(name));
+    const res = await fetch("/api/spec?name=" + encodeURIComponent(name) + (currentRunId ? "&run=" + encodeURIComponent(currentRunId) : ""));
     if (!res.ok) return;
     const data = await res.json();
     lastSpec = data.content;
@@ -1325,52 +1524,44 @@
     $("codeCard").style.display = "block";
     $("codeCard").scrollIntoView({ behavior: "smooth", block: "start" });
   }
-
   $("copyBtn").addEventListener("click", async () => {
-    try { await navigator.clipboard.writeText(lastSpec); $("copyBtn").textContent = "Copied"; }
-    catch { $("copyBtn").textContent = "Copy failed"; }
+    try { await navigator.clipboard.writeText(lastSpec); $("copyBtn").textContent = "Copied"; } catch { $("copyBtn").textContent = "Copy failed"; }
     setTimeout(() => ($("copyBtn").textContent = "Copy"), 1500);
   });
-
   function highlight(src) {
-    const re = /(\/\/[^\n]*|\/\*[\s\S]*?\*\/)|(`(?:\\[\s\S]|[^`\\])*`|'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*")|\b(import|from|export|const|let|var|await|async|function|return|if|else|for|of|in|new|throw|typeof|true|false|null|undefined|expect|test|describe)\b|\b(\d+(?:\.\d+)?)\b/g;
+    const re = /(\/\/[^\n]*|\/\*[\s\S]*?\*\/)|(`(?:\\[\s\S]|[^`\\])*`|'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*")|\b(import|from|export|const|let|var|await|async|function|return|if|else|for|of|in|new|throw|typeof|true|false|null|undefined|expect|test|describe|it)\b|\b(\d+(?:\.\d+)?)\b/g;
     let out = "", last = 0, m;
     while ((m = re.exec(src))) {
       out += esc(src.slice(last, m.index));
       const [tok, c, s, k, n] = m;
       if (c) out += `<span class="tk-c">${esc(tok)}</span>`;
-      else if (s) {
-        const tagged = esc(tok).replace(/\[(happy|schema|invalid-input|auth)\]/g, '<span class="tk-t">[$1]</span>');
-        out += `<span class="tk-s">${tagged}</span>`;
-      }
+      else if (s) out += `<span class="tk-s">${esc(tok).replace(/\[(happy|schema|invalid-input|auth|authz)\]/g, '<span class="tk-t">[$1]</span>')}</span>`;
       else if (k) out += `<span class="tk-k">${esc(tok)}</span>`;
       else if (n) out += `<span class="tk-n">${esc(tok)}</span>`;
       last = m.index + tok.length;
     }
     out += esc(src.slice(last));
-    // keep multi-line spans valid when split per line
     return out.split("\n").map(fixSpans()).join("\n");
   }
-
   function fixSpans() {
     let open = null;
     return (line) => {
       let l = (open ? open : "") + line;
       const opens = [...l.matchAll(/<span class="[^"]+">/g)];
       const closes = (l.match(/<\/span>/g) || []).length;
-      if (opens.length > closes) { open = opens[opens.length - 1][0]; l += "</span>"; }
-      else open = null;
+      if (opens.length > closes) { open = opens[opens.length - 1][0]; l += "</span>"; } else open = null;
       return l;
     };
   }
 
   // ---------- Framework ----------
-  function renderFramework(fw) {
+  function renderFramework(fw, testFramework) {
     const card = $("fwCard");
     if (!fw || !Array.isArray(fw.files) || !fw.files.length) { card.classList.add("hidden"); return; }
     card.classList.remove("hidden");
+    const pactum = testFramework === "pactum";
+    $("fwTitle").textContent = pactum ? "Pactum framework" : "Playwright framework";
     $("fwPath").textContent = (fw.dir || "") + "/";
-    // build a tree from the file list
     const root = {};
     for (const f of fw.files) {
       const parts = String(f).split("/");
@@ -1379,19 +1570,12 @@
     }
     const lines = [`<span class="dir">${esc(fw.name || "framework")}/</span>`];
     const walk = (node, prefix) => {
-      const keys = Object.keys(node).sort((a, b) => {
-        const da = node[a] !== null, db = node[b] !== null;
-        return da === db ? a.localeCompare(b) : da ? -1 : 1;
-      });
+      const keys = Object.keys(node).sort((a, b) => { const da = node[a] !== null, db = node[b] !== null; return da === db ? a.localeCompare(b) : da ? -1 : 1; });
       keys.forEach((k, i) => {
         const last = i === keys.length - 1;
         const branch = prefix + (last ? "└── " : "├── ");
-        if (node[k] !== null) {
-          lines.push(`${branch}<span class="dir">${esc(k)}/</span>`);
-          walk(node[k], prefix + (last ? "    " : "│   "));
-        } else {
-          lines.push(`${branch}<span class="${/\.spec\.ts$/.test(k) ? "spec" : ""}">${esc(k)}</span>`);
-        }
+        if (node[k] !== null) { lines.push(`${branch}<span class="dir">${esc(k)}/</span>`); walk(node[k], prefix + (last ? "    " : "│   ")); }
+        else lines.push(`${branch}<span class="${/\.spec\.ts$/.test(k) ? "spec" : ""}">${esc(k)}</span>`);
       });
     };
     walk(root, "");
@@ -1400,38 +1584,129 @@
     $("fwSteps").innerHTML = [
       `<li><span class="n">1</span><span>Unzip it, or open <code>${esc(dir)}</code></span></li>`,
       `<li><span class="n">2</span><span><code>npm install</code></span></li>`,
-      `<li><span class="n">3</span><span><code>cp .env.example .env</code> and fill in the auth value</span></li>`,
-      `<li><span class="n">4</span><span><code>npx playwright test</code></span></li>`,
+      `<li><span class="n">3</span><span><code>cp .env.example .env</code> and fill in the auth values</span></li>`,
+      `<li><span class="n">4</span><span><code>${pactum ? "npm test" : "npx playwright test"}</code></span></li>`,
     ].join("");
   }
-  $("fwDl").addEventListener("click", () => { window.location.href = "/api/framework/download"; });
+  $("fwDl").addEventListener("click", () => { window.location.href = "/api/framework/download" + runQuery(); });
 
-  // ---------- Custom API ----------
+  // ---------- Run history ----------
+  async function loadRuns() {
+    let rows = [];
+    try {
+      const res = await fetch("/api/runs");
+      if (res.status === 401) return;
+      rows = await res.json();
+    } catch { return; }
+    const body = $("runsBody");
+    if (!rows.length) { body.innerHTML = `<tr><td colspan="5" class="hint">No runs yet.</td></tr>`; return; }
+    body.innerHTML = rows.map((r) => {
+      const when = r.finishedAt ? new Date(r.finishedAt).toLocaleString() : "";
+      const name = r.name || (r.inputFile ? r.inputFile.replace(/^input\//, "").replace(/\.json$/, "") : "run");
+      const result = r.status === "refused" ? `<span class="no">refused</span>`
+        : r.status === "no-tests" ? `<span class="no">no tests</span>`
+        : r.findings == null ? `<span class="hint">exit ${r.exitCode}</span>`
+        : r.findings ? `<span class="no">${r.findings} bug${r.findings === 1 ? "" : "s"}</span>` : `<span class="yes">clean</span>`;
+      return `<tr><td class="when">${esc(when)}</td><td>${esc(name)}</td><td>${esc(r.testFramework || "")}</td><td>${result}${r.tests != null ? ` <span class="hint">(${r.tests} tests)</span>` : ""}</td><td><button class="link-btn" type="button" data-run="${esc(r.id)}">Load</button></td></tr>`;
+    }).join("");
+    body.querySelectorAll("[data-run]").forEach((b) => b.addEventListener("click", async () => {
+      currentRunId = b.dataset.run;
+      phaseIdx = -1;
+      await loadSummary(false);
+    }));
+  }
+  $("runsRefresh").addEventListener("click", loadRuns);
+
+  // ---------- Build tab ----------
   let mode = "saved";
   let cEps = [];
+  let cRoles = [];
   const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
   const icon = {
-    lock: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
-    more: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h10"/></svg>',
-    del: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>',
+    lock: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
+    more: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h10"/></svg>',
+    del: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>',
   };
 
   function setMode(m) {
     mode = m;
     $("tabSaved").classList.toggle("on", m === "saved");
     $("tabCustom").classList.toggle("on", m === "custom");
+    $("tabImport").classList.toggle("on", m === "import");
     $("savedPane").classList.toggle("hidden", m !== "saved");
     $("customPane").classList.toggle("hidden", m !== "custom");
+    $("importPane").classList.toggle("hidden", m !== "import");
     $("toggleJson").classList.toggle("hidden", m !== "saved");
     $("runErr").classList.add("hidden");
     if (m === "custom" && !cEps.length) addEp();
-    if (m === "saved") parseConfig();
+    if (m === "import") setSource($("cSource").value);
+    if (m === "saved") { parseConfig(); validateActive(); }
     updateImportedUi();
+    updateStepText();
     updateSafety();
   }
   $("tabSaved").addEventListener("click", () => setMode("saved"));
   $("tabCustom").addEventListener("click", () => setMode("custom"));
-  $("cAuth").addEventListener("change", () => $("cAuthFields").classList.toggle("hidden", $("cAuth").value !== "header"));
+  $("tabImport").addEventListener("click", () => setMode("import"));
+
+  function authType() { return $("cAuth").value; }
+  function renderAuthPanes() {
+    const t = authType();
+    for (const id of ["cAuthHeader", "cAuthQuery", "cAuthCookie", "cAuthLogin"]) $(id).classList.add("hidden");
+    if (t === "header") $("cAuthHeader").classList.remove("hidden");
+    if (t === "query") $("cAuthQuery").classList.remove("hidden");
+    if (t === "cookie") $("cAuthCookie").classList.remove("hidden");
+    if (t === "login") $("cAuthLogin").classList.remove("hidden");
+    $("cRolesWrap").classList.toggle("hidden", t === "none");
+    renderRoles();
+    renderEnvBox();
+  }
+  $("cAuth").addEventListener("change", renderAuthPanes);
+  $("cApplyType").addEventListener("change", () => {
+    const t = $("cApplyType").value;
+    $("cApplyNameLbl").textContent = t === "header" ? "Header name" : t === "cookie" ? "Cookie name" : "Query parameter name";
+    $("cApplyName").value = t === "header" ? "Authorization" : t === "cookie" ? "session" : "token";
+  });
+
+  function renderRoles() {
+    const login = authType() === "login";
+    $("cRoles").innerHTML = cRoles.map((r, i) => `
+      <div class="role-row ${login ? "login" : ""}" data-i="${i}">
+        <div><label class="lbl">Role name</label><input class="sm" data-k="name" value="${esc(r.name)}" placeholder="viewer" autocomplete="off" spellcheck="false"></div>
+        ${login
+          ? `<div><label class="lbl">User env</label><input class="sm" data-k="userEnv" value="${esc(r.userEnv)}" placeholder="VIEWER_USER" autocomplete="off" spellcheck="false"></div>
+             <div><label class="lbl">Password env</label><input class="sm" data-k="passEnv" value="${esc(r.passEnv)}" placeholder="VIEWER_PASSWORD" autocomplete="off" spellcheck="false"></div>`
+          : `<div><label class="lbl">.env variable with its value</label><input class="sm" data-k="valueEnv" value="${esc(r.valueEnv)}" placeholder="VIEWER_KEY" autocomplete="off" spellcheck="false"></div>`}
+        <button type="button" class="icon-btn del" data-act="delrole" title="Remove">${icon.del}</button>
+      </div>`).join("");
+  }
+  $("cAddRole").addEventListener("click", () => { cRoles.push({ name: "", valueEnv: "", userEnv: "", passEnv: "" }); renderRoles(); });
+  $("cRoles").addEventListener("input", (ev) => {
+    const row = ev.target.closest(".role-row"); const k = ev.target.dataset.k;
+    if (row && k) { cRoles[+row.dataset.i][k] = ev.target.value; renderEnvBox(); }
+  });
+  $("cRoles").addEventListener("click", (ev) => {
+    const btn = ev.target.closest('[data-act="delrole"]');
+    if (!btn) return;
+    cRoles.splice(+btn.closest(".role-row").dataset.i, 1);
+    renderRoles();
+    renderEnvBox();
+  });
+  // Which .env variables the built input will read (not the one-run value typed in the form).
+  function renderEnvBox() {
+    const t = authType();
+    const names = [];
+    if (t === "login") {
+      for (const pair of $("cLoginFields").value.split(",")) { const m = pair.split("="); if (m[1]) names.push(m[1].trim()); }
+      for (const r of cRoles) { if (r.userEnv) names.push(r.userEnv.trim()); if (r.passEnv) names.push(r.passEnv.trim()); }
+    } else if (t !== "none") {
+      for (const r of cRoles) if (r.valueEnv) names.push(r.valueEnv.trim());
+    }
+    const env = [...new Set(names.filter(Boolean))];
+    $("cEnvBox").classList.toggle("hidden", !env.length);
+    if (env.length) $("cEnvBox").innerHTML = `<span class="k">Before running, put these in .env:</span> ${env.map((n) => `<span class="env">${esc(n)}</span>`).join("")}<button class="link-btn" type="button" data-copy-env="${esc(env.join(","))}" style="margin-left:6px">Copy .env snippet</button>`;
+  }
+  ["cLoginFields"].forEach((id) => $(id).addEventListener("input", renderEnvBox));
 
   function slug(s) { return String(s || "").toLowerCase().replace(/\{[^}]*\}/g, "id").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, ""); }
   function epIds() {
@@ -1442,12 +1717,10 @@
       return id;
     });
   }
-
   function addEp(data) {
-    cEps.push(Object.assign({ method: "GET", path: "", auth: false, body: "", setupFrom: "", idField: "id", open: false }, data || {}));
+    cEps.push(Object.assign({ method: "GET", path: "", auth: false, body: "", query: "", headers: "", setupFrom: "", idField: "id", open: false }, data || {}));
     renderEps();
   }
-
   function renderEps() {
     const ids = epIds();
     $("cEps").innerHTML = cEps.map((e, i) => `
@@ -1456,31 +1729,32 @@
           <select class="sm" data-k="method">${METHODS.map((m) => `<option ${m === e.method ? "selected" : ""}>${m}</option>`).join("")}</select>
           <input class="sm" data-k="path" placeholder="/products/{id}" value="${esc(e.path)}" spellcheck="false" autocomplete="off">
           <button type="button" class="icon-btn ${e.auth ? "on" : ""}" data-act="auth" title="Requires auth">${icon.lock}</button>
-          <button type="button" class="icon-btn ${e.open ? "on" : ""}" data-act="more" title="Body and setup">${icon.more}</button>
+          <button type="button" class="icon-btn ${e.open ? "on" : ""}" data-act="more" title="Body, query, headers and setup">${icon.more}</button>
           <button type="button" class="icon-btn del" data-act="del" title="Remove">${icon.del}</button>
         </div>
         <div class="ep-id">id: ${esc(ids[i])}</div>
         <div class="ep-more">
           <label class="lbl">Sample request body (JSON, optional)</label>
           <textarea data-k="body" spellcheck="false" placeholder='{ "name": "Trail Runner", "price": 89.99 }'>${esc(e.body)}</textarea>
-          <div class="row2" style="margin-top:10px">
+          <div class="row2" style="margin-top:8px">
+            <div><label class="lbl">Query parameters (JSON, optional)</label><input class="sm" data-k="query" value="${esc(e.query)}" placeholder='{ "limit": 5 }' spellcheck="false" autocomplete="off"></div>
+            <div><label class="lbl">Extra headers (JSON, optional)</label><input class="sm" data-k="headers" value="${esc(e.headers)}" placeholder='{ "X-Brand": "alpha" }' spellcheck="false" autocomplete="off"></div>
+          </div>
+          <div class="row2" style="margin-top:8px">
             <div>
-              <label class="lbl">Create resource first with</label>
+              <label class="lbl">Create the record first with</label>
               <select class="sm" data-k="setupFrom">
                 <option value="">None</option>
                 ${ids.map((id, j) => (j !== i && cEps[j].method === "POST") ? `<option value="${esc(id)}" ${e.setupFrom === id ? "selected" : ""}>${esc(id)}</option>` : "").join("")}
               </select>
             </div>
-            <div>
-              <label class="lbl">Id field in its response</label>
-              <input class="sm" data-k="idField" value="${esc(e.idField)}" spellcheck="false" autocomplete="off">
-            </div>
+            <div><label class="lbl">Id field in its response</label><input class="sm" data-k="idField" value="${esc(e.idField)}" spellcheck="false" autocomplete="off"></div>
           </div>
-          <div class="hint" style="margin-top:6px">Needed when the path has {id}: the agent creates a resource first and uses its id.</div>
+          <div class="hint" style="margin-top:6px">Needed when the path has {id}: the agent creates a record first, uses its id, and deletes it afterwards. A path with two placeholders chains two setup steps automatically when each parent has a POST.</div>
         </div>
       </div>`).join("");
+    updateStepText();
   }
-
   $("customPane").addEventListener("input", () => { $("runErr").classList.add("hidden"); $("cMsg").textContent = ""; });
   $("cEps").addEventListener("input", (ev) => {
     const row = ev.target.closest(".ep-edit"); const k = ev.target.dataset.k;
@@ -1488,12 +1762,9 @@
     cEps[+row.dataset.i][k] = ev.target.value;
     if (k === "path") row.querySelector(".ep-id").textContent = "id: " + epIds()[+row.dataset.i];
   });
-  $("cEps").addEventListener("change", (ev) => {
-    const k = ev.target.dataset.k;
-    if (k === "method" || k === "path") renderEps(); // refresh ids and setup options
-  });
+  $("cEps").addEventListener("change", (ev) => { const k = ev.target.dataset.k; if (k === "method" || k === "path") renderEps(); });
   $("cEps").addEventListener("click", (ev) => {
-    const btn = ev.target.closest("[data-act]"); if (!btn) return;
+    const btn = ev.target.closest("[data-act]"); if (!btn || btn.dataset.act === "delrole") return;
     const i = +btn.closest(".ep-edit").dataset.i;
     if (btn.dataset.act === "auth") cEps[i].auth = !cEps[i].auth;
     if (btn.dataset.act === "more") cEps[i].open = !cEps[i].open;
@@ -1501,121 +1772,176 @@
     renderEps();
   });
   $("cAdd").addEventListener("click", () => addEp({ open: false }));
-
   $("cExample").addEventListener("click", () => {
-    $("cName").value = "jsonplaceholder";
-    $("cBase").value = "https://jsonplaceholder.typicode.com";
-    $("cAuth").value = "none";
-    $("cAuthFields").classList.add("hidden");
+    $("cName").value = "local-shop-demo";
+    $("cBase").value = "http://localhost:4000";
+    $("cAuth").value = "header";
+    $("cAuthHeaderName").value = "Authorization";
+    renderAuthPanes();
     cEps = [
-      { method: "GET", path: "/posts", auth: false, body: "", setupFrom: "", idField: "id", open: false },
-      { method: "GET", path: "/posts/1", auth: false, body: "", setupFrom: "", idField: "id", open: false },
-      { method: "POST", path: "/posts", auth: false, body: JSON.stringify({ title: "Hello", body: "Generated by the agent", userId: 1 }, null, 2), setupFrom: "", idField: "id", open: true },
+      { method: "GET", path: "/products", auth: false, body: "", query: JSON.stringify({ category: "tops", limit: 5 }), headers: "", setupFrom: "", idField: "id", open: false },
+      { method: "POST", path: "/products", auth: true, body: JSON.stringify({ name: "Trail Runner Shoe", price: 89.99, category: "shoes", inStock: true }, null, 2), query: "", headers: "", setupFrom: "", idField: "id", open: true },
+      { method: "GET", path: "/products/{id}", auth: false, body: "", query: "", headers: "", setupFrom: "post-products", idField: "id", open: false },
+      { method: "DELETE", path: "/products/{id}", auth: true, body: "", query: "", headers: "", setupFrom: "post-products", idField: "id", open: false },
     ];
     renderEps();
+    $("cMsg").className = "hint";
+    $("cMsg").textContent = "The built-in demo shop (npm run api:local). Its token is Bearer hackathon-demo-token.";
   });
 
+  // Builds the input JSON from the form. Auth values typed in the form travel with this run only.
   function buildCustomConfig() {
     const errors = [];
     const name = slug($("cName").value);
     const baseUrl = $("cBase").value.trim().replace(/\/+$/, "");
-    const authMode = $("cAuth").value;
+    const t = authType();
     if (!name) errors.push("Enter an API name.");
     if (!/^https?:\/\/\S+$/.test(baseUrl)) errors.push("Base URL must start with http:// or https://.");
     const ids = epIds();
     const endpoints = [];
+    const parseJsonField = (text, label, id) => {
+      if (!text.trim()) return undefined;
+      try {
+        const v = JSON.parse(text);
+        if (!v || typeof v !== "object" || Array.isArray(v)) { errors.push(`${id}: ${label} must be a JSON object.`); return undefined; }
+        return v;
+      } catch { errors.push(`${id}: ${label} is not valid JSON.`); return undefined; }
+    };
     cEps.forEach((e, i) => {
       const path = e.path.trim();
       if (!path) { errors.push(`Endpoint ${i + 1} needs a path.`); return; }
       if (!path.startsWith("/")) errors.push(`${ids[i]}: path must start with /.`);
+      if (path.includes("?")) errors.push(`${ids[i]}: put query parameters in the Query field, not in the path.`);
       const ep = { id: ids[i], method: e.method, path, requiresAuth: !!e.auth };
-      if (e.auth && authMode === "none") errors.push(`${ids[i]} requires auth, but Auth is set to No auth.`);
-      if (e.body.trim()) {
-        try { ep.body = JSON.parse(e.body); } catch (err) { errors.push(`${ids[i]}: body is not valid JSON.`); }
-      }
-      if (/\{[^}]+\}/.test(path)) {
-        if (!e.setupFrom) errors.push(`${ids[i]}: path has {id}, so pick which endpoint creates the resource first.`);
-        else ep.setup = { endpointId: e.setupFrom, idField: (e.idField || "id").trim() };
+      if (e.auth && t === "none") errors.push(`${ids[i]} requires auth, but Auth is set to No auth.`);
+      const body = parseJsonField(e.body, "body", ids[i]); if (body) ep.body = body;
+      const query = parseJsonField(e.query, "query", ids[i]); if (query) ep.query = query;
+      const headers = parseJsonField(e.headers, "headers", ids[i]); if (headers) ep.headers = headers;
+      const params = (path.match(/\{[^}]+\}/g) || []).map((p) => p.slice(1, -1));
+      if (params.length) {
+        if (!e.setupFrom) errors.push(`${ids[i]}: path has {${params[0]}}, so pick which endpoint creates the record first.`);
+        else if (params.length === 1) ep.setup = { endpointId: e.setupFrom, idField: (e.idField || "id").trim() };
+        else {
+          // One step per placeholder: the chosen POST fills the last one; earlier ones come from that POST's own setup chain.
+          const steps = [];
+          const walkUp = (fromId, param) => {
+            steps.unshift({ endpointId: fromId, idField: (e.idField || "id").trim(), param });
+          };
+          let current = e.setupFrom;
+          for (let p = params.length - 1; p >= 0 && current; p--) {
+            walkUp(current, params[p]);
+            const parent = cEps[ids.indexOf(current)];
+            current = parent && parent.setupFrom ? parent.setupFrom : "";
+          }
+          if (steps.length !== params.length) errors.push(`${ids[i]}: the path has ${params.length} placeholders but only ${steps.length} setup step(s) could be chained. Give each parent POST its own setup.`);
+          ep.setup = steps;
+        }
       }
       endpoints.push(ep);
     });
     if (!cEps.length) errors.push("Add at least one endpoint.");
-    const cfg = {
-      name,
-      baseUrl,
-      defaultHeaders: { Accept: "application/json", "Content-Type": "application/json" },
-    };
-    if (authMode === "header") {
-      if (!$("cAuthHeader").value.trim()) errors.push("Enter the auth header name.");
-      if (!$("cAuthValue").value.trim()) errors.push("Enter the auth header value.");
-      cfg.auth = { header: $("cAuthHeader").value.trim(), valueEnv: "CUSTOM_API_AUTH" };
+    const cfg = { name, baseUrl, defaultHeaders: { Accept: "application/json", "Content-Type": "application/json" } };
+    let authValue = "";
+    const roles = {};
+    for (const r of cRoles) {
+      const rn = r.name.trim();
+      if (!rn) { errors.push("Every role needs a name."); continue; }
+      if (rn === "default") errors.push('"default" is the main user; pick another role name.');
+      if (t === "login") {
+        if (!r.userEnv.trim() || !r.passEnv.trim()) errors.push(`Role ${rn}: name the .env variables for its user and password.`);
+        roles[rn] = { credentialsEnv: Object.fromEntries(loginPairs().map(([field], idx) => [field, idx === 0 ? r.userEnv.trim() : r.passEnv.trim()])) };
+      } else {
+        if (!r.valueEnv.trim()) errors.push(`Role ${rn}: name the .env variable that holds its value.`);
+        roles[rn] = { valueEnv: r.valueEnv.trim() };
+      }
+    }
+    const withRoles = (a) => (Object.keys(roles).length ? { ...a, roles } : a);
+    if (t === "header") {
+      if (!$("cAuthHeaderName").value.trim()) errors.push("Enter the auth header name.");
+      if (!$("cAuthValue").value.trim()) errors.push("Enter the auth header value for this run.");
+      cfg.auth = withRoles({ header: $("cAuthHeaderName").value.trim(), valueEnv: "CUSTOM_API_AUTH" });
+      authValue = $("cAuthValue").value.trim();
+    } else if (t === "query") {
+      if (!$("cAuthParam").value.trim()) errors.push("Enter the query parameter name.");
+      if (!$("cAuthQueryValue").value.trim()) errors.push("Enter the API key value for this run.");
+      cfg.auth = withRoles({ type: "query", param: $("cAuthParam").value.trim(), valueEnv: "CUSTOM_API_AUTH" });
+      authValue = $("cAuthQueryValue").value.trim();
+    } else if (t === "cookie") {
+      if (!$("cAuthCookieName").value.trim()) errors.push("Enter the cookie name.");
+      if (!$("cAuthCookieValue").value.trim()) errors.push("Enter the cookie value for this run.");
+      cfg.auth = withRoles({ type: "cookie", name: $("cAuthCookieName").value.trim(), valueEnv: "CUSTOM_API_AUTH" });
+      authValue = $("cAuthCookieValue").value.trim();
+    } else if (t === "login") {
+      const pairs = loginPairs();
+      if (!pairs.length) errors.push("Login auth needs at least one credential field, for example username=API_USER.");
+      const apply = $("cApplyType").value === "header"
+        ? { type: "header", header: $("cApplyName").value.trim() || "Authorization", ...($("cApplyPrefix").value ? { prefix: $("cApplyPrefix").value } : {}) }
+        : $("cApplyType").value === "cookie" ? { type: "cookie", name: $("cApplyName").value.trim() || "session" }
+        : { type: "query", param: $("cApplyName").value.trim() || "token" };
+      const request = { method: $("cLoginMethod").value, path: $("cLoginPath").value.trim() || "/auth/login" };
+      if ($("cLoginBody").value.trim()) { const b = parseJsonField($("cLoginBody").value, "login body", "auth"); if (b) request.body = b; }
+      if (!request.path.startsWith("/")) errors.push("The login path must start with /.");
+      cfg.auth = withRoles({ type: "login", request, credentialsEnv: Object.fromEntries(pairs), tokenPath: $("cTokenPath").value.trim() || "data.token", apply, refresh: { statuses: [401], once: true } });
     }
     cfg.endpoints = endpoints;
-    return { config: cfg, authValue: authMode === "header" ? $("cAuthValue").value.trim() : "", errors };
+    return { config: cfg, authValue, errors };
+  }
+  function loginPairs() {
+    return $("cLoginFields").value.split(",").map((p) => p.split("=").map((x) => x.trim())).filter((p) => p[0] && p[1]);
   }
 
   $("cSave").addEventListener("click", async () => {
     const msg = $("cMsg");
     const built = buildCustomConfig();
-    if (built.errors.length) { msg.className = "bad-msg"; msg.textContent = built.errors.join(" "); return; }
-    const res = await fetch("/api/inputs/save", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: built.config.name, json: JSON.stringify(built.config, null, 2) }),
-    });
+    // Saving does not need the one-run value; drop that error.
+    const errors = built.errors.filter((e) => !/for this run\.$/.test(e));
+    if (errors.length) { msg.className = "bad-msg"; msg.textContent = errors.join(" "); return; }
+    const cfg = withRunOptions(built.config);
+    delete cfg.allowProduction; delete cfg.allowWrites;
+    const res = await fetch("/api/inputs/save", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: built.config.name, json: JSON.stringify(cfg, null, 2) }) });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) { msg.className = "bad-msg"; msg.textContent = body.error || "Could not save."; return; }
     msg.className = "ok-msg";
-    msg.textContent = `Saved as input/${body.file}. The auth value was not saved.`;
+    msg.textContent = `Saved as input/${body.file}. No auth value was saved.`;
     const keep = $("inputSel").value;
     await loadInputs();
     if (keep && keep !== $("inputSel").value) { $("inputSel").value = keep; await loadInput(keep); }
   });
 
-  // ---------- Import (Custom API tab) ----------
-  let source = "manual";
-  let imp = null; // last import result plus which endpoints are checked
-  let impFile = null; // an uploaded file, used instead of the paste box
+  // ---------- Import tab ----------
+  let source = "openapi";
+  let imp = null;
+  let impFile = null;
   const MAX_IMPORT_BYTES = 5 * 1024 * 1024;
   const IMPORT_INFO = {
     postman: { hint: "Paste a Postman collection (v2.0 or v2.1 JSON), or upload the exported file.", accept: ".json,application/json", placeholder: '{ "info": { "name": "Orders API" }, "item": [ ... ] }' },
     openapi: { hint: "Paste an OpenAPI 3.x or Swagger 2.0 document (JSON or YAML), or upload it.", accept: ".json,.yaml,.yml", placeholder: "openapi: 3.0.3\ninfo: ...\nservers: ...\npaths: ..." },
     curl: { hint: "Paste one or more curl commands. Line continuations are fine.", accept: ".txt,.sh", placeholder: "curl -X POST https://api.example.com/orders -H 'Content-Type: application/json' -d '{\"sku\": \"A1\"}'" },
     har: { hint: "Upload a HAR file from the browser network tab (Save all as HAR). Only API calls are kept.", accept: ".har,.json", placeholder: "Paste HAR JSON, or upload the .har file" },
-    text: { hint: "Paste a Jira ticket or Confluence page that describes the endpoints. Claude reads it (up to 2 calls, not counted in the run budget) and keeps only what the text states.", accept: "", placeholder: "GET /orders lists orders. POST /orders creates one with sku and quantity (needs a token)..." },
+    text: { hint: "Paste a Jira ticket or Confluence page that describes the endpoints. The model reads it (up to 2 calls, not counted in the run budget) and keeps only what the text states.", accept: "", placeholder: "GET /orders lists orders. POST /orders creates one with sku and quantity (needs a token)..." },
   };
-
-  function formatSize(bytes) {
-    return bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-  }
-
+  function formatSize(bytes) { return bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`; }
   function impMessage(kind, text) {
     $("impMsg").className = kind === "ok" ? "ok-msg" : kind === "bad" ? "bad-msg" : "hint";
     $("impMsg").style.marginTop = "8px";
     $("impMsg").textContent = text;
   }
-
   function setSource(s) {
     source = s;
-    $("manualPane").classList.toggle("hidden", s !== "manual");
-    $("importPane").classList.toggle("hidden", s === "manual");
-    if (s !== "manual") {
-      const info = IMPORT_INFO[s];
-      $("impHint").textContent = info.hint;
-      $("impText").placeholder = info.placeholder;
-      $("impFileWrap").classList.toggle("hidden", !info.accept);
-      $("impFile").accept = info.accept;
-      imp = null;
-      impFile = null;
-      $("impFileName").textContent = "";
-      impMessage("", "");
-      renderImport();
-    }
+    const info = IMPORT_INFO[s];
+    $("impHint").textContent = info.hint;
+    $("impText").placeholder = info.placeholder;
+    $("impFileWrap").classList.toggle("hidden", !info.accept);
+    $("impFile").accept = info.accept;
+    imp = null;
+    impFile = null;
+    $("impFileName").textContent = "";
+    impMessage("", "");
+    renderImport();
     $("runErr").classList.add("hidden");
     updateSafety();
   }
   $("cSource").addEventListener("change", () => setSource($("cSource").value));
-
   $("impFile").addEventListener("change", async () => {
     const f = $("impFile").files[0];
     $("impFile").value = "";
@@ -1626,10 +1952,7 @@
     $("impFileName").textContent = `Using ${f.name} (${formatSize(f.size)}). Paste text instead to use that.`;
     impMessage("", "");
   });
-  $("impText").addEventListener("input", () => {
-    if (impFile && $("impText").value) { impFile = null; $("impFileName").textContent = ""; }
-  });
-
+  $("impText").addEventListener("input", () => { if (impFile && $("impText").value) { impFile = null; $("impFileName").textContent = ""; } });
   $("impBtn").addEventListener("click", async () => {
     const content = impFile ? impFile.content : $("impText").value;
     if (!content.trim()) { impMessage("bad", "Paste something or upload a file first."); return; }
@@ -1637,10 +1960,11 @@
     $("impBtn").disabled = true;
     imp = null;
     renderImport();
-    impMessage("", source === "text" ? "Claude is reading the text (up to 2 calls, not counted in the run budget)..." : "Importing...");
+    impMessage("", source === "text" ? "The model is reading the text (up to 2 calls, not counted in the run budget)..." : "Importing...");
     try {
       const res = await fetch("/api/import", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type: source, content }) });
       const body = await res.json().catch(() => ({}));
+      if (res.status === 401) return showLogin();
       if (!res.ok) { impMessage("bad", body.error || `Import failed (${res.status})`); return; }
       imp = { ...body, checked: body.input.endpoints.map((_, i) => i < 12) };
       $("impName").value = body.input.name || "";
@@ -1655,21 +1979,22 @@
       $("impBtn").disabled = running;
     }
   });
-
   function renderImport() {
     $("impPreview").classList.toggle("hidden", !imp);
     updateSafety();
+    updateStepText();
     if (!imp) return;
     const needsAuth = imp.input.endpoints.some((e) => e.requiresAuth);
     $("impTokenWrap").classList.toggle("hidden", !needsAuth);
-    $("impAuthHeader").textContent = imp.input.auth?.header || "Authorization";
+    const a = imp.input.auth || {};
+    $("impAuthHeader").textContent = a.header || a.param || a.name || "Authorization";
     $("impWarnings").innerHTML = imp.warnings.map((w) => `<li>${esc(w)}</li>`).join("");
     $("impList").innerHTML = imp.input.endpoints.map((e, i) => `
       <label class="imp-row">
         <input type="checkbox" data-i="${i}" ${imp.checked[i] ? "checked" : ""}>
         <span class="m ${esc(e.method)}">${esc(e.method)}</span>
         <span><span class="path">${esc(e.path)}${e.requiresAuth ? `<span class="lock" title="Requires auth">${lockSvg}</span>` : ""}</span>
-          ${e.setup ? `<span class="setup">setup: ${esc(e.setup.endpointId)}, id from "${esc(e.setup.idField)}"</span>` : ""}</span>
+          ${e.setup ? `<span class="setup">setup: ${esc(Array.isArray(e.setup) ? e.setup.map((s) => s.endpointId).join(", ") : e.setup.endpointId)}</span>` : ""}</span>
       </label>`).join("");
     const skipped = imp.skipped;
     $("impSkipped").classList.toggle("hidden", !skipped.length);
@@ -1677,41 +2002,25 @@
     $("impSkipped").querySelector("ul").innerHTML = skipped.map((x) => `<li><b>${esc(x.item)}</b>: ${esc(x.reason)}</li>`).join("");
     updateImportCount();
   }
-
   function updateImportCount() {
     if (!imp) return;
     const n = imp.checked.filter(Boolean).length;
     const found = imp.input.endpoints.length;
     $("impCount").textContent = `${found} endpoint${found === 1 ? "" : "s"} found, ${n} selected`;
     $("impBudget").classList.toggle("hidden", n <= 12);
-    $("impBudget").textContent = `${n} endpoints selected. Each endpoint costs about 2 Claude calls of the 30-call budget, so this needs about ${n * 2} calls and the run may stop early. 12 or fewer is safe.`;
+    $("impBudget").textContent = `${n} endpoints selected. Each endpoint costs about 2 model calls of the 30-call budget, so this needs about ${n * 2} calls and the run may stop early. 12 or fewer is safe; raise MAX_CLAUDE_CALLS in .env for more.`;
     $("impBaseHint").classList.toggle("hidden", !!$("impBase").value.trim());
     $("impUse").disabled = running || n === 0;
   }
-  $("impList").addEventListener("change", (ev) => {
-    const i = ev.target.dataset.i;
-    if (imp && i !== undefined) { imp.checked[+i] = ev.target.checked; updateImportCount(); }
-  });
+  $("impList").addEventListener("change", (ev) => { const i = ev.target.dataset.i; if (imp && i !== undefined) { imp.checked[+i] = ev.target.checked; updateImportCount(); } });
   $("impBase").addEventListener("input", updateImportCount);
-
-  function importedName() {
-    try { return JSON.parse(importedJson || "{}").name; } catch { return undefined; }
-  }
+  function importedName() { try { return JSON.parse(importedJson || "{}").name; } catch { return undefined; } }
   function ensureImportedOption() {
     let opt = $("inputSel").querySelector(`option[value="${IMPORTED}"]`);
-    if (!opt) {
-      opt = document.createElement("option");
-      opt.value = IMPORTED;
-      $("inputSel").prepend(opt);
-    }
+    if (!opt) { opt = document.createElement("option"); opt.value = IMPORTED; $("inputSel").prepend(opt); }
     opt.textContent = `imported: ${importedName() || "custom-api"} (not saved)`;
   }
-  function updateImportedUi() {
-    $("impSaved").classList.toggle("hidden", mode !== "saved" || $("inputSel").value !== IMPORTED);
-  }
-
-  // Puts the checked endpoints into the Saved API JSON editor. The run and the save then go through
-  // the existing routes, with the existing auth field.
+  function updateImportedUi() { $("impSaved").classList.toggle("hidden", mode !== "saved" || $("inputSel").value !== IMPORTED); }
   $("impUse").addEventListener("click", () => {
     if (!imp) return;
     const all = imp.input.endpoints;
@@ -1720,10 +2029,13 @@
     for (let grew = true; grew; ) {
       grew = false;
       for (const e of all) {
-        if (ids.has(e.id) && e.setup && !ids.has(e.setup.endpointId) && all.some((x) => x.id === e.setup.endpointId)) {
-          ids.add(e.setup.endpointId);
-          added.push(`${e.setup.endpointId} (setup for ${e.id})`);
-          grew = true;
+        const steps = e.setup ? (Array.isArray(e.setup) ? e.setup : [e.setup]) : [];
+        for (const st of steps) {
+          if (ids.has(e.id) && !ids.has(st.endpointId) && all.some((x) => x.id === st.endpointId)) {
+            ids.add(st.endpointId);
+            added.push(`${st.endpointId} (setup for ${e.id})`);
+            grew = true;
+          }
         }
       }
     }
@@ -1740,7 +2052,6 @@
     ensureImportedOption();
     $("inputSel").value = IMPORTED;
     $("jsonBox").value = importedJson;
-    // The auth value typed in the preview goes to the run's auth field. It is never saved.
     if (cfg.auth) $("savedToken").value = $("impToken").value.trim();
     $("jsonBox").classList.remove("hidden");
     $("toggleJson").textContent = "Hide JSON";
@@ -1749,7 +2060,6 @@
     $("impSaveMsg").className = added.length ? "hint" : "";
     $("impSaveMsg").textContent = added.length ? `Also added ${added.join(", ")}.` : "";
   });
-
   $("impSave").addEventListener("click", async () => {
     const msg = $("impSaveMsg");
     if (!parseConfig()) return;
@@ -1764,33 +2074,25 @@
     await loadInput(body.file);
     updateImportedUi();
     msg.className = "ok-msg";
-    msg.textContent = `Saved as input/${body.file}. The auth value was not saved.`;
+    msg.textContent = `Saved as input/${body.file}. No auth value was saved.`;
   });
 
   // ---------- Boot ----------
   (async () => {
-    try {
-      classifyHost = (await import("/host-class.mjs")).classifyHost;
-    } catch {
-      showRunErr("Could not load the host safety rules. Every host is treated as production.");
-    }
+    try { classifyHost = (await import("/host-class.mjs")).classifyHost; }
+    catch { showRunErr("Could not load the host safety rules. Every host is treated as production."); }
     let info = { loginRequired: false, user: null };
-    try {
-      info = await (await fetch("/api/session")).json();
-    } catch {}
+    try { info = await (await fetch("/api/session")).json(); } catch {}
     if (info.loginRequired && !info.user) return showLogin();
     showApp(info);
     await startApp();
   })();
-
   async function startApp() {
     await loadSettings();
+    renderAuthPanes();
     await loadInputs();
     connectStream();
-    try {
-      const st = await (await fetch("/api/state")).json();
-      if (!st.running && st.hasSummary) $("lastBtn").textContent = "Load last run";
-    } catch {}
+    loadRuns();
   }
 })();
 </script>
