@@ -10,7 +10,7 @@ per hour per login, one run at a time with a queue, each login sees only its own
 
 ## Cost
 
-Hosted mode uses `ANTHROPIC_API_KEY`, so every run is billed to that key's Console workspace (the
+Hosted mode uses `ANTHROPIC_API_KEY` (or `OPENAI_API_KEY` with `LLM_PROVIDER=openai`), so every run is billed to that key's account (the
 local demo uses the free Claude Code login instead). A local-shop run is about 10 calls and roughly
 60k input and 10k output tokens. Set a monthly spend limit on the workspace in the Console before
 sharing the link, and keep `HOSTED_RUNS_PER_HOUR` low.
@@ -60,6 +60,7 @@ HOSTED=1
 UI_PORT=3000
 UI_USERS=demo:$2a$10$...,client1:$2a$10$...
 ANTHROPIC_API_KEY=sk-ant-...
+# or, for OpenAI: LLM_PROVIDER=openai and OPENAI_API_KEY=sk-...
 CLAUDE_MODEL=claude-sonnet-5-5
 MAX_CLAUDE_CALLS=30
 HOSTED_RUNS_PER_HOUR=5
@@ -81,7 +82,7 @@ cd /opt/api-test-agent/app && sudo -u agent npm run ui
 ```
 
 Expected: `API Test Agent UI running on http://localhost:3000 (hosted mode: login required, 2 user(s), 5 runs/hour, queue 5, local hosts refused)`.
-If instead you see `HOSTED=1 requires UI_USERS` or `HOSTED=1 requires ANTHROPIC_API_KEY`, fix `.env`.
+If instead you see `HOSTED=1 requires UI_USERS` or `HOSTED=1 requires ANTHROPIC_API_KEY` (or `OPENAI_API_KEY` for the openai provider), fix `.env`.
 Stop it with Ctrl+C.
 
 ## 5. systemd unit

@@ -1,7 +1,7 @@
 {
   "name": "api-test-agent",
   "version": "1.0.0",
-  "description": "",
+  "description": "Agent that probes an API, writes Playwright or Pactum API tests with Claude or OpenAI, runs them, flags suspected API bugs, and exports a standalone test framework.",
   "license": "MIT",
   "author": {
     "name": "SprintSynergy",
