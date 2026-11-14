@@ -113,7 +113,8 @@ Input file changes:
 - optional top-level "name" (lowercase letters, numbers, dashes). Used as the framework folder name.
 - "auth" is optional. Without it, ctx.api and ctx.noAuthApi behave the same, and no endpoint may have requiresAuth true.
 - When auth.valueEnv is "CUSTOM_API_AUTH", the UI passes the value to the agent process in the
-  CUSTOM_API_AUTH environment variable for that run only. It is never written to disk.
+  CUSTOM_API_AUTH environment variable for that run only. It is never written to disk. This is the
+  only auth value the page ever takes; every other auth type and every role reads `.env` (section 11).
 
 out/summary.json gets one more top-level field:
 
@@ -274,3 +275,50 @@ answer 403 and the page hides the card.
 - The page shows the card when `configured` is false and `editable` is true, and a one-line status with a
   "Change" link otherwise.
 
+
+## 11. Input validation, run history and evidence (additive)
+
+The page accepts every auth type, roles, profiles and redaction settings. It no longer has a server-side
+auth check of its own: the UI validates an input with the agent's own zod schema (`agent/config.ts`
+through tsx) and resolves profiles with `agent/model.ts`, so the page and the CLI agree on what is valid.
+The agent is unchanged; the UI reads the artifacts the agent already writes.
+
+- POST /api/validate-input `{ json, selection? }`: 200 always (a bad input is a 200 with `ok: false`).
+  `{ ok, problems: [{ path, message }], baseUrl, hostClass, mode, selection, dimensions, framework,
+  auth: { type, roles, envNames, envMissing, oneRunValue }, redaction: { mode, fields }, endpoints, name }`.
+  `path` is a dot path with array indexes (`endpoints[0].path`, `auth.roles.viewer.valueEnv`, `(root)` for
+  text that is not JSON, `profile` when a selection is missing). `dimensions` is the profile's dimension
+  map when the input has a profile. `baseUrl`, `hostClass` and `mode` are the resolved base URL and the
+  safety guard's answer for it (same rules as `agent/safety.ts`, hosted and AGENT_FORCE_PRODUCTION
+  included); they are null while problems remain. `envNames` are the `.env` variables the auth section
+  reads, `envMissing` those the server's environment lacks (names only, never values), `oneRunValue` true
+  when `valueEnv` is `CUSTOM_API_AUTH` for a header, query or cookie auth (the one value the page may type
+  in, passed to that run only).
+- POST /api/run now takes `{ json, authValue?, selection? }`. `selection` is the `--select` text
+  (`env=staging,brand=alpha`) and reaches the agent as `AGENT_SELECT`. A failing validation is 400
+  `{ error, problems }` with the same `problems` shape. A `oneRunValue` input without `authValue` is 400.
+  In local mode the answer is now 202 `{ started: true, runId }` too, and every run (login or not) gets
+  `runs/<runId>/` with its `input.json` and, when it ends, a snapshot of `summary.json`, `framework.zip`,
+  `html/`, `allure-report/`, `generated/`, `results.json` (the Playwright JSON report) and `pactum/`
+  (status and evidence files). Local mode keeps the newest 20 run folders; login mode keeps its TTL.
+- GET /api/runs: the last 20 finished runs the caller may see (every run in local mode, this login's runs
+  with login on), newest first: `[{ id, finishedAt, exitCode, status, inputFile, name, baseUrl,
+  testFramework, findings, tests, failed, durationSec }]`. `findings` counts suspected API findings; fields
+  are null when the run wrote no summary. `?run=<id>` on /api/summary, /api/spec, /api/framework/download,
+  /report and /allure now also works in local mode for a listed run.
+- GET /api/evidence?test=<test title>[&run=<id>]: `{ test, exchanges: [{ name, request: { method, path,
+  role?, headers?, body? }, response: { status, headers?, body } | { error }, file? }] }`, the request and
+  response pairs the agent recorded for that test, already redacted by the agent: decoded from the
+  Playwright JSON report's inline attachments (the Allure metadata attachment is skipped), or read from
+  `pactum/status.json` and its evidence files (`file` names the evidence file). An unknown title gives an
+  empty list.
+- GET /api/evidence?file=<relative path>[&run=<id>]: streams one evidence file. Only `reports/` of the live
+  run, or `results.json` and `pactum/` of a run snapshot, with a `.json`, `.txt` or `.html` name; anything
+  else (`..`, `input.json`, another run) is 403, a missing file 404. With login on, a run that is not the
+  caller's is a 404 like the other `?run=` routes.
+- All three routes are 401 without a session when login is on.
+
+Page ids the tests rely on (`npm run test:ui`): `fwToggle` (framework), `cAuth` (auth type select, values
+none, header, query, cookie, login), `profileBox` and `profileDims`, `redactMode` and `redactFields`,
+`findings` (finding cards with `data-act="evidence" | "jira" | "md"` buttons), `runsBody` (run history),
+`strip` (summary strip), plus every id section 10 and the settings test use.
