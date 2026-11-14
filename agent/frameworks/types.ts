@@ -19,7 +19,11 @@ export type TestOutcome = {
   error: string;
 };
 
+export type RunOptions = { secrets: string[]; reportName: string; cleanError: (text: string) => string; specFiles?: string[]; workers?: number };
+
 export type RunResult = {
+  // One-line notes for the console (for example that a flag was ignored).
+  notes?: string[];
   outcomes: TestOutcome[];
   // Errors that stopped a spec file from loading at all (never counted as passed).
   loadErrors: string[];
@@ -66,7 +70,10 @@ export type FrameworkAdapter = {
   // The static gate.
   validate(code: string, opts: ValidateOptions): ValidationResult;
   // Runs the generated specs and returns normalized results. secrets are scrubbed from error text.
-  run(inputFile: string, opts: { secrets: string[]; reportName: string; cleanError: (text: string) => string }): Promise<RunResult>;
+  // specFiles: the spec files in scope (paths under generated/); every spec in generated/ when omitted.
+  // workers: parallel test workers (--test-workers); 1 when omitted. An adapter that cannot run tests
+  // in parallel says so in RunResult.notes and runs them one at a time.
+  run(inputFile: string, opts: RunOptions): Promise<RunResult>;
   // Writes the standalone project and zip.
   exportFramework(opts: ExportOptions): FrameworkInfo;
 };
