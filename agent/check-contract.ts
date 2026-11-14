@@ -59,7 +59,8 @@ need(isInt(redaction.fields), 'summary.redaction.fields is not a count');
 need(isInt(redaction.replaced), 'summary.redaction.replaced is not a count');
 const cleanup = isObj(s.cleanup) ? s.cleanup : {};
 need(isObj(s.cleanup), 'summary.cleanup is missing');
-for (const k of ['created', 'deleted', 'failed', 'skippedNoDeleteEndpoint']) need(isInt(cleanup[k]), `summary.cleanup.${k} is not a count`);
+for (const k of ['created', 'createdByTests', 'deleted', 'failed', 'skippedNoDeleteEndpoint']) need(isInt(cleanup[k]), `summary.cleanup.${k} is not a count`);
+if (isInt(cleanup.created) && isInt(cleanup.createdByTests)) need((cleanup.createdByTests as number) <= (cleanup.created as number), 'summary.cleanup.createdByTests cannot exceed created');
 field('summary.cleanup', cleanup, 'failures', ['array']);
 const counts = ['created', 'deleted', 'failed', 'skippedNoDeleteEndpoint'].map((k) => cleanup[k]);
 if (counts.every(isInt)) {
@@ -71,7 +72,6 @@ field('summary', s, 'endpoints', ['array']);
 field('summary', s, 'findings', ['array']);
 field('summary', s, 'framework', ['object', 'null']);
 field('summary', s, 'allureReport', ['string', 'null'], ['reports/allure-report', null]);
-if (s.testFramework === 'pactum') need(s.allureReport === null, 'a pactum run has no Allure report yet, allureReport must be null');
 
 const claudeCalls = isObj(s.claudeCalls) ? s.claudeCalls : {};
 need(isObj(s.claudeCalls), 'summary.claudeCalls is missing');

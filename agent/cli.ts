@@ -181,6 +181,7 @@ function writeSummary(o: {
     redaction: { mode: config.redaction?.mode === 'strict' ? 'strict' : 'standard', fields: config.redaction?.fields?.length ?? 0, replaced: redactionReplaced },
     cleanup: {
       created: cleanup.created,
+      createdByTests: cleanup.createdByTests,
       deleted: cleanup.deleted,
       failed: cleanup.failed,
       skippedNoDeleteEndpoint: cleanup.skippedNoDeleteEndpoint,

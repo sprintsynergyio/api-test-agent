@@ -1,14 +1,15 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { testEnv } from './test-env';
 import { builtinModules } from 'node:module';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { allAuthEnvNames, describeAuth } from '../auth';
 import { apiName, type Config } from '../config';
 import { authSource } from '../export';
 import { validateWithRules, type GateRules } from '../validate';
-import { addCleanup, emptyCleanup, type CleanupTotals } from '../http';
-import { exportedConfig, modelSource, redactSource } from './shared-export';
+import { addCleanup, emptyCleanup, reportLabels, type CleanupTotals } from '../http';
+import { ciFiles, ciReadmeSection, exportedConfig, modelSource, redactSource } from './shared-export';
 import type { ExportEndpoint, ExportFinding, ExportOptions, FrameworkAdapter, FrameworkInfo, RunResult, TestOutcome } from './types';
 
 // The Pactum adapter: Mocha + Pactum tests that import only from tests-pactum/setup/ctx.ts.
@@ -18,6 +19,9 @@ const MOCHA_CONFIG = '.mocharc.pactum.json';
 const REPORT_DIR = 'reports/pactum';
 const RESULTS_FILE = join(REPORT_DIR, 'results.json');
 const STATUS_FILE = join(REPORT_DIR, 'status.json');
+const EVIDENCE_DIR = join(REPORT_DIR, 'evidence');
+const ALLURE_RESULTS = join(REPORT_DIR, 'allure-results');
+const ALLURE_REPORT = 'reports/allure-report';
 const CTX_FILE = 'tests-pactum/setup/ctx.ts';
 const TEMPLATE_FILE = 'tests-pactum/template/update-product.spec.ts';
 const IMPORT_LINE = "import { ctx, expect, recordStatus } from '../tests-pactum/setup/ctx';";
@@ -63,9 +67,9 @@ function runMocha(inputFile: string): Promise<number | null> {
   });
 }
 
-type MochaTest = { title: string; fullTitle: string; file?: string; err?: { message?: string; stack?: string } };
-type MochaJson = { tests?: MochaTest[]; passes?: MochaTest[]; failures?: MochaTest[]; pending?: MochaTest[] };
-type StatusEntry = { file: string; title: string; state: string; actualStatus: number | null; requestsSent: number; redactionReplaced?: number; cleanup?: Partial<CleanupTotals> };
+type MochaTest = { title: string; fullTitle: string; file?: string; duration?: number; err?: { message?: string; stack?: string } };
+type MochaJson = { stats?: { start?: string; end?: string }; tests?: MochaTest[]; passes?: MochaTest[]; failures?: MochaTest[]; pending?: MochaTest[] };
+type StatusEntry = { file: string; title: string; state: string; actualStatus: number | null; requestsSent: number; redactionReplaced?: number; cleanup?: Partial<CleanupTotals>; evidence?: string[] };
 
 function readOutcomes(cleanError: (text: string) => string): { outcomes: TestOutcome[]; loadErrors: string[]; requestsSent: number; redactionReplaced: number; cleanup: CleanupTotals } {
   const report = JSON.parse(readFileSync(RESULTS_FILE, 'utf8')) as MochaJson;
@@ -96,6 +100,111 @@ function readOutcomes(cleanError: (text: string) => string): { outcomes: TestOut
     });
   }
   return { outcomes, loadErrors, requestsSent, redactionReplaced, cleanup };
+}
+
+// Allure
+// Allure 3 reads the classic result files (<uuid>-result.json plus attachments). One result per Mocha
+// test is written from the Mocha JSON report and reports/pactum/status.json, with the same labels as
+// the Playwright tests (reportLabels) and the redacted evidence files attached. The report is then
+// built with the Allure CLI, exactly as for Playwright.
+
+function filesUnder(dir: string): string[] {
+  return readdirSync(dir).flatMap((entry) => {
+    const full = join(dir, entry);
+    return statSync(full).isDirectory() ? filesUnder(full) : [full];
+  });
+}
+
+function evidenceName(file: string): string {
+  // 003-POST-_products-201.json -> POST /products -> 201
+  const m = file.match(/^\d+-([A-Z]+)-(.*)-(\d{3}|failed)\.json$/);
+  if (!m) return file;
+  return `${m[1]} ${m[2].replace(/^_/, '/').replace(/_/g, '/')} -> ${m[3] === 'failed' ? 'request failed' : m[3]}`;
+}
+
+export function writeAllureResults(reportName: string): { tests: number } {
+  const report = JSON.parse(readFileSync(RESULTS_FILE, 'utf8')) as MochaJson;
+  const statuses: StatusEntry[] = existsSync(STATUS_FILE) ? (JSON.parse(readFileSync(STATUS_FILE, 'utf8')) as StatusEntry[]) : [];
+  rmSync(ALLURE_RESULTS, { recursive: true, force: true });
+  mkdirSync(ALLURE_RESULTS, { recursive: true });
+  const passed = new Set((report.passes ?? []).map((t) => `${t.file ?? ''}|${t.title}`));
+  const pending = new Set((report.pending ?? []).map((t) => `${t.file ?? ''}|${t.title}`));
+  let clock = report.stats?.start ? Date.parse(report.stats.start) : Date.now();
+  let count = 0;
+  for (const t of report.tests ?? []) {
+    const file = basename(t.file ?? '');
+    if (!file.endsWith('.spec.ts')) continue;
+    const key = `${t.file ?? ''}|${t.title}`;
+    const uuid = randomUUID();
+    const status = pending.has(key) ? 'skipped' : passed.has(key) ? 'passed' : 'failed';
+    const entry = statuses.find((e) => e.file === file && e.title === t.title);
+    const describe = t.fullTitle.endsWith(t.title) ? t.fullTitle.slice(0, t.fullTitle.length - t.title.length).trim() : '';
+    const labels = [
+      ...reportLabels(reportName, [file, describe, t.title].filter(Boolean), file),
+      { name: 'suite', value: file.replace(/\.spec\.ts$/, '') },
+      { name: 'framework', value: 'pactum' },
+      { name: 'language', value: 'typescript' },
+    ];
+    const attachments: { name: string; source: string; type: string }[] = [];
+    for (const ev of entry?.evidence ?? []) {
+      const src = join(EVIDENCE_DIR, ev);
+      if (!existsSync(src)) continue;
+      const target = `${randomUUID()}-attachment.json`;
+      copyFileSync(src, join(ALLURE_RESULTS, target));
+      attachments.push({ name: evidenceName(ev), source: target, type: 'application/json' });
+    }
+    const start = clock;
+    const stop = start + Math.max(1, t.duration ?? 1);
+    clock = stop;
+    const result = {
+      uuid,
+      historyId: `${file}:${t.title}`,
+      testCaseId: `${file}:${t.title}`,
+      name: t.title,
+      fullName: `${file}: ${t.fullTitle}`,
+      status,
+      statusDetails: t.err?.message ? { message: t.err.message, trace: t.err.stack ?? '' } : {},
+      stage: 'finished',
+      start,
+      stop,
+      labels,
+      parameters: entry && entry.actualStatus !== null ? [{ name: 'actual-status', value: String(entry.actualStatus) }] : [],
+      attachments,
+      steps: [],
+    };
+    writeFileSync(join(ALLURE_RESULTS, `${uuid}-result.json`), JSON.stringify(result, null, 2));
+    count++;
+  }
+  return { tests: count };
+}
+
+// Builds the Allure HTML report from the written results. Never fails the run: returns the reason instead.
+function generateAllure(reportName: string, secrets: string[], cleanError: (text: string) => string): { dir: string | null; reason?: string } {
+  if (!existsSync(RESULTS_FILE)) return { dir: null, reason: `${RESULTS_FILE} was not written` };
+  let written: { tests: number };
+  try {
+    written = writeAllureResults(reportName);
+  } catch (err) {
+    return { dir: null, reason: cleanError(`could not write Allure results: ${String((err as Error)?.message ?? err).split('\n')[0]}`) };
+  }
+  if (written.tests === 0) return { dir: null, reason: 'no tests to report' };
+  rmSync(ALLURE_REPORT, { recursive: true, force: true });
+  const res = spawnSync('node_modules/.bin/allure', ['generate', ALLURE_RESULTS, '--output', ALLURE_REPORT, '--report-name', reportName], { encoding: 'utf8', timeout: 120_000 });
+  if (res.error || res.status !== 0) {
+    const detail = res.error?.message ?? `${res.stderr}${res.stdout}`.trim().split('\n')[0];
+    return { dir: null, reason: cleanError(`allure exited with ${res.status}: ${detail}`) };
+  }
+  if (!existsSync(join(ALLURE_REPORT, 'index.html'))) return { dir: null, reason: `${ALLURE_REPORT}/index.html is missing` };
+  for (const dir of [ALLURE_RESULTS, ALLURE_REPORT]) {
+    for (const file of filesUnder(dir)) {
+      if (secrets.some((sec) => sec && readFileSync(file).includes(sec))) {
+        rmSync(ALLURE_RESULTS, { recursive: true, force: true });
+        rmSync(ALLURE_REPORT, { recursive: true, force: true });
+        return { dir: null, reason: `auth value found in ${file}, Allure output deleted` };
+      }
+    }
+  }
+  return { dir: ALLURE_REPORT };
 }
 
 // ---- exporter ----
@@ -209,6 +318,8 @@ ${envStep}
 
 The API config (base URL, headers, endpoints) is in \`config/api.json\`. Tests import \`ctx\`, \`expect\` and \`recordStatus\` from \`src/ctx.ts\`, the only file that reads the environment; they never import pactum directly, so every request goes through the production safety guard.
 
+${ciReadmeSection(config, 'npm run test:json', 'reports/pactum')}
+
 ## Production safety
 
 Before any test runs, the base URL is checked (\`src/safety.ts\`). \`localhost\`, private IP addresses and \`.local\` hosts are local; hosts with a part such as \`dev\`, \`test\`, \`qa\`, \`staging\`, \`stage\`, \`sandbox\`, \`uat\` or \`preprod\` are non-production; everything else is production.
@@ -306,6 +417,8 @@ export function exportPactumFramework(opts: ExportOptions): FrameworkInfo {
   write('src/ctx.ts', ctxSource());
   if (config.auth) write('.env.example', allAuthEnvNames(config.auth).map((n) => `${n}=\n`).join(''));
   write('.gitignore', 'node_modules/\n.env\nreports/\n');
+  mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
+  for (const [file, content] of Object.entries(ciFiles(config, { testCommand: 'npm run test:json', reportDir: 'reports/pactum', reportLabel: 'pactum-reports' }))) write(file, content);
 
   const specs = new Map<string, string>();
   for (const e of endpoints) {
@@ -360,12 +473,13 @@ export const pactumAdapter: FrameworkAdapter = {
     ];
   },
   validate: (code, opts) => validateWithRules(code, opts, PACTUM_RULES),
-  async run(inputFile, { cleanError }): Promise<RunResult> {
+  async run(inputFile, { secrets, reportName, cleanError }): Promise<RunResult> {
     rmSync(REPORT_DIR, { recursive: true, force: true });
     await runMocha(inputFile);
     if (!existsSync(RESULTS_FILE)) throw new Error(`Mocha did not write ${RESULTS_FILE}`);
     const read = readOutcomes(cleanError);
-    return { ...read, htmlReport: null, allureReport: null, allureReason: 'Allure is not wired for Pactum yet (ROADMAP Phase 2 gap)' };
+    const allure = generateAllure(reportName, secrets, cleanError);
+    return { ...read, htmlReport: null, allureReport: allure.dir, allureReason: allure.reason };
   },
   exportFramework: exportPactumFramework,
 };

@@ -76,8 +76,9 @@ Exit code 0 when the pipeline completed (even with failing tests), non-zero othe
 
 Since Phase 2 the summary also has a top-level "testFramework": "playwright" | "pactum", the adapter that
 generated and ran the tests (the input file's optional "framework" field, default playwright). On a
-pactum run allureReport is null and there is no reports/html folder; the console says "framework: pactum"
-right after the safety line. Everything else in the summary has the same shape for both frameworks.
+pactum run there is no reports/html folder (htmlReport is null) and allureReport is "reports/allure-report"
+when the Allure report was built from the Mocha results and the status file (null with the reason in the
+console otherwise); the console says "framework: pactum" right after the safety line. Everything else in the summary has the same shape for both frameworks.
 
 Since Phase 4 the summary also has a top-level "selection": null | { "<dimension>": "<value>", ... }. It is
 null for an input file with a plain baseUrl (every UI run). For an input file with a profile block
@@ -136,7 +137,9 @@ New UI routes:
 
 out/summary.json gets "allureReport": "reports/allure-report" when the Allure HTML report was generated
 for this run, or null when it was not. The UI shows an "Open Allure report" button only when it is set,
-and serves the folder at /allure/.
+and serves the folder at /allure/. Both frameworks produce it: Playwright through allure-playwright,
+Pactum from the Mocha JSON results and reports/pactum/status.json (one Allure result per test, the
+redacted evidence files attached).
 
 ## 6. Importers
 
@@ -243,11 +246,14 @@ On every run the summary also has:
   replaced counts every value the redaction layer (agent/redact.ts) replaced before it reached Claude
   (probe bodies, prompts) or the disk (probe files, evidence attachments). The console prints
   "Redaction: <mode>, N value(s) replaced before Claude and in evidence" in the summary block.
-- "cleanup": { "created", "deleted", "failed", "skippedNoDeleteEndpoint", "failures": [ "<reason>", ... ] }.
-  created counts every resource createResource or a setup step made on the target API during the run
-  (probe and tests); deleted, failed and skippedNoDeleteEndpoint add up to created; failures has one
-  line per failed deletion. A failed cleanup never fails the run and is never hidden: the console prints
-  "Cleanup: created N, deleted N, failed N, no delete endpoint N" and one "  cleanup failed: ..." line each.
+- "cleanup": { "created", "createdByTests", "deleted", "failed", "skippedNoDeleteEndpoint", "failures": [ "<reason>", ... ] }.
+  created counts every resource made on the target API during the run (probe and tests): what
+  createResource or a setup step made, plus every record a 2xx POST sent by the test code itself (or
+  the probe) created on a POST endpoint that has a paired DELETE; createdByTests is how many of created
+  came from such direct POSTs. deleted, failed and skippedNoDeleteEndpoint add up to created; failures
+  has one line per failed deletion. A failed cleanup never fails the run and is never hidden: the console
+  prints "Cleanup: created N (M by test code), deleted N, failed N, no delete endpoint N" (the bracket
+  only when M > 0) and one "  cleanup failed: ..." line each.
 
 Playwright reports carry the same numbers per test as annotations "redaction" (a count) and "cleanup"
 (the totals as JSON); reports/pactum/status.json has redactionReplaced and cleanup per entry. The UI
