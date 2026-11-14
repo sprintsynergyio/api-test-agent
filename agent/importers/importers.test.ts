@@ -333,6 +333,57 @@ async function main() {
     assertNoSecret('import result', JSON.stringify(r));
   });
 
+  await check('OpenAPI oauth2 clientCredentials becomes the oauth2_client auth type with its tokenUrl; other oauth2 flows warn', () => {
+    const spec = (flows: string) => `openapi: 3.0.0
+info: { title: Shop, version: '1' }
+servers: [{ url: https://api.shop.test }]
+components:
+  securitySchemes:
+    shopOAuth:
+      type: oauth2
+      flows:
+${flows}
+security: [{ shopOAuth: [] }]
+paths:
+  /orders:
+    get:
+      operationId: listOrders
+      responses: { '200': { description: ok } }
+`;
+    const cc = importOpenApi(spec(`        clientCredentials:
+          tokenUrl: https://login.shop.test/oauth/token
+          scopes: { read: Read }`));
+    assert.deepEqual(cc.input.auth, { type: 'oauth2_client', tokenUrl: 'https://login.shop.test/oauth/token', clientIdEnv: 'CUSTOM_API_CLIENT_ID', clientSecretEnv: 'CUSTOM_API_CLIENT_SECRET' });
+    assert.equal(cc.input.endpoints[0].requiresAuth, true);
+    const w = cc.warnings.join('\n');
+    assert.match(w, /oauth2_client/);
+    assert.match(w, /CUSTOM_API_CLIENT_ID/);
+    assert.match(w, /CUSTOM_API_CLIENT_SECRET/);
+    assert.equal(ConfigSchema.safeParse(cc.input).success, true, JSON.stringify(ConfigSchema.safeParse(cc.input)));
+    assert.deepEqual(configProblems(cc.input), []);
+    // Swagger 2.0 spells the same flow "application".
+    const sw = importOpenApi(`swagger: '2.0'
+info: { title: Shop, version: '1' }
+host: api.shop.test
+schemes: [https]
+securityDefinitions:
+  shopOAuth: { type: oauth2, flow: application, tokenUrl: 'https://login.shop.test/oauth/token', scopes: { read: Read } }
+security: [{ shopOAuth: [] }]
+paths:
+  /orders:
+    get: { operationId: listOrders, responses: { '200': { description: ok } } }
+`);
+    assert.equal(sw.input.auth?.type, 'oauth2_client');
+    assert.equal((sw.input.auth as { tokenUrl: string }).tokenUrl, 'https://login.shop.test/oauth/token');
+    // The authorization code flow has no client credentials grant: header auth plus the by-hand warning, as before.
+    const ac = importOpenApi(spec(`        authorizationCode:
+          authorizationUrl: https://login.shop.test/authorize
+          tokenUrl: https://login.shop.test/oauth/token
+          scopes: { read: Read }`));
+    assert.deepEqual(ac.input.auth, { header: 'Authorization', valueEnv: 'CUSTOM_API_AUTH' });
+    assert.match(ac.warnings.join('\n'), /login or oauth2_client type/);
+  });
+
   await check('not OpenAPI, or broken YAML: clear error without quoting the source', () => {
     assert.throws(() => importOpenApi('title: just yaml\n'), /Not an OpenAPI 3\.x or Swagger 2\.0 document/);
     assert.throws(() => importOpenApi(`openapi: 3.0.0\ninfo: Send "Authorization: Bearer ${SECRET}" now\n`), (err: Error) => {

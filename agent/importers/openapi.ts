@@ -161,9 +161,20 @@ export function importOpenApi(content: string): ImportResult {
   }
 
   const schemes = deref(swagger ? doc.securityDefinitions : isObj(doc.components) ? doc.components.securitySchemes : undefined);
+  // The token URL of the first oauth2 clientCredentials flow (OpenAPI 3 flows.clientCredentials.tokenUrl,
+  // Swagger 2 flow: application), for the oauth2_client auth type.
+  let oauth2TokenUrl: string | undefined;
+  const noteClientCredentials = (scheme: Obj) => {
+    if (oauth2TokenUrl || scheme.type !== 'oauth2') return;
+    const flows = isObj(scheme.flows) ? scheme.flows : undefined;
+    const cc = flows && isObj(flows.clientCredentials) ? flows.clientCredentials : undefined;
+    if (cc && typeof cc.tokenUrl === 'string') oauth2TokenUrl = cc.tokenUrl;
+    else if (scheme.flow === 'application' && typeof scheme.tokenUrl === 'string') oauth2TokenUrl = scheme.tokenUrl;
+  };
   const schemeCredential = (name: string): Credential | null => {
     const scheme = isObj(schemes) ? deref(schemes[name]) : undefined;
     if (!isObj(scheme)) return { name: 'Authorization', where: 'header', declared: true };
+    noteClientCredentials(scheme);
     if (scheme.type === 'apiKey' && typeof scheme.name === 'string') {
       if (scheme.in === 'query') return { name: scheme.name, where: 'query', declared: true };
       if (scheme.in === 'cookie') return { name: scheme.name, where: 'cookie', declared: true };
@@ -267,5 +278,5 @@ export function importOpenApi(content: string): ImportResult {
   if (external.size) warnings.push(`External $ref values are not followed: ${[...external].join(', ')}.`);
   if (mutualTls) warnings.push('Some operations use mutual TLS, which the agent cannot send. Their requiresAuth is set, but no header can satisfy it.');
   const title = isObj(doc.info) && typeof doc.info.title === 'string' ? doc.info.title : undefined;
-  return buildInput(requests, { name: title, warnings, secrets, noBaseUrlWarning: noBase });
+  return buildInput(requests, { name: title, warnings, secrets, noBaseUrlWarning: noBase, oauth2TokenUrl });
 }

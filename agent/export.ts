@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, wri
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { allAuthEnvNames, describeAuth } from './auth';
 import { apiName, type Config } from './config';
-import { exportedConfig, modelSource, redactSource } from './frameworks/shared-export';
+import { ciFiles, ciReadmeSection, exportedConfig, modelSource, redactSource } from './frameworks/shared-export';
 
 // Writes the generated suite as a standalone Playwright project in frameworks/<name>/ and zips it.
 
@@ -282,6 +282,8 @@ Before any test runs, the base URL is checked (\`src/safety.ts\`). \`localhost\`
 
 Tests are grouped by epic (the API), feature (the endpoint) and story (the case type). Auth and invalid-input tests have severity critical, the rest normal. Every request and response a test makes is attached to it as JSON, with the auth header shown as \`<redacted>\`.
 
+${ciReadmeSection(config, 'npm test', 'playwright-report')}
+
 ## Suspected API findings from the generating run
 
 ${
@@ -378,6 +380,8 @@ export function exportFramework(opts: ExportOptions): FrameworkInfo {
   write('tests/fixtures/ctx.ts', CTX_SOURCE);
   if (config.auth) write('.env.example', allAuthEnvNames(config.auth).map((n) => `${n}=\n`).join(''));
   write('.gitignore', 'node_modules/\n.env\nplaywright-report/\ntest-results/\nallure-results/\nallure-report/\n');
+  mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
+  for (const [file, content] of Object.entries(ciFiles(config, { testCommand: 'npm test', reportDir: 'playwright-report', reportLabel: 'playwright-report' }))) write(file, content);
 
   const specs = new Map<string, string>();
   for (const e of endpoints) {

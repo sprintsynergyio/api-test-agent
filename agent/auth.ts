@@ -7,6 +7,9 @@
 //   login   a login request sends credentials from the environment, the token in its response is
 //           cached for the run and applied as a header, cookie or query parameter; on a configured
 //           status (401 by default) the login is repeated once and the request re-sent
+//   oauth2_client  OAuth2 client credentials: a form-encoded POST to the token URL with
+//           grant_type=client_credentials and the client id and secret from the environment (in the
+//           body, or as HTTP Basic); the access token is cached and applied like a login token
 //
 // Roles: the main auth section is the "default" role. auth.roles adds more identities with their
 // own environment variables (the same type as the main auth). Tests call ctx.as('<role>').
@@ -24,7 +27,21 @@ export type AuthApply =
 export type LoginRequest = { method: string; path: string; body?: Record<string, unknown>; headers?: Record<string, string> };
 
 // What a role supplies: the environment variable names for its own credentials.
-export type RoleConfig = { valueEnv?: string; credentialsEnv?: Record<string, string> };
+export type RoleConfig = { valueEnv?: string; credentialsEnv?: Record<string, string>; clientIdEnv?: string; clientSecretEnv?: string };
+
+export type OAuth2ClientConfig = {
+  type: 'oauth2_client';
+  tokenUrl: string; // a path on the API host (/oauth/token) or an absolute URL
+  clientIdEnv: string;
+  clientSecretEnv: string;
+  scope?: string;
+  audience?: string;
+  clientAuth?: 'body' | 'basic'; // where the client id and secret go; default body
+  tokenPath?: string; // default access_token
+  apply?: AuthApply; // default header Authorization with the Bearer prefix
+  refresh?: { statuses: number[]; once?: boolean }; // default [401], once
+  roles?: Record<string, RoleConfig>;
+};
 
 export type AuthConfig =
   | { type: 'header'; header: string; valueEnv: string; roles?: Record<string, RoleConfig> }
@@ -38,7 +55,27 @@ export type AuthConfig =
       apply: AuthApply;
       refresh?: { statuses: number[]; once?: boolean };
       roles?: Record<string, RoleConfig>;
-    };
+    }
+  | OAuth2ClientConfig;
+
+// The form fields an OAuth2 client credentials login sends, in field order.
+export const OAUTH2_ID_FIELD = 'client_id';
+export const OAUTH2_SECRET_FIELD = 'client_secret';
+export const OAUTH2_DEFAULT_TOKEN_PATH = 'access_token';
+export const OAUTH2_DEFAULT_APPLY: AuthApply = { type: 'header', header: 'Authorization', prefix: 'Bearer ' };
+
+export function oauth2TokenPath(auth: OAuth2ClientConfig): string {
+  return auth.tokenPath || OAUTH2_DEFAULT_TOKEN_PATH;
+}
+export function oauth2Apply(auth: OAuth2ClientConfig): AuthApply {
+  return auth.apply ?? OAUTH2_DEFAULT_APPLY;
+}
+// The client id and secret variable names for one role.
+function oauth2EnvPair(auth: OAuth2ClientConfig, role: string): { id?: string; secret?: string } {
+  if (role === DEFAULT_ROLE) return { id: auth.clientIdEnv, secret: auth.clientSecretEnv };
+  const r = auth.roles?.[role];
+  return { id: r?.clientIdEnv, secret: r?.clientSecretEnv };
+}
 
 export const DEFAULT_ROLE = 'default';
 export const REDACTED = '<redacted>';
@@ -63,6 +100,11 @@ export function extraRoles(auth: AuthConfig | undefined): string[] {
 
 // The environment variable names one role needs.
 export function authEnvNames(auth: AuthConfig, role: string = DEFAULT_ROLE): string[] {
+  if (auth.type === 'oauth2_client') {
+    if (role !== DEFAULT_ROLE && !auth.roles?.[role]) throw new Error(`unknown auth role "${role}" (roles: ${extraRoles(auth).join(', ') || 'none'})`);
+    const pair = oauth2EnvPair(auth, role);
+    return [pair.id, pair.secret].filter((n): n is string => Boolean(n));
+  }
   if (role === DEFAULT_ROLE) return auth.type === 'login' ? Object.values(auth.credentialsEnv) : [auth.valueEnv];
   const r = auth.roles?.[role];
   if (!r) throw new Error(`unknown auth role "${role}" (roles: ${extraRoles(auth).join(', ') || 'none'})`);
@@ -83,6 +125,15 @@ export type Credentials = { role: string; value?: string; fields?: Record<string
 // Reads one role's credential values from env. Throws naming the missing variable.
 export function readCredentials(auth: AuthConfig, env: Record<string, string | undefined>, role: string = DEFAULT_ROLE): Credentials {
   const missing = (name: string) => new Error(`Missing auth value: environment variable ${name} is not set (role ${role}). Add it to .env.`);
+  if (auth.type === 'oauth2_client') {
+    const pair = oauth2EnvPair(auth, role);
+    if (!pair.id || !pair.secret) throw new Error(`auth role "${role}" needs clientIdEnv and clientSecretEnv`);
+    const id = env[pair.id];
+    if (!id) throw missing(pair.id);
+    const secret = env[pair.secret];
+    if (!secret) throw missing(pair.secret);
+    return { role, fields: { [OAUTH2_ID_FIELD]: id, [OAUTH2_SECRET_FIELD]: secret } };
+  }
   if (auth.type === 'login') {
     const map = role === DEFAULT_ROLE ? auth.credentialsEnv : (auth.roles?.[role]?.credentialsEnv ?? {});
     const fields: Record<string, string> = {};
@@ -127,6 +178,11 @@ export function secretValues(auth: AuthConfig | undefined, env: Record<string, s
   if (!auth) return [];
   const names: string[] = [];
   for (const role of authRoles(auth)) {
+    if (auth.type === 'oauth2_client') {
+      const secret = oauth2EnvPair(auth, role).secret;
+      if (secret) names.push(secret);
+      continue;
+    }
     if (auth.type !== 'login') {
       names.push(...authEnvNames(auth, role));
       continue;
@@ -139,8 +195,13 @@ export function secretValues(auth: AuthConfig | undefined, env: Record<string, s
 
 // The login request body for evidence: every credential field shown as <redacted>.
 export function redactLoginRequest(auth: AuthConfig | undefined, body: unknown): unknown {
-  if (!auth || auth.type !== 'login' || body === null || typeof body !== 'object') return body;
+  if (!auth || body === null || typeof body !== 'object') return body;
   const out: Record<string, unknown> = { ...(body as Record<string, unknown>) };
+  if (auth.type === 'oauth2_client') {
+    for (const f of [OAUTH2_ID_FIELD, OAUTH2_SECRET_FIELD]) if (f in out) out[f] = REDACTED;
+    return out;
+  }
+  if (auth.type !== 'login') return body;
   const fields = new Set(Object.keys(auth.credentialsEnv));
   for (const r of Object.values(auth.roles ?? {})) for (const f of Object.keys(r.credentialsEnv ?? {})) fields.add(f);
   for (const f of fields) if (f in out) out[f] = REDACTED;
@@ -157,7 +218,8 @@ export function tokenAt(body: unknown, path: string): string | undefined {
   return typeof cur === 'string' && cur.length > 0 ? cur : typeof cur === 'number' ? String(cur) : undefined;
 }
 
-export type AuthRequest = { method: string; path: string; headers: Record<string, string>; query?: AuthQuery; body?: unknown };
+// form: a form-encoded body (OAuth2 token requests); body: a JSON body. A transport sends one or the other.
+export type AuthRequest = { method: string; path: string; headers: Record<string, string>; query?: AuthQuery; body?: unknown; form?: Record<string, string> };
 export type AuthResponse = { status: number; text: string };
 // Sends the login request. Must go through the framework's guarded request path so it is counted and recorded.
 export type Transport = (req: AuthRequest) => Promise<AuthResponse>;
@@ -195,6 +257,8 @@ export function createAuthenticator(auth: AuthConfig, creds: Credentials, transp
   const seen = new Set<string>();
   if (creds.value) seen.add(creds.value);
   for (const [field, v] of Object.entries(creds.fields ?? {})) if (isSecretField(field)) seen.add(v);
+
+  if (auth.type === 'oauth2_client') return createOAuth2Authenticator(auth, creds, transport, seen);
 
   if (auth.type !== 'login') {
     const apply: AuthApply =
@@ -264,12 +328,88 @@ export function createAuthenticator(auth: AuthConfig, creds: Credentials, transp
   };
 }
 
+// OAuth2 client credentials: POST tokenUrl with a form body (grant_type=client_credentials and the
+// client id and secret, or those two as HTTP Basic), the access token at tokenPath cached for the run.
+function createOAuth2Authenticator(auth: OAuth2ClientConfig, creds: Credentials, transport: Transport, seen: Set<string>): Authenticator {
+  let token: string | null = null;
+  let inflight: Promise<string> | null = null;
+  let logins = 0;
+  const statuses = new Set(auth.refresh?.statuses ?? [401]);
+  const clientId = creds.fields?.[OAUTH2_ID_FIELD] ?? '';
+  const clientSecret = creds.fields?.[OAUTH2_SECRET_FIELD] ?? '';
+  const basic = toBase64(`${clientId}:${clientSecret}`);
+  if (auth.clientAuth === 'basic') seen.add(basic);
+  const path = oauth2TokenPath(auth);
+
+  const login = async (): Promise<string> => {
+    logins++;
+    const form: Record<string, string> = { grant_type: 'client_credentials' };
+    if (auth.scope) form.scope = auth.scope;
+    if (auth.audience) form.audience = auth.audience;
+    const headers: Record<string, string> = { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' };
+    if (auth.clientAuth === 'basic') headers.Authorization = `Basic ${basic}`;
+    else {
+      form[OAUTH2_ID_FIELD] = clientId;
+      form[OAUTH2_SECRET_FIELD] = clientSecret;
+    }
+    const res = await transport({ method: 'POST', path: auth.tokenUrl, headers, form });
+    if (res.status < 200 || res.status >= 300) {
+      throw new Error(`oauth2 token request (POST ${auth.tokenUrl}, role ${creds.role}) failed: status ${res.status}`);
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(res.text);
+    } catch {
+      throw new Error(`oauth2 token request (role ${creds.role}): response is not JSON, so tokenPath "${path}" cannot be read`);
+    }
+    const value = tokenAt(parsed, path);
+    if (!value) throw new Error(`oauth2 token request (role ${creds.role}): no token at tokenPath "${path}" in the response`);
+    seen.add(value);
+    return value;
+  };
+
+  const getToken = async (): Promise<string> => {
+    if (token) return token;
+    if (!inflight) {
+      inflight = login().finally(() => {
+        inflight = null;
+      });
+    }
+    token = await inflight;
+    return token;
+  };
+
+  return {
+    role: creds.role,
+    type: 'oauth2_client',
+    decorate: async (req) => applyTo(req, oauth2Apply(auth), await getToken()),
+    shouldRefresh: (status) => statuses.has(status),
+    invalidate: () => {
+      token = null;
+    },
+    secrets: () => [...seen],
+    loginCount: () => logins,
+  };
+}
+
+// Base64 without Buffer, so this file keeps working wherever it is copied (Node and browsers).
+function toBase64(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  let binary = '';
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary);
+}
+
 // Header names whose values are shown as <redacted> in evidence, lowercase.
 export function sensitiveHeaderNames(auth: AuthConfig | undefined): string[] {
   const names = new Set<string>(['authorization', 'proxy-authorization', 'cookie', 'set-cookie']);
   if (auth) {
     if (auth.type === 'header') names.add(auth.header.toLowerCase());
     if (auth.type === 'login' && auth.apply.type === 'header') names.add(auth.apply.header.toLowerCase());
+    if (auth.type === 'oauth2_client') {
+      const apply = oauth2Apply(auth);
+      if (apply.type === 'header') names.add(apply.header.toLowerCase());
+    }
   }
   return [...names];
 }
@@ -279,6 +419,10 @@ export function sensitiveQueryParams(auth: AuthConfig | undefined): string[] {
   if (!auth) return [];
   if (auth.type === 'query') return [auth.param];
   if (auth.type === 'login' && auth.apply.type === 'query') return [auth.apply.param];
+  if (auth.type === 'oauth2_client') {
+    const apply = oauth2Apply(auth);
+    if (apply.type === 'query') return [apply.param];
+  }
   return [];
 }
 
@@ -297,15 +441,20 @@ export function scrubSecrets(text: string, secrets: string[]): string {
 // The login response with the token at tokenPath replaced, for evidence written before the
 // authenticator has read the token. Not JSON: returned as it is (there is no token to read then).
 export function redactLoginResponse(auth: AuthConfig | undefined, text: string): string {
-  if (!auth || auth.type !== 'login' || !text) return text;
+  if (!auth || (auth.type !== 'login' && auth.type !== 'oauth2_client') || !text) return text;
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch {
     return text;
   }
-  const value = tokenAt(parsed, auth.tokenPath);
+  const value = tokenAt(parsed, auth.type === 'login' ? auth.tokenPath : oauth2TokenPath(auth));
   return value ? text.split(value).join(REDACTED) : text;
+}
+
+// True for the auth types that log in (send a request for a token) before the first API request.
+export function logsIn(auth: AuthConfig | undefined): boolean {
+  return auth?.type === 'login' || auth?.type === 'oauth2_client';
 }
 
 // A path with a sensitive query parameter value replaced, for evidence names and logs.
@@ -350,6 +499,12 @@ export function describeAuth(auth: AuthConfig | undefined): string {
       const where =
         auth.apply.type === 'header' ? `header ${auth.apply.header}` : auth.apply.type === 'cookie' ? `cookie ${auth.apply.name}` : `query parameter ${auth.apply.param}`;
       return `Login ${auth.request.method.toUpperCase()} ${auth.request.path} with ${fields}; token at ${auth.tokenPath}, sent as ${where}.${roleText}`;
+    }
+    case 'oauth2_client': {
+      const apply = oauth2Apply(auth);
+      const where = apply.type === 'header' ? `header ${apply.header}` : apply.type === 'cookie' ? `cookie ${apply.name}` : `query parameter ${apply.param}`;
+      const how = auth.clientAuth === 'basic' ? 'as HTTP Basic' : 'in the form body';
+      return `OAuth2 client credentials: POST ${auth.tokenUrl} with client id from ${auth.clientIdEnv} and secret from ${auth.clientSecretEnv} ${how}${auth.scope ? `, scope ${auth.scope}` : ''}; token at ${oauth2TokenPath(auth)}, sent as ${where}.${roleText}`;
     }
   }
 }

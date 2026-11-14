@@ -62,7 +62,7 @@ We work through the phases in order, one step at a time. A phase is done only wh
 
 ## Phase 2: Framework adapter + Pactum (in progress)
 
-Status: adapter interface, Pactum setup file with the guard, template, gate, runner, parser and exporter are built and proven offline (template green against the local shop, exported framework runs standalone, refusal works standalone). Still open: the first live agent run in Pactum mode (needs the Claude login), Allure for Pactum, and the UI framework toggle.
+Status: adapter interface, Pactum setup file with the guard, template, gate, runner, parser and exporter are built and proven offline (template green against the local shop, exported framework runs standalone, refusal works standalone). Allure for Pactum done (Phase 9 hardening PR, Nov 2026: the adapter writes Allure result files from the Mocha JSON and status files, with the redacted evidence attached, and builds the report with the Allure CLI). Still open: the first live agent run in Pactum mode (needs the Claude login) and the UI framework toggle.
 
 **Goal:** one agent, two output frameworks. The user picks Playwright or Pactum; everything else stays shared.
 
@@ -82,7 +82,7 @@ Every adapter must produce **normalized results**: test title, type tag, pass/fa
 **Pactum specifics**
 - Runner: Pactum with Mocha. Base URL and auth set once in a shared setup file, the Pactum equivalent of the ctx fixture.
 - Tests record the actual status for every request (through a small helper, the equivalent of the `actual-status` annotation).
-- Reports: Mocha JSON for the parser, Allure through the Allure Mocha reporter.
+- Reports: Mocha JSON for the parser, Allure built from result files the adapter writes (no Mocha reporter needed).
 - Static gate for Pactum: imports only from the shared setup file, no hardcoded hosts, no `process.env` in tests, no `.only` / `.skip`, type tags in titles, no expected status of 500 or more.
 - Exported Pactum framework is standalone, with `npm test` and Allure scripts.
 
@@ -152,7 +152,7 @@ Pulled forward from Phases 4 and 5 because the first real client (multi-brand, m
 **Deliverables**
 - Login flow: call a login endpoint, read the token from the response, use it for the run. Built: `auth.type: "login"` (agent/auth.ts), token cached per client, one refresh on a configured status.
 - API key in a header, query parameter or cookie. Built: `auth.type: "header" | "query" | "cookie"`.
-- OAuth2 client credentials. Not built: a client-credentials grant is a login request with a form body; the login type takes JSON bodies only. The importers warn when a spec declares oauth2.
+- OAuth2 client credentials. **Done (Phase 9 hardening PR, Nov 2026):** `auth.type: "oauth2_client"` sends the form-encoded grant to `tokenUrl` (a path or an absolute URL, whose host the safety guard classifies), caches the access token, refreshes once on 401, supports `clientAuth: "basic"`; the local shop API has `POST /oauth/token` and `input/local-shop-oauth.json`; the OpenAPI importer maps `clientCredentials` flows to it.
 - Roles: two users (for example admin and customer). New `[authz]` tests: a customer cannot read or change another customer's data, a customer cannot call admin endpoints. Built: `auth.roles`, `ctx.as(role)` in both frameworks, the `[authz]` case type with its own plan and gate rules, finding classification and eval scoring.
 
 **Proof so far:** the local shop API has `POST /auth/login` with admin and viewer users and the planted bug `viewer-can-delete`; throwaway `[authz]` specs catch it in both frameworks (actual status 204 recorded); both exports run standalone with the login flow; `npm run test:auth` covers every type, caching, refresh, the guard and redaction; no credential or token in any output. Pending: the live agent run (`npm run agent input/local-shop-login.json`) and the UI, which still accepts only the header type.
@@ -166,7 +166,7 @@ Pulled forward from Phases 4 and 5 because the first real client (multi-brand, m
 **Deliverables**
 - `[flow]` tests: create, read, update, read again, delete, confirm it is gone.
 - Test data generation from the schema (realistic but fake values).
-- Cleanup: every resource a test creates is deleted afterwards, even when the test fails. **Done (PR 7, Nov 2026):** `createResource` records what it makes, each test's fixture (Playwright) or root hook (Mocha) deletes it through the matching DELETE endpoint, the probe cleans its own setup data, totals go to `summary.cleanup`. Still open: deletion of resources the generated test bodies create directly (a `[happy]` POST test's own record is not tracked).
+- Cleanup: every resource a test creates is deleted afterwards, even when the test fails. **Done (PR 7, Nov 2026):** `createResource` records what it makes, each test's fixture (Playwright) or root hook (Mocha) deletes it through the matching DELETE endpoint, the probe cleans its own setup data, totals go to `summary.cleanup`. Records the tests create directly (a `[happy]` POST test's own record, and the probe's own POST) are tracked and deleted too since the Phase 9 hardening PR (`summary.cleanup.createdByTests`).
 - Redaction before Claude: **Done (PR 7, Nov 2026):** `agent/redact.ts`, built-in rules always on, `redaction: { fields, mode }` per input, final pass in `callClaude`, evidence files redacted.
 - Environment profiles (dev, staging) with separate base URLs and auth variables.
 
@@ -179,11 +179,13 @@ Pulled forward from Phases 4 and 5 because the first real client (multi-brand, m
 **Goal:** the generated suite lives in the client's pipeline and stays current.
 
 **Deliverables**
-- Exported frameworks include CI files for GitHub Actions and Azure DevOps.
+- Exported frameworks include CI files for GitHub Actions and Azure DevOps. **Done (Phase 9 hardening PR, Nov 2026):** `.github/workflows/api-tests.yml` and `azure-pipelines.yml` in both exports, secrets named after the env variables, README section "Run in CI". Still to prove: a green run in a sample repository.
 - Update mode: given a new spec version, generate tests only for new or changed endpoints, and never overwrite tests a human has edited (generated files carry a marker; edited files lose it).
 - Findings exported as a Jira-ready bug draft with the request/response evidence.
 
 **Proof:** a spec with one new endpoint produces one new spec file and leaves the others untouched; the CI file runs green in a sample repository.
+
+Also done in the Phase 9 hardening PR: 429 handling in the shared HTTP layer (Retry-After or 1 s, 2 s, 4 s back-off, at most 3 retries, every retry counted, a still-429 endpoint marked unusable by the probe as `rate limited`), in both frameworks and both exports.
 
 ---
 

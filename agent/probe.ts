@@ -135,13 +135,17 @@ export async function probeAll(config: Config, authEnv: Record<string, string | 
       }
       let result = await probeEndpoint(config, clients, endpoint);
       // A non-2xx probe is not usable for planning. Retry once (setup runs again, so a fresh id).
-      if (result.status !== null && !result.usable) {
+      // A 429 was already retried by the HTTP layer (Retry-After, then back-off): the endpoint is
+      // rate limited, not retried again here.
+      if (result.status === 429) result.error = 'rate limited: still 429 after the HTTP layer retried with back-off';
+      else if (result.status !== null && !result.usable) {
         result = await probeEndpoint(config, clients, endpoint);
       }
       // Only the redacted probe is kept: on disk, in the prompts, in memory.
       result = redactProbe(result, config, redaction);
       writeFileSync(join(PROBE_DIR, `${endpoint.id}.json`), JSON.stringify(result, null, 2) + '\n');
       if (result.status === null) console.log(`${endpoint.id} FAILED ${result.error}`);
+      else if (result.status === 429) console.log(`${endpoint.id} FAILED ${result.error}`);
       else if (!result.usable) console.log(`${endpoint.id} FAILED returned ${result.status} after retry`);
       else console.log(`${endpoint.id} OK ${result.status}`);
       results.set(endpoint.id, result);

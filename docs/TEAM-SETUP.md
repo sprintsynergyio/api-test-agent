@@ -124,6 +124,10 @@ npx playwright test
 
 (or `npm test` for a Pactum export). The project has no dependency on this repo. Commit it to your own repository and run it in CI like any other test project.
 
+Every export ships `.github/workflows/api-tests.yml` and `azure-pipelines.yml`; the README's "Run in CI" section lists the exact secret names to create (the same names as the lines in `.env.example`).
+
+APIs behind OAuth2 client credentials use `"auth": { "type": "oauth2_client", "tokenUrl": "/oauth/token", "clientIdEnv": "MY_CLIENT_ID", "clientSecretEnv": "MY_CLIENT_SECRET" }` in the input file; the client id and secret live in `.env` only, like every other auth value.
+
 ## Troubleshooting
 
 - `Port 3000 is already in use` or `4000`: another copy is running. On macOS or Linux: `lsof -ti tcp:3000 -sTCP:LISTEN | xargs kill` (same for 4000). On Windows: close the other terminal.

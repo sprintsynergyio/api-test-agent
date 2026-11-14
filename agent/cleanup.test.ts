@@ -70,6 +70,11 @@ async function get(port: number, path: string): Promise<number> {
   return res.status;
 }
 
+async function productCount(port: number): Promise<number> {
+  const res = await fetch(`http://localhost:${port}/products`);
+  return ((await res.json()) as unknown[]).length;
+}
+
 // --- the HTTP layer on its own ---
 
 await check('deleteEndpointFor: by path, by explicit cleanup, or none', async () => {
@@ -99,11 +104,34 @@ await check('createResource then cleanupResources: 3 created, 3 DELETEs in the A
     assert.equal(clients.created.length, 3);
     const totals = await cleanupResources(cfg, clients);
     await disposeClients(clients);
-    assert.deepEqual(totals, { created: 3, deleted: 3, failed: 0, skippedNoDeleteEndpoint: 0, failures: [] });
+    assert.deepEqual(totals, { created: 3, createdByTests: 0, deleted: 3, failed: 0, skippedNoDeleteEndpoint: 0, failures: [] });
     assert.equal(clients.created.length, 0, 'the list is emptied');
     const deletes = api.log().filter((l) => l.startsWith('DELETE '));
     assert.deepEqual(deletes, [...ids].reverse().map((id) => `DELETE /products/${id}`), 'newest first');
     for (const id of ids) assert.equal(await get(api.port, `/products/${id}`), 404);
+  } finally {
+    api.stop();
+  }
+});
+
+await check('a 2xx POST a test sends itself (ctx.api) is tracked as created by test code and deleted too', async () => {
+  const api = await startApi();
+  try {
+    const cfg = shopConfig(api.port);
+    const clients = await createClients(cfg, AUTH);
+    const setupId = await createResource(cfg, clients, 'create-product');
+    const direct = await clients.api.post('/products', { data: { name: 'Direct', price: 5, category: 'shoes', inStock: true } });
+    assert.equal(direct.status(), 201);
+    const directId = String(((await direct.json()) as { id: number }).id);
+    // Not tracked: a non-2xx POST, a POST to a path with no paired DELETE, and noAuthApi's rejected POST.
+    assert.equal((await clients.api.post('/products', { data: { name: 'bad', price: 'text', category: 'shoes', inStock: true } })).status(), 500);
+    assert.equal((await clients.noAuthApi.post('/products', { data: { name: 'x', price: 1, category: 'shoes', inStock: true } })).status(), 401);
+    assert.deepEqual(clients.created.map((c) => [c.id, c.source]), [[setupId, 'setup'], [directId, 'test']]);
+    const totals = await cleanupResources(cfg, clients);
+    await disposeClients(clients);
+    assert.deepEqual(totals, { created: 2, createdByTests: 1, deleted: 2, failed: 0, skippedNoDeleteEndpoint: 0, failures: [] });
+    assert.deepEqual(api.log().filter((l) => l.startsWith('DELETE ')), [`DELETE /products/${directId}`, `DELETE /products/${setupId}`]);
+    assert.equal(await get(api.port, `/products/${directId}`), 404);
   } finally {
     api.stop();
   }
@@ -121,7 +149,7 @@ await check('nested: the review is deleted before its product, both through the 
     assert.equal(clients.created.length, 2, 'the product the review needed is recorded too');
     const totals = await cleanupResources(nested, clients);
     await disposeClients(clients);
-    assert.deepEqual(totals, { created: 2, deleted: 2, failed: 0, skippedNoDeleteEndpoint: 0, failures: [] });
+    assert.deepEqual(totals, { created: 2, createdByTests: 0, deleted: 2, failed: 0, skippedNoDeleteEndpoint: 0, failures: [] });
     const deletes = api.log().filter((l) => l.startsWith('DELETE '));
     assert.equal(deletes.length, 2);
     assert.ok(deletes[0].includes(`/reviews/${reviewId}`), `review first, got ${deletes[0]}`);
@@ -140,7 +168,7 @@ await check('a resource with no DELETE endpoint is counted as skippedNoDeleteEnd
     await createResource(cfg, clients, 'create-product');
     const totals = await cleanupResources(cfg, clients);
     await disposeClients(clients);
-    assert.deepEqual(totals, { created: 1, deleted: 0, failed: 0, skippedNoDeleteEndpoint: 1, failures: [] });
+    assert.deepEqual(totals, { created: 1, createdByTests: 0, deleted: 0, failed: 0, skippedNoDeleteEndpoint: 1, failures: [] });
     assert.equal(api.log().filter((l) => l.startsWith('DELETE ')).length, 0);
   } finally {
     api.stop();
@@ -174,7 +202,7 @@ await check('read-only mode: nothing is created, so nothing is cleaned', async (
     await assert.rejects(() => createResource(cfg, clients, 'create-product'), /read-only/);
     const totals = await cleanupResources(cfg, clients);
     await disposeClients(clients);
-    assert.deepEqual(totals, { created: 0, deleted: 0, failed: 0, skippedNoDeleteEndpoint: 0, failures: [] });
+    assert.deepEqual(totals, { created: 0, createdByTests: 0, deleted: 0, failed: 0, skippedNoDeleteEndpoint: 0, failures: [] });
     assert.equal(api.log().length, 0);
   } finally {
     api.stop();
@@ -194,6 +222,8 @@ test.describe('get-product GET /products/{id}', () => {
     const id = await ctx.createResource('create-product');
     const extra = await ctx.createResource('create-product');
     const third = await ctx.createResource('create-product');
+    const made = await ctx.api.post('/products', { data: { name: 'Made by the test', price: 3, category: 'shoes', inStock: true } });
+    expect(made.status()).toBe(201);
     const response = await ctx.api.get(\`/products/\${id}\`);
     recordStatus(response.status());
     expect(response.status()).toBe(200);
@@ -209,6 +239,8 @@ describe('get-product GET /products/{id}', () => {
     const id = await ctx.createResource('create-product');
     await ctx.createResource('create-product');
     await ctx.createResource('create-product');
+    const made = await ctx.api.post('/products', { name: 'Made by the test', price: 3, category: 'shoes', inStock: true });
+    expect(made.status()).toBe(201);
     const response = await ctx.api.get(\`/products/\${id}\`);
     recordStatus(response.status());
     expect(response.status()).toBe(200);
@@ -224,7 +256,7 @@ function writeInput(port: number, framework: 'playwright' | 'pactum'): string {
   return file;
 }
 
-await check('Playwright run: the spec creates 3 products, the fixture deletes them, the annotation reports it', async () => {
+await check('Playwright run: 3 setup products plus 1 the test POSTs itself, the fixture deletes all 4, the annotation reports it', async () => {
   const api = await startApi();
   const inputFile = writeInput(api.port, 'playwright');
   try {
@@ -243,10 +275,11 @@ await check('Playwright run: the spec creates 3 products, the fixture deletes th
     const t = report.suites[0].specs?.[0]?.tests?.[0] ?? report.suites[0].suites[0].specs[0].tests[0];
     const annotations = [...(t.annotations ?? []), ...(t.results[0].annotations ?? [])];
     const cleanup = JSON.parse(annotations.find((a: { type: string }) => a.type === 'cleanup').description);
-    assert.deepEqual(cleanup, { created: 3, deleted: 3, failed: 0, skippedNoDeleteEndpoint: 0, failures: [] });
+    assert.deepEqual(cleanup, { created: 4, createdByTests: 1, deleted: 4, failed: 0, skippedNoDeleteEndpoint: 0, failures: [] });
     const deletes = api.log().filter((l) => l.startsWith('DELETE '));
-    assert.equal(deletes.length, 3, `API log: ${api.log().join(', ')}`);
-    assert.equal(api.log().filter((l) => l.startsWith('POST ')).length, 3);
+    assert.equal(deletes.length, 4, `API log: ${api.log().join(', ')}`);
+    assert.equal(api.log().filter((l) => l.startsWith('POST ')).length, 4);
+    assert.equal(await productCount(api.port), 3, 'the seed products are all that is left');
   } finally {
     api.stop();
     rmSync('generated', { recursive: true, force: true });
@@ -255,7 +288,7 @@ await check('Playwright run: the spec creates 3 products, the fixture deletes th
   }
 });
 
-await check('Mocha run: the spec creates 3 products, the root hook deletes them, status.json reports it', async () => {
+await check('Mocha run: 3 setup products plus 1 the test POSTs itself, the root hook deletes all 4, status.json reports it', async () => {
   const api = await startApi();
   const inputFile = writeInput(api.port, 'pactum');
   try {
@@ -273,10 +306,11 @@ await check('Mocha run: the spec creates 3 products, the root hook deletes them,
     assert.ok(existsSync('reports/pactum/status.json'));
     const entries = JSON.parse(readFileSync('reports/pactum/status.json', 'utf8'));
     assert.equal(entries.length, 1);
-    assert.deepEqual(entries[0].cleanup, { created: 3, deleted: 3, failed: 0, skippedNoDeleteEndpoint: 0, failures: [] });
-    assert.equal(entries[0].requestsSent, 7, '3 creates, 1 get, 3 deletes');
+    assert.deepEqual(entries[0].cleanup, { created: 4, createdByTests: 1, deleted: 4, failed: 0, skippedNoDeleteEndpoint: 0, failures: [] });
+    assert.equal(entries[0].requestsSent, 9, '4 creates, 1 get, 4 deletes');
     const deletes = api.log().filter((l) => l.startsWith('DELETE '));
-    assert.equal(deletes.length, 3, `API log: ${api.log().join(', ')}`);
+    assert.equal(deletes.length, 4, `API log: ${api.log().join(', ')}`);
+    assert.equal(await productCount(api.port), 3, 'the seed products are all that is left');
   } finally {
     api.stop();
     rmSync('generated', { recursive: true, force: true });

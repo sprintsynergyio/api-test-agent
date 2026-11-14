@@ -8,6 +8,11 @@
 // Set LOG_REQUESTS=1 to print "<METHOD> <path>" for every request (used to prove the safety guard).
 // FAIL_DELETE_IDS=6,9 (tests only, not a planted bug): DELETE /products/<id> answers 500 for those ids,
 // so npm run test:cleanup can prove a failed cleanup is reported and never hidden.
+// RATE_LIMIT_FIRST=N (tests only, not a planted bug): the first N requests to GET /products answer
+// 429 with Retry-After: 1, so the 429 handling in the HTTP layer can be proved against a real server.
+// POST /oauth/token (input/local-shop-oauth.json): OAuth2 client credentials for the client id
+// "shop-client" with the secret from LOCAL_API_CLIENT_SECRET (default shop-client-secret, a demo value
+// of a fake local API). Issued access tokens act as admin.
 
 import http from "node:http";
 import { readFileSync } from "node:fs";
@@ -17,6 +22,9 @@ const PORT = Number(process.env.PORT || 4000);
 const TOKEN = "Bearer hackathon-demo-token";
 const LOG_REQUESTS = process.env.LOG_REQUESTS === "1";
 const FAIL_DELETE_IDS = new Set((process.env.FAIL_DELETE_IDS ?? "").split(",").map((s) => Number(s.trim())).filter((n) => Number.isInteger(n) && n > 0));
+let rateLimitLeft = Number(process.env.RATE_LIMIT_FIRST || 0);
+const OAUTH_CLIENT_ID = "shop-client";
+const OAUTH_CLIENT_SECRET = process.env.LOCAL_API_CLIENT_SECRET || "shop-client-secret";
 
 // Login (POST /auth/login with { username, password }) for input/local-shop-login.json. Demo users
 // of a fake local API: admin can do everything the fixed token can, viewer can only read. Issued
@@ -67,6 +75,10 @@ function readBody(req) {
     req.on("data", (c) => (raw += c));
     req.on("end", () => {
       if (!raw) return resolve({ ok: true, value: undefined });
+      // Form bodies (the OAuth2 token request) are parsed too.
+      if (String(req.headers["content-type"] ?? "").includes("application/x-www-form-urlencoded")) {
+        return resolve({ ok: true, value: Object.fromEntries(new URLSearchParams(raw)) });
+      }
       try {
         resolve({ ok: true, value: JSON.parse(raw) });
       } catch {
@@ -182,6 +194,27 @@ const server = http.createServer(async (req, res) => {
     issuedTokens.set(`Bearer ${token}`, user.role);
     return send(res, 200, { data: { token, role: user.role } });
   }
+  // POST /oauth/token: OAuth2 client credentials (form body, or HTTP Basic for the client id and secret).
+  // Success: { access_token, token_type, expires_in }. Wrong client or grant: 401 / 400.
+  if (parts[0] === "oauth" && parts[1] === "token" && parts.length === 2) {
+    if (req.method !== "POST") return send(res, 405, { error: "method not allowed" });
+    const body = await readBody(req);
+    if (!body.ok || !body.value || typeof body.value !== "object") return send(res, 400, { error: "invalid_request" });
+    if (body.value.grant_type !== "client_credentials") return send(res, 400, { error: "unsupported_grant_type" });
+    let clientId = body.value.client_id;
+    let clientSecret = body.value.client_secret;
+    const basic = String(req.headers["authorization"] ?? "").match(/^Basic (.+)$/);
+    if (basic) {
+      const decoded = Buffer.from(basic[1], "base64").toString("utf8");
+      const colon = decoded.indexOf(":");
+      clientId = decoded.slice(0, colon);
+      clientSecret = decoded.slice(colon + 1);
+    }
+    if (clientId !== OAUTH_CLIENT_ID || clientSecret !== OAUTH_CLIENT_SECRET) return send(res, 401, { error: "invalid_client" });
+    const token = randomToken();
+    issuedTokens.set(`Bearer ${token}`, "admin");
+    return send(res, 200, { access_token: token, token_type: "Bearer", expires_in: 3600 });
+  }
   // /products/:id/reviews and /products/:id/reviews/:reviewId (nested resource, used by
   // input/local-shop-nested.json to prove paths with more than one placeholder).
   if (parts[0] === "products" && parts[2] === "reviews" && (parts.length === 3 || parts.length === 4)) {
@@ -201,6 +234,11 @@ const server = http.createServer(async (req, res) => {
   // /products
   if (id === null) {
     if (req.method === "GET") {
+      if (rateLimitLeft > 0) {
+        rateLimitLeft--;
+        res.writeHead(429, { "Content-Type": "application/json", "Retry-After": "1" });
+        return res.end(JSON.stringify({ error: "rate limited (RATE_LIMIT_FIRST test hook)" }));
+      }
       let list = [...products.values()];
       // Query parameters: category=<name> filters, limit=<n> cuts the list (used to prove endpoint query support).
       const category = url.searchParams.get("category");
