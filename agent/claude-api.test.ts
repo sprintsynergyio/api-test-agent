@@ -71,7 +71,7 @@ async function main() {
   }
 
   await check('429 and 5xx are retried with backoff and the call succeeds when the provider recovers', async () => {
-    for (const status of [429, 500, 502, 503, 504, 529]) {
+    for (const status of [429, 500, 501, 502, 503, 504, 505, 529, 599]) {
       const captured: Captured[] = [];
       let n = 0;
       setFetchForTests(async (url, init) => {
@@ -89,6 +89,9 @@ async function main() {
     fakeFetch(429, { error: { message: 'rate limited' } }, captured);
     await assert.rejects(callClaudeOutsideBudget('plan', 'ep-1', 's', 'u', 'test'), /HTTP 429/);
     assert.equal(modelRetries(), 3);
+    process.env.MODEL_RETRIES = '';
+    assert.equal(modelRetries(), 3, 'blank .env.example setting keeps the default');
+    delete process.env.MODEL_RETRIES;
     assert.equal(captured.length, 4);
     process.env.MODEL_RETRIES = '0';
     const once: Captured[] = [];
