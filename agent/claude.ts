@@ -216,17 +216,20 @@ function openaiUrl(): string {
 // again with exponential backoff, honouring Retry-After; so is a network error. A timeout is not retried
 // (it already waited TIMEOUT_MS), and neither is any other 4xx. A retry is the same call, so it does not
 // count against MAX_CLAUDE_CALLS. MODEL_RETRIES (default 3) and MODEL_RETRY_BASE_MS (default 2000) tune it.
-export const RETRY_STATUSES = new Set([429, 500, 502, 503, 504, 529]);
+export function retryableModelStatus(status: number): boolean {
+  return status === 429 || (status >= 500 && status <= 599);
+}
 const RETRY_MAX_DELAY_MS = 30_000;
 
 export function modelRetries(): number {
-  const n = Number(process.env.MODEL_RETRIES ?? 3);
+  const n = Number(process.env.MODEL_RETRIES?.trim() || 3);
   return Number.isInteger(n) && n >= 0 && n <= 10 ? n : 3;
 }
 
 // attempt 1 is the first retry. retryAfter: the Retry-After header (seconds or an HTTP date).
 export function retryDelayMs(attempt: number, retryAfter: string | null, now = Date.now(), random = Math.random): number {
-  const base = Number(process.env.MODEL_RETRY_BASE_MS ?? 2000);
+  const configuredBase = Number(process.env.MODEL_RETRY_BASE_MS?.trim() || 2000);
+  const base = Number.isFinite(configuredBase) && configuredBase >= 0 ? configuredBase : 2000;
   if (retryAfter) {
     const secs = Number(retryAfter);
     const fromHeader = Number.isFinite(secs) ? secs * 1000 : Date.parse(retryAfter) - now;
@@ -262,7 +265,7 @@ async function postWithRetry(
       throw fail(`${api} request failed: ${(err as Error).message}`);
     }
     const text = await res.text().finally(() => clearTimeout(timer));
-    if (RETRY_STATUSES.has(res.status) && attempt < retries) {
+    if (retryableModelStatus(res.status) && attempt < retries) {
       const wait = retryDelayMs(attempt + 1, res.headers.get('retry-after'));
       log(`${api} returned HTTP ${res.status}, retry ${attempt + 1}/${retries} in ${(wait / 1000).toFixed(1)}s`);
       await new Promise((r) => setTimeout(r, wait));
