@@ -6,6 +6,7 @@ import { pathParams, setupSteps } from './model';
 import { promptEndpoint, type Plan } from './plan';
 import type { ProbeResult } from './probe';
 import type { FrameworkAdapter } from './frameworks/types';
+import { untrusted, withUntrustedRule } from './untrusted';
 
 const GENERATED_DIR = 'generated';
 const CANDIDATE_DIR = join(GENERATED_DIR, '.candidate');
@@ -13,7 +14,7 @@ const CANDIDATE_DIR = join(GENERATED_DIR, '.candidate');
 export type GenerateResult = { ok: true; specFile: string } | { ok: false; reasons: string[] };
 
 function system(fw: FrameworkAdapter): string {
-  return `You are a senior QA engineer writing ${fw.label}. You answer with exactly one \`\`\`ts code block containing the full file, nothing else.`;
+  return withUntrustedRule(`You are a senior QA engineer writing ${fw.label}. You answer with exactly one \`\`\`ts code block containing the full file, nothing else.`);
 }
 
 // Exported for the redaction tests: the prompt text must never carry client data.
@@ -40,13 +41,13 @@ export function buildPrompt(fw: FrameworkAdapter, endpoint: Endpoint, plan: Plan
   return `Write the test file generated/${endpoint.id}.spec.ts (${fw.label}) for this endpoint, implementing every case in the plan as one test.
 
 ENDPOINT CONFIG:
-${JSON.stringify(shown, null, 2)}
+${untrusted('endpoint-config', JSON.stringify(shown, null, 2))}
 
 PROBE (a real call with the sample body; arrays truncated to 3 items):
-${JSON.stringify(probe, null, 2)}
+${untrusted('probe-response', JSON.stringify(probe, null, 2))}
 
 PLAN:
-${JSON.stringify(plan, null, 2)}
+${untrusted('plan', JSON.stringify(plan, null, 2))}
 
 FILE ${fw.ctxFile} (the fixture; tests get everything from ctx):
 \`\`\`ts

@@ -12,6 +12,7 @@ import { generateEndpoint } from './generate';
 import { planEndpoint, type Plan } from './plan';
 import { addCleanup, cleanupLine, emptyCleanup, type CleanupTotals } from './http';
 import { probeAll, type ProbeResult } from './probe';
+import { resolveHostAddresses } from './resolve-host';
 import { assessSafety, endpointAllowed, PRODUCTION_WRITES_WARNING, READ_ONLY_SKIP, refusalMessage, type Safety } from './safety';
 
 // Full pipeline: probe, plan, generate, run tests, summarize.
@@ -356,7 +357,9 @@ async function main() {
   // AGENT_FORCE_PRODUCTION=1 (testing only) treats every host as production; it reaches the probe and,
   // through the environment, the Playwright run.
   const forceProduction = process.env.AGENT_FORCE_PRODUCTION === '1';
-  const safety = assessSafety(config, { forceProduction });
+  // The host name is resolved once: a name that points at this machine or a private network is marked,
+  // and refused in hosted mode, before any request (agent/safety.ts, resolved option).
+  const safety = assessSafety(config, { forceProduction, resolved: await resolveHostAddresses(config.baseUrl) });
   if (safety.mode === 'refused') {
     const message = refusalMessage(safety);
     console.log(message);
@@ -439,6 +442,7 @@ async function main() {
 
   console.log('=== PROBING ===');
   console.log(`safety: ${safety.hostClass} host, ${safety.mode} mode`);
+  if (safety.resolvesToLocal?.length) console.log(`safety note: ${safety.host} resolves to a local or private address (${safety.resolvesToLocal.join(', ')}); it keeps its ${safety.hostClass} rules`);
   console.log(`framework: ${fw.name}`);
   console.log(describeModelChoice());
   if (fakeModelEnabled()) console.log('model: FAKE_MODEL=1 test mode, no model is called');

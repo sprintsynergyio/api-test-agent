@@ -282,6 +282,46 @@ rejects(
   opts(['happy']),
 );
 
+// Untrusted generated code (PR A): only the ctx file may be imported, and nothing may reach the machine.
+// The first case is the hostile spec from the review: it passed the old gate with {"ok":true}.
+const HOSTILE = `import { test, expect } from '../tests/fixtures/ctx';
+import { execSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+execSync('id > /tmp/pwned.txt');
+const leak = readFileSync('.env', 'utf8');
+${RECORD}
+test.describe('delete-product DELETE /products/{id}', () => {
+${HAPPY.replace("recordStatus(response.status());", "recordStatus(response.status());\n    await ctx.api.post('/exfil', { data: { leak } });")}
+});
+`;
+rejects('the hostile review spec (child_process, fs, .env read, exfil)', HOSTILE, 'may only import the ctx file', opts(['happy']));
+rejects('the hostile review spec: child_process is named', HOSTILE, 'child_process', opts(['happy']));
+const withLine = (line: string) => spec(HAPPY.replace('recordStatus(response.status());', `recordStatus(response.status());\n    ${line}`));
+const UNSAFE: [string, string, string][] = [
+  ['require()', "const cp = require('child_process');", 'calls require()'],
+  ['a dynamic import()', "const fs = await import('fs');", 'dynamic import()'],
+  ['eval()', "eval('1 + 1');", 'calls eval()'],
+  ['new Function', "const f = new Function('return 1');", 'Function'],
+  ['Function()', "const f = Function('return 1');", 'Function'],
+  ['the constructor chain', "const f = (() => 0).constructor.constructor('return 1');", 'constructor'],
+  ['a string timer', "setTimeout('1 + 1', 0);", 'string to a timer'],
+  ['globalThis', 'const g = globalThis;', 'global object'],
+  ['process.cwd()', 'const d = process.cwd();', 'uses process'],
+  ['process.mainModule', 'const m = (process as any).mainModule;', 'uses process'],
+  ['fetch()', "await fetch('/x');", 'outside ctx'],
+  ['WebSocket', "const w = new WebSocket('ws://x');", 'outside ctx'],
+  ['an fs module name', "const n = 'fs';", 'Node built-in module'],
+  ['a net module name', "const n = 'net';", 'Node built-in module'],
+  ['a node: module name', "const n = 'node:os';", 'node: module'],
+  ['execSync', 'const run = execSync;', 'child_process'],
+];
+for (const [what, line, reason] of UNSAFE) rejects(`a test with ${what}`, withLine(line), reason, opts(['happy']));
+rejects('a static import of another module', `import { readFileSync } from 'fs';\n${spec(HAPPY)}`, 'imports "fs"', opts(['happy']));
+rejects('a side-effect import', `import './evil';\n${spec(HAPPY)}`, 'imports "./evil"', opts(['happy']));
+rejects('an export-from of another module', `${spec(HAPPY)}export { x } from 'http';\n`, 'imports "http"', opts(['happy']));
+rejects('a test that takes the Playwright request fixture', spec(HAPPY.replace('async ({ ctx })', 'async ({ ctx, request })')), 'fixtures other than ctx', opts(['happy']));
+accepts('a test using ctx.api.fetch and a body field named process', withLine("const r2 = await ctx.api.fetch('/products', { method: 'GET' });\n    const body = { process: 1 };\n    void body.process; void r2;"), opts(['happy']));
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
 

@@ -33,6 +33,7 @@ jobs:
       - run: npm run test:config
       - run: npm run test:importers
       - run: npm run test:safety
+      - run: npm run test:security
       - run: npm run test:auth
       - run: npm run test:redact
       - run: npm run test:cleanup

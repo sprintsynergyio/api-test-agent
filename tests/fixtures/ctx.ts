@@ -1,4 +1,5 @@
-import 'dotenv/config';
+import { existsSync, readFileSync } from 'node:fs';
+import { parse as parseDotenv } from 'dotenv';
 import { test as base, expect, type APIRequestContext } from '@playwright/test';
 import { labels } from 'allure-js-commons';
 import { pickAuthEnv } from '../../agent/auth';
@@ -18,6 +19,10 @@ export type Ctx = {
   setup: () => Promise<Record<string, string>>;
 };
 
+// .env is parsed into this private object and never copied into process.env, so the model provider keys
+// that live in the agent's .env (ANTHROPIC_API_KEY, OPENAI_API_KEY) are never visible to test code. Only
+// the auth variables the input names are read from it (pickAuthEnv below); the shell environment wins.
+const fileEnv: Record<string, string> = existsSync('.env') ? parseDotenv(readFileSync('.env')) : {};
 const inputFile = process.env.INPUT_FILE || 'input/endpoints.json';
 
 export const test = base.extend<{ ctx: Ctx }>({
@@ -27,7 +32,7 @@ export const test = base.extend<{ ctx: Ctx }>({
     // Only the environment variables the auth section names leave this file (agent/auth.ts).
     // A missing one throws with its name before any request. Without an auth section, api and
     // noAuthApi are the same.
-    const authEnv = pickAuthEnv(config.auth, process.env);
+    const authEnv = pickAuthEnv(config.auth, { ...fileEnv, ...process.env });
 
     await labels(...reportLabels(apiName(config, inputFile), testInfo.titlePath, testInfo.file));
 

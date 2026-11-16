@@ -175,5 +175,11 @@ rejects(
   opts(['happy']),
 );
 
+// Untrusted generated code (PR A), Pactum side: only the setup ctx file may be imported.
+rejects('a file that imports child_process', `import { execSync } from 'node:child_process';\n${spec(HAPPY)}`, 'may only import the ctx file', opts(['happy']));
+rejects('a file that reads the file system', spec(HAPPY.replace('recordStatus(response.status());', "recordStatus(response.status());\n    const fs = await import('fs');")), 'dynamic import()', opts(['happy']));
+rejects('a file that uses fetch', spec(HAPPY.replace('recordStatus(response.status());', "recordStatus(response.status());\n    await fetch('/x');")), 'outside ctx', opts(['happy']));
+rejects('a file that uses process', spec(HAPPY.replace('recordStatus(response.status());', 'recordStatus(response.status());\n    const d = process.cwd();')), 'uses process', opts(['happy']));
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
