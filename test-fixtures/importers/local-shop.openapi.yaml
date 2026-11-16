@@ -5,7 +5,7 @@ info:
   title: Local Shop API
   version: 1.0.0
   description: |
-    In-memory product store used for the hackathon demo.
+    In-memory product store used for the local demo.
     Example request header from the docs: "Authorization: Bearer importer-secret-test-value"
 servers:
   - url: http://localhost:4000

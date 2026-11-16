@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = 4000;
-const TOKEN = process.env.LOCAL_API_AUTH_VALUE || "Bearer hackathon-demo-token";
+const TOKEN = process.env.LOCAL_API_AUTH_VALUE || "Bearer local-shop-demo-token";
 const NPM = process.env.npm_execpath;
 if (!NPM) {
   console.error("Run this through npm (npm run test:e2e), so the exported projects use the same npm.");

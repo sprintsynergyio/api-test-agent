@@ -4,6 +4,8 @@
 
 Give the agent a base URL and a list of API endpoints, and it writes an API test suite in Playwright or Pactum, runs it, and reports suspected API bugs. It first calls each endpoint once to see how the API really responds. Then a model (Claude or OpenAI) plans the test cases (happy path, response schema, invalid input, missing auth, wrong role) and writes one spec file per endpoint. Each file must pass a static gate before it is kept. The suite runs and every failure is classified. The result is a standalone test project you can download and run anywhere.
 
+API Test Agent is a SprintSynergy product, built and maintained by [SprintSynergy](https://sprintsynergy.com).
+
 **New to the repo? Team setup: see [docs/TEAM-SETUP.md](docs/TEAM-SETUP.md).** Clone, `npm ci`, `npm run ui`, paste a model API key once, run.
 
 ## What it does today
@@ -19,6 +21,7 @@ Give the agent a base URL and a list of API endpoints, and it writes an API test
 - Model providers: Claude (API key or your Claude Code login) or OpenAI. Set once from the UI on your own machine.
 - Eval harness: a local demo API with planted bugs and `npm run eval` to measure detection, false alarms and flakiness per provider.
 - Hosted mode for a shared server: login, per-user runs, rate limits, local hosts refused. See [docs/HOSTING.md](docs/HOSTING.md).
+- Showing it to someone: [docs/DEMO.md](docs/DEMO.md).
 - Plan and open items: [docs/ROADMAP.md](docs/ROADMAP.md). Rules for changing the code: `CLAUDE.md`.
 
 ## Requirements

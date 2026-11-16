@@ -1,5 +1,5 @@
 SHOP-142  Product catalog API for the storefront
-Type: Story   Priority: High   Sprint: Hackathon 3   Assignee: QA team
+Type: Story   Priority: High   Sprint: Sprint 3   Assignee: QA team
 
 Description
 As a storefront developer I need a small product catalog API, so the shop can list, create, update and remove products.

@@ -28,7 +28,7 @@ async function check(name: string, fn: () => Promise<void> | void) {
 }
 
 // The auth environment createClients reads (only the variable the input's auth section names).
-const AUTH = { LOCAL_API_AUTH_VALUE: 'Bearer hackathon-demo-token' };
+const AUTH = { LOCAL_API_AUTH_VALUE: 'Bearer local-shop-demo-token' };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function freePort(): Promise<number> {

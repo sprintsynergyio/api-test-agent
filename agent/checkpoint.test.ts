@@ -164,7 +164,7 @@ type Summary = {
 function agent(args: string[], env: Record<string, string> = {}): { out: string; code: number | null; summary: Summary } {
   const res = spawnSync(...nodeBin('tsx', ['agent/cli.ts', ...args]), {
     encoding: 'utf8',
-    env: { ...process.env, FAKE_MODEL: '1', LOCAL_API_AUTH_VALUE: 'Bearer hackathon-demo-token', ...env },
+    env: { ...process.env, FAKE_MODEL: '1', LOCAL_API_AUTH_VALUE: 'Bearer local-shop-demo-token', ...env },
     timeout: 240_000,
   });
   const out = `${res.stdout}${res.stderr}`;

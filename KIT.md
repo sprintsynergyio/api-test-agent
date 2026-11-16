@@ -1,4 +1,4 @@
-# Hackathon Test Kit
+# Demo Test Kit
 
 Everything the agent needs to test against: two APIs and three input files.
 
@@ -8,7 +8,7 @@ Everything the agent needs to test against: two APIs and three input files.
 |---|---|
 | input/endpoints.json | Main demo. Restful Booker (public API), 5 endpoints |
 | input/demo-small.json | Fast live run. Restful Booker, 3 endpoints, no auth |
-| input/local-shop.json | Backup demo. Local shop API on your Mac, 5 endpoints |
+| input/local-shop.json | Backup demo. Local shop API on your machine, 5 endpoints |
 | local-api/server.mjs | The local shop API. No install needed, just Node |
 | .env.example | All environment values the agent needs |
 
@@ -19,10 +19,10 @@ Auth: Basic auth, user admin, password password123 (already encoded in .env.exam
 Use it for: the main demo. Real public API, no setup.
 Risk: free server, can be slow or down.
 
-## API 2: Local shop API (backup, runs on your Mac)
+## API 2: Local shop API (backup, runs on your machine)
 
 Base URL: http://localhost:4000
-Auth: header `Authorization: Bearer hackathon-demo-token`
+Auth: header `Authorization: Bearer local-shop-demo-token`
 
 Endpoints:
 - GET /products (public)
