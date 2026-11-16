@@ -15,12 +15,13 @@ We work through the phases in order, one step at a time. A phase is done only wh
 | Standalone Playwright framework export + zip | Done, proven |
 | Playwright HTML + Allure reports with request/response evidence | Done, proven |
 | Web UI: saved APIs, custom API form, live pipeline, findings | Done, proven |
+| Web UI refresh (Phase 9 PR A): new look, framework toggle, every auth type and roles in the form, profile selects, redaction options, findings with request and response evidence, Jira and Markdown copy, run history, validation through the agent's schema (`npm run test:ui`) | Built and proven offline; a visual pass on the Mac and a live run from the page pending |
 | Importers: OpenAPI, Postman, cURL, HAR, Jira/Confluence text | Done, reviewed (Phase 0) |
-| Pactum output | Adapter built, proven offline against the local shop (Phase 2 PR); live agent run and UI toggle pending |
+| Pactum output | Adapter built, proven offline against the local shop (Phase 2 PR); live agent run pending; UI toggle done (Phase 9 PR A) |
 | Eval harness | In progress: harness built (`npm run eval`, 7 planted bugs, scorer + offline tests); score pending the first live run |
 | Safety guard against production hosts | Done, proven (Phase 1) |
 | Input model: nested paths, query, endpoint headers, env/brand/region profiles | Built and proven offline (Phase 4a PR); live agent run on `input/local-shop-nested.json` pending |
-| Real-world auth: header, query, cookie, login flow with refresh, roles, `[authz]` tests | Built and proven offline (Phase 5 PR: `npm run test:auth`, both frameworks and exports against the local shop login); live agent run on `input/local-shop-login.json` pending; OAuth2 client credentials and the UI not yet |
+| Real-world auth: header, query, cookie, login flow with refresh, roles, `[authz]` tests | Built and proven offline (Phase 5 PR: `npm run test:auth`, both frameworks and exports against the local shop login); live agent run on `input/local-shop-login.json` pending; UI form done (Phase 9 PR A); OAuth2 client credentials not yet |
 
 ---
 
@@ -177,6 +178,8 @@ Pulled forward from Phases 4 and 5 because the first real client (multi-brand, m
 ## Phase 7: CI and incremental updates
 
 **Goal:** the generated suite lives in the client's pipeline and stays current.
+
+**Scale part built (Phase 9 PR):** `out/checkpoint.json` after every stage, `--resume`, `--only-new` (per-endpoint hash), `--endpoints`, `--budget` (default 60), `--concurrency`, `--test-workers` (Playwright; Pactum stays serial), the UI import cap lifted, and `FAKE_MODEL=1` so the pipeline is tested offline (`npm run test:checkpoint`). Still open here: the "never overwrite a human-edited test" marker, CI files in exports, the Jira draft.
 
 **Deliverables**
 - Exported frameworks include CI files for GitHub Actions and Azure DevOps. **Done (Phase 9 hardening PR, Nov 2026):** `.github/workflows/api-tests.yml` and `azure-pipelines.yml` in both exports, secrets named after the env variables, README section "Run in CI". Still to prove: a green run in a sample repository.

@@ -9,6 +9,11 @@
 //
 // AGENT_CMD env var overrides the agent command (used for testing the UI with a mock agent).
 //
+// Input validation uses the agent's own zod schema (agent/config.ts, loaded through tsx), so every auth
+// type, roles, profiles and redaction settings the agent accepts are accepted here too. Every run, with
+// or without login, gets a folder under runs/<runId>/ with its input and a snapshot of its results, so
+// the page can list past runs and show the evidence of each finding (ui/CONTRACT.md section 11).
+//
 // Hosted mode (HOSTED=1): for a shared server (the SprintSynergy VPS). Login is required (UI_USERS),
 // ANTHROPIC_API_KEY is required, local and private hosts are refused, a production host never gets
 // writes, runs are rate limited per login, queued one at a time, and each login only sees its own
@@ -141,15 +146,88 @@ function writeEnvLines(pairs) {
   } catch {}
   for (const [key, value] of Object.entries(pairs)) process.env[key] = value;
 }
-// The agent's verifyProviderKey (agent/claude.ts), loaded on first use through tsx (already a dev
-// dependency: the server starts the agent with it).
-let claudeModule = null;
-async function verifyKey(provider, key, model) {
-  if (!claudeModule) {
+// Agent modules loaded on first use through tsx (already a dev dependency: the server starts the agent
+// with it): claude.ts for verifyProviderKey, config.ts and model.ts for input validation and profiles.
+const agentModules = {};
+async function agentModule(name) {
+  if (!agentModules[name]) {
     const { tsImport } = await import("tsx/esm/api");
-    claudeModule = await tsImport(path.join(ROOT, "agent", "claude.ts"), import.meta.url);
+    agentModules[name] = await tsImport(path.join(ROOT, "agent", `${name}.ts`), import.meta.url);
   }
-  return claudeModule.verifyProviderKey(provider, key, model);
+  return agentModules[name];
+}
+async function verifyKey(provider, key, model) {
+  return (await agentModule("claude")).verifyProviderKey(provider, key, model);
+}
+
+// Validates input JSON the way the agent does (zod schema, then the rules zod cannot express, then the
+// profile selection). Never throws. Returns every problem as { path, message } so the page can point at
+// the field, plus what the page needs to show before a run: the resolved base URL, the host class, the
+// profile dimensions, the framework and the auth environment variables the run will read.
+async function validateInput(text, selectionText) {
+  const out = { ok: false, problems: [], baseUrl: null, hostClass: null, mode: null, selection: null, dimensions: null, framework: "playwright", auth: null, redaction: null, endpoints: 0, name: null };
+  let raw;
+  try {
+    raw = JSON.parse(String(text ?? ""));
+  } catch (e) {
+    out.problems.push({ path: "(root)", message: `Invalid JSON: ${e.message}` });
+    return out;
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    out.problems.push({ path: "(root)", message: "Input must be a JSON object" });
+    return out;
+  }
+  const cfgMod = await agentModule("config");
+  const parsed = cfgMod.ConfigSchema.safeParse(raw);
+  if (!parsed.success) {
+    for (const issue of parsed.error.issues) out.problems.push({ path: issuePath(issue.path), message: issue.message });
+    return out;
+  }
+  for (const problem of cfgMod.configProblems(parsed.data)) out.problems.push(splitProblem(problem));
+  const data = parsed.data;
+  out.name = data.name || null;
+  out.framework = data.framework || "playwright";
+  out.endpoints = data.endpoints.length;
+  out.redaction = { mode: (data.redaction && data.redaction.mode) || "standard", fields: (data.redaction && data.redaction.fields) || [] };
+  if (data.profile) out.dimensions = data.profile.dimensions;
+  if (data.auth) {
+    const a = data.auth;
+    const roles = Object.keys(a.roles || {});
+    const envNames = a.type === "login" ? Object.values(a.credentialsEnv) : [a.valueEnv];
+    for (const r of roles) {
+      const role = a.roles[r];
+      if (role.credentialsEnv) envNames.push(...Object.values(role.credentialsEnv));
+      if (role.valueEnv) envNames.push(role.valueEnv);
+    }
+    const names = [...new Set(envNames)];
+    // Which of those the server's own environment (.env) lacks: names only, never values.
+    const envMissing = names.filter((n) => n !== "CUSTOM_API_AUTH" && !process.env[n]);
+    out.auth = { type: a.type, roles, envNames: names, envMissing, oneRunValue: a.type !== "login" && a.valueEnv === "CUSTOM_API_AUTH" };
+  }
+  if (out.problems.length) return out;
+  const modelMod = await agentModule("model");
+  let resolved;
+  try {
+    resolved = modelMod.applyProfile(data, selectionText || undefined);
+  } catch (e) {
+    out.problems.push({ path: "profile", message: String(e.message || e) });
+    return out;
+  }
+  out.baseUrl = resolved.baseUrl;
+  out.selection = resolved.selection || null;
+  const { hostClass, mode } = safetyMode(resolved.baseUrl, data, { forceProduction: FORCE_PRODUCTION, hosted: HOSTED });
+  out.hostClass = hostClass;
+  out.mode = mode;
+  out.ok = true;
+  return out;
+}
+function issuePath(parts) {
+  return parts.reduce((acc, key) => (typeof key === "number" ? `${acc}[${key}]` : acc ? `${acc}.${String(key)}` : String(key)), "") || "(root)";
+}
+// configProblems strings look like: field "endpoints[1].setup.endpointId" references unknown endpoint "x"
+function splitProblem(text) {
+  const m = String(text).match(/^field "([^"]+)" (.*)$/s);
+  return m ? { path: m[1], message: m[2] } : { path: "(root)", message: String(text) };
 }
 const INPUT_DIR = path.join(ROOT, "input");
 const RUN_FILE = "input/ui-run.json";
@@ -229,15 +307,19 @@ function runsThisHour(user) {
   return list.length;
 }
 
-// With login on, every run has its own folder: input and, when it ends, a snapshot of the results.
-// Without login the agent's fixed paths (out/, reports/, generated/) are served as always.
+// Every run has its own folder under runs/: its input and, when it ends, a snapshot of the results.
+// Without login the agent's fixed paths (out/, reports/, generated/) are served for the latest run as
+// always, and ?run=<id> serves an earlier one; with login a run is only served to the login that made it.
 const SNAPSHOT = [
   ["out/summary.json", "summary.json"],
   ["out/framework.zip", "framework.zip"],
   ["reports/html", "html"],
   ["reports/allure-report", "allure-report"],
+  ["reports/results.json", "results.json"],
+  ["reports/pactum", "pactum"],
   ["generated", "generated"],
 ];
+const LOCAL_RUNS_KEPT = 20;
 
 function snapshotRun(r) {
   for (const [from, to] of SNAPSHOT) {
@@ -250,7 +332,11 @@ function snapshotRun(r) {
 
 // The run a request may see: ?run=<id> when the session owns it, else the session's latest finished run.
 function runDirFor(session, url) {
-  if (!LOGIN_REQUIRED) return ROOT;
+  if (!LOGIN_REQUIRED) {
+    const wanted = url.searchParams.get("run");
+    if (wanted && /^[a-f0-9]{24}$/.test(wanted) && fs.existsSync(path.join(RUNS_DIR, wanted, "done.json"))) return path.join(RUNS_DIR, wanted);
+    return ROOT;
+  }
   const wanted = url.searchParams.get("run");
   const ids = session ? session.runIds : [];
   const id = wanted ? (ids.includes(wanted) ? wanted : null) : [...ids].reverse().find((i) => fs.existsSync(path.join(RUNS_DIR, i, "done.json"))) || null;
@@ -266,6 +352,15 @@ function artifact(dir, name) {
 function cleanupRuns() {
   if (!fs.existsSync(RUNS_DIR)) return;
   const cutoff = Date.now() - RUN_TTL_MS;
+  // Without login there is no TTL: the last LOCAL_RUNS_KEPT runs stay, older ones go.
+  if (!LOGIN_REQUIRED) {
+    const dirs = fs.readdirSync(RUNS_DIR).map((id) => ({ id, mtime: safeMtime(path.join(RUNS_DIR, id)) })).filter((d) => d.mtime !== null).sort((a, b) => b.mtime - a.mtime);
+    for (const d of dirs.slice(LOCAL_RUNS_KEPT)) {
+      const inUse = run && run.id === d.id && run.exitCode === null;
+      if (!inUse) fs.rmSync(path.join(RUNS_DIR, d.id), { recursive: true, force: true });
+    }
+    return;
+  }
   for (const id of fs.readdirSync(RUNS_DIR)) {
     const dir = path.join(RUNS_DIR, id);
     let mtime;
@@ -282,6 +377,107 @@ function cleanupRuns() {
     }
   }
   for (const [sid, s] of sessions) if (Date.now() - s.lastSeen > SESSION_TTL_MS) sessions.delete(sid);
+}
+
+function safeMtime(dir) {
+  try {
+    return fs.statSync(dir).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+// One line per past run for GET /api/runs, newest first, read from each run folder's summary snapshot.
+function listRuns(session) {
+  if (!fs.existsSync(RUNS_DIR)) return [];
+  const ids = LOGIN_REQUIRED ? [...(session ? session.runIds : [])] : fs.readdirSync(RUNS_DIR).filter((id) => /^[a-f0-9]{24}$/.test(id));
+  const rows = [];
+  for (const id of ids) {
+    const dir = path.join(RUNS_DIR, id);
+    if (!fs.existsSync(path.join(dir, "done.json"))) continue;
+    let done = {};
+    let summary = null;
+    try {
+      done = JSON.parse(fs.readFileSync(path.join(dir, "done.json"), "utf8"));
+    } catch {}
+    try {
+      summary = JSON.parse(fs.readFileSync(path.join(dir, "summary.json"), "utf8"));
+    } catch {}
+    const findings = summary && Array.isArray(summary.findings) ? summary.findings.filter((f) => /api finding/i.test(f.classification || "")).length : null;
+    rows.push({
+      id,
+      finishedAt: done.finishedAt || safeMtime(dir),
+      exitCode: done.exitCode ?? null,
+      status: summary ? summary.status : null,
+      inputFile: summary ? summary.inputFile : null,
+      name: summary && summary.framework ? summary.framework.name : null,
+      baseUrl: summary ? summary.baseUrl : null,
+      testFramework: summary ? summary.testFramework || "playwright" : null,
+      findings,
+      tests: summary && summary.totals ? summary.totals.testsGenerated : null,
+      failed: summary && summary.totals ? summary.totals.failed : null,
+      durationSec: summary ? summary.durationSec : null,
+    });
+  }
+  return rows.sort((a, b) => (b.finishedAt || 0) - (a.finishedAt || 0)).slice(0, 20);
+}
+
+// The folder evidence files are read from: reports/ for the live run, the run's snapshot otherwise.
+function evidenceBase(dir) {
+  return dir === ROOT ? path.join(ROOT, "reports") : dir;
+}
+
+// Request and response pairs recorded for one test, from the Playwright JSON report (attachments are
+// inline, base64) or from reports/pactum/status.json plus its evidence files. Everything in them was
+// redacted by the agent before it was written; the server only reads and decodes.
+function evidenceForTest(dir, title) {
+  const base = evidenceBase(dir);
+  const out = [];
+  const pw = path.join(base, "results.json");
+  if (fs.existsSync(pw)) {
+    let report;
+    try {
+      report = JSON.parse(fs.readFileSync(pw, "utf8"));
+    } catch {
+      report = null;
+    }
+    const walk = (suite) => {
+      for (const spec of suite.specs || []) {
+        for (const t of spec.tests || []) {
+          const last = t.results && t.results[t.results.length - 1];
+          if (!last || spec.title !== title) continue;
+          for (const a of last.attachments || []) {
+            if (a.contentType !== "application/json" || !a.body || /allure/i.test(a.name || "")) continue;
+            try {
+              const parsed = JSON.parse(Buffer.from(a.body, "base64").toString("utf8"));
+              out.push({ name: a.name, request: parsed.request || null, response: parsed.response || null });
+            } catch {}
+          }
+        }
+      }
+      for (const child of suite.suites || []) walk(child);
+    };
+    if (report) for (const s of report.suites || []) walk(s);
+  }
+  const pactumStatus = path.join(base, "pactum", "status.json");
+  if (!out.length && fs.existsSync(pactumStatus)) {
+    let entries = [];
+    try {
+      entries = JSON.parse(fs.readFileSync(pactumStatus, "utf8"));
+    } catch {}
+    for (const e of entries) {
+      if (e.title !== title) continue;
+      for (const file of e.evidence || []) {
+        const f = path.join(base, "pactum", "evidence", path.basename(file));
+        if (!fs.existsSync(f)) continue;
+        try {
+          const parsed = JSON.parse(fs.readFileSync(f, "utf8"));
+          out.push({ name: `${parsed.request?.method || ""} ${parsed.request?.path || ""} -> ${parsed.response?.status ?? "failed"}`.trim(), file: `pactum/evidence/${path.basename(file)}`, request: parsed.request || null, response: parsed.response || null });
+        } catch {}
+      }
+    }
+  }
+  return out;
 }
 
 function json(res, status, body) {
@@ -350,31 +546,6 @@ function listInputs() {
     .sort();
 }
 
-// Quick shape check so the user gets instant feedback. The agent does the full zod validation.
-function checkInput(text) {
-  let cfg;
-  try {
-    cfg = JSON.parse(text);
-  } catch (e) {
-    return `Invalid JSON: ${e.message}`;
-  }
-  if (!cfg || typeof cfg !== "object") return "Input must be a JSON object";
-  if (typeof cfg.baseUrl !== "string" || !/^https?:\/\//.test(cfg.baseUrl)) return "baseUrl must be a URL starting with http:// or https://";
-  if (!Array.isArray(cfg.endpoints) || cfg.endpoints.length === 0) return "endpoints must be a non-empty array";
-  if (cfg.auth !== undefined && (typeof cfg.auth !== "object" || typeof cfg.auth.header !== "string" || typeof cfg.auth.valueEnv !== "string")) {
-    return "auth must have header and valueEnv";
-  }
-  for (const flag of ["allowProduction", "allowWrites"]) {
-    if (cfg[flag] !== undefined && typeof cfg[flag] !== "boolean") return `${flag} must be true or false`;
-  }
-  for (const [i, e] of cfg.endpoints.entries()) {
-    if (!e || typeof e.id !== "string") return `endpoints[${i}].id is required`;
-    if (e.requiresAuth === true && !cfg.auth) return `endpoints[${i}] requires auth but the input has no auth section`;
-    if (typeof e.method !== "string") return `endpoints[${i}].method is required`;
-    if (typeof e.path !== "string" || !e.path.startsWith("/")) return `endpoints[${i}].path must start with /`;
-  }
-  return null;
-}
 
 const ANSI = /\x1b\[[0-9;]*[A-Za-z]/g;
 
@@ -409,7 +580,7 @@ function startRun(job) {
     cwd: ROOT,
     // A custom auth value is passed to this run only, through the environment. It is never written to disk.
     // HOSTED (when set) is inherited, so the agent applies the hosted safety rules too.
-    env: { ...process.env, FORCE_COLOR: "0", NO_COLOR: "1", ...(job.authValue ? { CUSTOM_API_AUTH: job.authValue } : {}) },
+    env: { ...process.env, FORCE_COLOR: "0", NO_COLOR: "1", ...(job.authValue ? { CUSTOM_API_AUTH: job.authValue } : {}), ...(job.selection ? { AGENT_SELECT: job.selection } : {}) },
   });
   const prevClients = run ? run.clients : new Set();
   run = { id: job.id, owner: job.owner, user: job.user, dir: job.dir, proc, lines: [], startedAt: Date.now(), exitCode: null, clients: prevClients };
@@ -570,6 +741,18 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
+  if (req.method === "POST" && p === "/api/validate-input") {
+    let body;
+    try {
+      body = JSON.parse(await readBody(req));
+    } catch {
+      return json(res, 400, { error: "Request body must be JSON" });
+    }
+    if (typeof body.json !== "string") return json(res, 400, { error: "json must be a string" });
+    const selection = body.selection === undefined || body.selection === null ? undefined : String(body.selection);
+    return json(res, 200, await validateInput(body.json, selection));
+  }
+
   if (req.method === "POST" && p === "/api/run") {
     if (isRunning() && !LOGIN_REQUIRED) return json(res, 409, { error: "A run is already in progress" });
     let body;
@@ -578,22 +761,29 @@ const server = http.createServer(async (req, res) => {
     } catch {
       return json(res, 400, { error: "Request body must be JSON" });
     }
-    const problem = checkInput(body && body.json);
-    if (problem) return json(res, 400, { error: problem });
+    if (typeof body.json !== "string") return json(res, 400, { error: "json must be a string" });
     if (body.authValue !== undefined && typeof body.authValue !== "string") return json(res, 400, { error: "authValue must be a string" });
+    if (body.selection !== undefined && body.selection !== null && typeof body.selection !== "string") return json(res, 400, { error: "selection must be a string" });
+    const selection = body.selection || undefined;
+    const checked = await validateInput(body.json, selection);
+    if (!checked.ok) {
+      const first = checked.problems[0];
+      return json(res, 400, { error: `${first.path === "(root)" ? "" : first.path + ": "}${first.message}`, problems: checked.problems });
+    }
     const cfg = JSON.parse(body.json);
-    // The safety guard does not depend on the browser: the same rules as agent/safety.ts decide here.
-    // AGENT_FORCE_PRODUCTION=1 (testing only) treats every host as production, as in the agent.
+    // The safety guard does not depend on the browser: the same rules as agent/safety.ts decide here on
+    // the resolved base URL. AGENT_FORCE_PRODUCTION=1 (testing only) treats every host as production.
     // Hosted: a local or private host is the server's own network and is refused outright.
-    const { hostClass, mode } = safetyMode(cfg.baseUrl, cfg, { forceProduction: FORCE_PRODUCTION, hosted: HOSTED });
-    if (mode === "refused") {
-      const message = hostClass === "local" ? localRefusalMessage(cfg.baseUrl) : refusalMessage(cfg.baseUrl);
-      console.log(`UI: run refused, ${hostClass} host (${message})`);
+    if (checked.mode === "refused") {
+      const message = checked.hostClass === "local" ? localRefusalMessage(checked.baseUrl) : refusalMessage(checked.baseUrl);
+      console.log(`UI: run refused, ${checked.hostClass} host (${message})`);
       return json(res, 400, { error: message });
     }
-    if (cfg.auth && cfg.auth.valueEnv === "CUSTOM_API_AUTH" && !body.authValue) {
-      return json(res, 400, { error: "This API needs an auth header value" });
+    if (checked.auth && checked.auth.oneRunValue && !body.authValue) {
+      return json(res, 400, { error: "This API needs an auth value for this run. Enter it in the auth field." });
     }
+    const id = newId();
+    const dir = path.join(RUNS_DIR, id);
     if (LOGIN_REQUIRED) {
       if (queue.some((j) => j.owner === session.sid) || (isRunning() && run.owner === session.sid)) {
         return json(res, 409, { error: "You already have a run in progress or queued" });
@@ -602,14 +792,12 @@ const server = http.createServer(async (req, res) => {
         return json(res, 429, { error: `Limit reached: ${RUNS_PER_HOUR} runs per hour per login. Try again later.` });
       }
       if (isRunning() && queue.length >= MAX_QUEUE) return json(res, 429, { error: `The queue is full (${MAX_QUEUE} waiting). Try again in a few minutes.` });
-      const id = newId();
-      const dir = path.join(RUNS_DIR, id);
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(path.join(dir, "input.json"), body.json);
       const s = sessions.get(session.sid);
       s.runIds.push(id);
       if (HOSTED) runStarts.set(session.user, [...(runStarts.get(session.user) || []), Date.now()]);
-      const job = { id, owner: session.sid, user: session.user, dir, inputPath: path.relative(ROOT, path.join(dir, "input.json")), authValue: body.authValue || "" };
+      const job = { id, owner: session.sid, user: session.user, dir, inputPath: path.relative(ROOT, path.join(dir, "input.json")), authValue: body.authValue || "", selection };
       if (isRunning()) {
         queue.push(job);
         console.log(`UI: run ${id} queued for ${session.user} (position ${queue.length})`);
@@ -619,11 +807,36 @@ const server = http.createServer(async (req, res) => {
       return json(res, 202, { started: true, runId: id });
     }
     // An unedited saved API runs from its own file so summary.inputFile names the selected API.
-    // Edited or custom JSON runs from input/ui-run.json.
+    // Edited or custom JSON runs from input/ui-run.json. The run folder keeps a copy of the input and,
+    // when the run ends, a snapshot of the results for the run history.
     const saved = listInputs().find((f) => fs.readFileSync(path.join(INPUT_DIR, f), "utf8") === body.json);
     if (!saved) fs.writeFileSync(path.join(ROOT, RUN_FILE), body.json);
-    startRun({ id: newId(), owner: null, user: null, dir: null, inputPath: saved ? `input/${saved}` : RUN_FILE, authValue: body.authValue || "" });
-    return json(res, 202, { started: true });
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "input.json"), body.json);
+    cleanupRuns();
+    startRun({ id, owner: null, user: null, dir, inputPath: saved ? `input/${saved}` : RUN_FILE, authValue: body.authValue || "", selection });
+    return json(res, 202, { started: true, runId: id });
+  }
+
+  if (req.method === "GET" && p === "/api/runs") return json(res, 200, listRuns(session));
+
+  if (req.method === "GET" && p === "/api/evidence") {
+    const dir = runDirFor(session, url);
+    if (!dir) return json(res, 404, { error: "No run found." });
+    const file = url.searchParams.get("file");
+    const title = url.searchParams.get("test");
+    if (file) {
+      const base = evidenceBase(dir);
+      const target = path.normalize(path.join(base, file));
+      if (!target.startsWith(base + path.sep) || !/\.(json|txt|html)$/.test(target)) return json(res, 403, { error: "forbidden" });
+      // A run folder also holds input.json and the generated specs: only the reports snapshot is evidence.
+      const rel = path.relative(base, target);
+      if (dir !== ROOT && rel !== "results.json" && !rel.startsWith("pactum" + path.sep)) return json(res, 403, { error: "forbidden" });
+      if (!fs.existsSync(target) || !fs.statSync(target).isFile()) return json(res, 404, { error: "evidence file not found" });
+      return serveFile(res, target);
+    }
+    if (!title) return json(res, 400, { error: "test or file is required" });
+    return json(res, 200, { test: title, exchanges: evidenceForTest(dir, title) });
   }
 
   if (req.method === "POST" && p === "/api/import") {
@@ -676,8 +889,11 @@ const server = http.createServer(async (req, res) => {
     if (!/^[a-z0-9][a-z0-9-]{0,40}$/.test(name) || name === "ui-run") return json(res, 400, { error: "Name must use lowercase letters, numbers and dashes" });
     const file = `${name}.json`;
     if (PROTECTED_INPUTS.has(file)) return json(res, 409, { error: `${file} is a kit file and cannot be overwritten` });
-    const problem = checkInput(body.json);
-    if (problem) return json(res, 400, { error: problem });
+    if (typeof body.json !== "string") return json(res, 400, { error: "json must be a string" });
+    const checked = await validateInput(body.json);
+    // A profile input is saved without a selection; the page picks one at run time.
+    const blocking = checked.problems.filter((x) => x.path !== "profile");
+    if (blocking.length) return json(res, 400, { error: `${blocking[0].path === "(root)" ? "" : blocking[0].path + ": "}${blocking[0].message}`, problems: blocking });
     if (/"(Bearer|Basic) [^"]+"/.test(body.json)) return json(res, 400, { error: "Input files must not contain auth values" });
     // Production consent is given per run in the UI, never stored in an input file.
     const cfg = JSON.parse(body.json);
@@ -698,7 +914,7 @@ const server = http.createServer(async (req, res) => {
     let name = "playwright-api-framework";
     try {
       const s = JSON.parse(fs.readFileSync(artifact(dir, "summary.json"), "utf8"));
-      if (s.framework && /^[a-z0-9-]+$/.test(s.framework.name || "")) name = `${s.framework.name}-playwright-tests`;
+      if (s.framework && /^[a-z0-9-]+$/.test(s.framework.name || "")) name = `${s.framework.name}-${s.testFramework === "pactum" ? "pactum" : "playwright"}-tests`;
     } catch {}
     res.writeHead(200, {
       "Content-Type": "application/zip",
@@ -787,11 +1003,9 @@ const server = http.createServer(async (req, res) => {
   json(res, 404, { error: "not found" });
 });
 
-if (LOGIN_REQUIRED) {
-  fs.mkdirSync(RUNS_DIR, { recursive: true });
-  cleanupRuns();
-  setInterval(cleanupRuns, 60 * 60 * 1000).unref();
-}
+fs.mkdirSync(RUNS_DIR, { recursive: true });
+cleanupRuns();
+setInterval(cleanupRuns, 60 * 60 * 1000).unref();
 
 server.listen(PORT, HOST, () => {
   const where = HOST === "127.0.0.1" || HOST === "localhost" ? `http://localhost:${PORT}` : `http://${HOST}:${PORT}`;

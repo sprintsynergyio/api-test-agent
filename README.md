@@ -30,7 +30,7 @@ Give the agent a base URL and a list of API endpoints, and it writes an API test
 1. Install Node 20+.
 2. `npm ci` (Playwright browsers are not needed, the tests only use Playwright's API client).
 3. Start the UI (`npm run ui`, http://localhost:3000). The first screen asks for a Claude or OpenAI API key, checks it, and saves it to `.env` on your machine. If Claude Code is installed and logged in, no key is needed and the card does not appear.
-4. `.env` also holds the auth values your input files name (for the kit: `API_AUTH_VALUE` for Restful Booker, `LOCAL_API_AUTH_VALUE` for the local shop API; copy them from `.env.example`). `MAX_CLAUDE_CALLS` caps model calls per run (default 30). `LLM_MODEL` is optional.
+4. `.env` also holds the auth values your input files name (for the kit: `API_AUTH_VALUE` for Restful Booker, `LOCAL_API_AUTH_VALUE` for the local shop API; copy them from `.env.example`). `MAX_CLAUDE_CALLS` caps model calls per run (default 60, about 2 per endpoint; `--budget N` overrides it for one run). `LLM_MODEL` is optional.
 5. Check it works: `npm run typecheck` and `npm run test:template` (4 tests against Restful Booker).
 
 ## Run it
@@ -41,6 +41,18 @@ Give the agent a base URL and a list of API endpoints, and it writes an API test
 npm run api:local                      # local shop API on http://localhost:4000 (two planted bugs)
 npm run agent input/local-shop.json    # any input file works
 ```
+
+Flags after the input file (use `npm run agent -- <input> <flags>`):
+
+| Flag | What it does |
+|---|---|
+| `--resume` | continue the last run of the same input from `out/checkpoint.json`: probes, plans and specs already made are reused, only the rest costs model calls. A run that stopped at the budget prints `stopped at budget: run again with --resume to continue` |
+| `--only-new` | after you change the input file, regenerate only the endpoints whose definition changed (id, method, path, body, query, headers, setup); the rest is kept and every spec runs |
+| `--endpoints a,b` | restrict the run to these endpoint ids |
+| `--budget N` | model calls allowed in this run (overrides `MAX_CLAUDE_CALLS`, default 60) |
+| `--concurrency N` | plans and generations in flight at once (default 3, max 8) |
+| `--test-workers N` | Playwright workers for the test run (default 1: the tests share one live API, so data-dependent tests may need 1; Pactum runs one at a time and says so) |
+| `--select k=v,...` | pick the profile dimensions (see Profiles) |
 
 The agent prints five phases (PROBING, PLANNING, GENERATING, RUNNING TESTS, SUMMARY) and writes:
 
@@ -57,12 +69,14 @@ npm run api:local
 npm run ui            # then open http://localhost:3000
 ```
 
-- **Saved API** tab: pick an input file from `input/` (or edit its JSON) and click **Generate tests**. The log streams live, then the page shows the findings, the generated code, **Open Playwright report**, and **Download framework (.zip)**.
-- **Custom API** tab: enter a name, base URL, optional auth header, and endpoints in a form. The auth value is passed to that one run through an environment variable and is never written to disk. **Save as input file** stores the config (without any auth value) in `input/<name>.json`. Or pick another **Source** to import the endpoints (see Importers).
+- **Saved** tab: pick an input file from `input/` (or edit its JSON) and click **Generate tests**. Inputs with a profile get one dropdown per dimension; the page shows which `.env` variables the auth section reads. The log streams live, then the page shows the findings with their request and response evidence (**Copy as Jira ticket**, **Copy as Markdown**), the generated code, **Open Playwright report**, and **Download framework (.zip)**. **Recent runs** keeps the last 20.
+- **Build** tab: enter a name, base URL, auth (header, query parameter, cookie or a login call, plus optional roles for permission tests) and endpoints in a form. A header, query or cookie value typed here is passed to that one run through an environment variable and is never written to disk; login credentials and role values are read from `.env`. **Save as input file** stores the config (without any auth value) in `input/<name>.json`.
+- **Import** tab: pick a **Source** to import the endpoints (see Importers).
+- **Run options**: the framework (Playwright or Pactum) and redaction (standard or strict, plus extra fields to hide).
 
 ## Importers
 
-Instead of writing the input file by hand, import the endpoints from something you already have. In the UI: **Custom API** tab, **Source**. From the terminal (prints `{ input, skipped, warnings }` as JSON; save `input` as an input file):
+Instead of writing the input file by hand, import the endpoints from something you already have. In the UI: **Import** tab, **Source**. From the terminal (prints `{ input, skipped, warnings }` as JSON; save `input` as an input file):
 
 ```
 npm run -s import postman < collection.json
@@ -80,7 +94,7 @@ npm run -s import postman < collection.json
 - **Auth.** Every credential is removed: Authorization, Cookie, any header whose name contains auth, token, key, secret or session, Postman auth blocks, curl `-u` and `-b`, credential query parameters, and `user:password@` in URLs. Those endpoints get `requiresAuth: true`, and the input gets `auth: { header, valueEnv: "CUSTOM_API_AUTH" }`. Enter the value in the auth field before running. Credential values never appear in the output, warnings or errors.
 - Ids are slugs of the method and path (`get-products-id`). Path params (`:id`, `{{id}}`, `{id}`) become `{id}`. A path with a placeholder gets `setup` from the POST on its parent path; check its `idField`.
 - A missing or relative base URL leaves `baseUrl` empty, and Generate stays disabled until you fill it in.
-- **Keep a run to 12 endpoints or fewer.** Each endpoint costs about 2 Claude calls of the 30-call budget. The preview checks the first 12 and warns above that.
+- **Big imports.** Every imported endpoint is selected. Each costs about 2 model calls of the 60-call budget; above 50 endpoints the preview shows the estimate. A run that stops at the budget is continued from the terminal with `--resume` (see Run it).
 - Acceptance criteria in a ticket are not turned into tests yet.
 
 ## What you get
@@ -103,7 +117,7 @@ It never imports from this repo. Copy it anywhere, `npm install`, fill in `.env`
 
 ## Point it at another API
 
-Write an input file (or use the Custom API tab):
+Write an input file (or use the Build tab in the UI):
 
 ```json
 {
