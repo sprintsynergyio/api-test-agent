@@ -21,7 +21,11 @@ We work through the phases in order, one step at a time. A phase is done only wh
 | Eval harness | In progress: harness built (`npm run eval`, 7 planted bugs, scorer + offline tests); score pending the first live run |
 | Safety guard against production hosts | Done, proven (Phase 1) |
 | Input model: nested paths, query, endpoint headers, env/brand/region profiles | Built and proven offline (Phase 4a PR); live agent run on `input/local-shop-nested.json` pending |
-| Real-world auth: header, query, cookie, login flow with refresh, roles, `[authz]` tests | Built and proven offline (Phase 5 PR: `npm run test:auth`, both frameworks and exports against the local shop login); live agent run on `input/local-shop-login.json` pending; UI form done (Phase 9 PR A); OAuth2 client credentials not yet |
+| Real-world auth: header, query, cookie, login flow with refresh, roles, `[authz]` tests | Built and proven offline (Phase 5 PR: `npm run test:auth`, both frameworks and exports against the local shop login); live agent run on `input/local-shop-login.json` pending; UI form done (Phase 9 PR A); OAuth2 client credentials built (Phase 9 hardening PR) |
+| Static gate hardening: a spec may import only the ctx file, unsafe code (require, eval, process, fetch, Node modules) rejected, untrusted-data markers in every prompt, model keys kept out of the test process, DNS-aware host check (fix PR A) | Done, proven offline (`npm run test:gate`, `test:security`, `test:safety`) |
+| CI behaviour: exit codes 0 / 1 / 2 with `--fail-on`, summary kept when the export fails, in-process zip (fix PR B) | Done, proven offline (`npm run test:exit`, `test:checkpoint`) |
+| macOS, Windows and Linux (fix PR C) | Done: CI runs every offline suite, a `FAKE_MODEL` end-to-end run and `npm test` in both exports on ubuntu, windows and macos with Node 22 and 24 |
+| Response schemas from OpenAPI, body assertions required in `[happy]` and `[schema]` tests, model API retries (fix PR D) | Built and proven offline; a live run pending |
 
 ---
 
@@ -61,9 +65,9 @@ We work through the phases in order, one step at a time. A phase is done only wh
 
 ---
 
-## Phase 2: Framework adapter + Pactum (in progress)
+## Phase 2: Framework adapter + Pactum (built, live run pending)
 
-Status: adapter interface, Pactum setup file with the guard, template, gate, runner, parser and exporter are built and proven offline (template green against the local shop, exported framework runs standalone, refusal works standalone). Allure for Pactum done (Phase 9 hardening PR, Nov 2026: the adapter writes Allure result files from the Mocha JSON and status files, with the redacted evidence attached, and builds the report with the Allure CLI). Still open: the first live agent run in Pactum mode (needs the Claude login) and the UI framework toggle.
+Status: adapter interface, Pactum setup file with the guard, template, gate, runner, parser and exporter are built and proven offline (template green against the local shop, exported framework runs standalone, refusal works standalone). Allure for Pactum done (Phase 9 hardening PR, Nov 2026: the adapter writes Allure result files from the Mocha JSON and status files, with the redacted evidence attached, and builds the report with the Allure CLI). Still open: the first live agent run in Pactum mode (needs a model key or a Claude Code login). The UI framework toggle is done (Phase 9 PR A).
 
 **Goal:** one agent, two output frameworks. The user picks Playwright or Pactum; everything else stays shared.
 
@@ -136,6 +140,8 @@ Pulled forward from Phases 4 and 5 because the first real client (multi-brand, m
 
 **Goal:** use the information in OpenAPI specs to write stronger tests, not just status checks.
 
+Status (fix PR D, Nov 2026): the OpenAPI importer carries each operation's documented success response into `endpoint.responseSchema` (a small JSON Schema subset, `agent/response-schema.ts`); the agent checks the probe response against it (`summary.json` `endpoints[].responseSchemaIssues`), shows it to the generator, and the gate requires every `[schema]` test to assert each required field. Still open: boundary tests, query parameter tests, the `[contract]` type and the new planted bugs.
+
 **Deliverables**
 - Response schema validation against the spec (Playwright via a JSON schema validator, Pactum via its built-in JSON schema expectation).
 - Boundary tests from the spec: min/max length, min/max values, enums, required vs optional, formats (email, date, uuid).
@@ -156,7 +162,7 @@ Pulled forward from Phases 4 and 5 because the first real client (multi-brand, m
 - OAuth2 client credentials. **Done (Phase 9 hardening PR, Nov 2026):** `auth.type: "oauth2_client"` sends the form-encoded grant to `tokenUrl` (a path or an absolute URL, whose host the safety guard classifies), caches the access token, refreshes once on 401, supports `clientAuth: "basic"`; the local shop API has `POST /oauth/token` and `input/local-shop-oauth.json`; the OpenAPI importer maps `clientCredentials` flows to it.
 - Roles: two users (for example admin and customer). New `[authz]` tests: a customer cannot read or change another customer's data, a customer cannot call admin endpoints. Built: `auth.roles`, `ctx.as(role)` in both frameworks, the `[authz]` case type with its own plan and gate rules, finding classification and eval scoring.
 
-**Proof so far:** the local shop API has `POST /auth/login` with admin and viewer users and the planted bug `viewer-can-delete`; throwaway `[authz]` specs catch it in both frameworks (actual status 204 recorded); both exports run standalone with the login flow; `npm run test:auth` covers every type, caching, refresh, the guard and redaction; no credential or token in any output. Pending: the live agent run (`npm run agent input/local-shop-login.json`) and the UI, which still accepts only the header type.
+**Proof so far:** the local shop API has `POST /auth/login` with admin and viewer users and the planted bug `viewer-can-delete`; throwaway `[authz]` specs catch it in both frameworks (actual status 204 recorded); both exports run standalone with the login flow; `npm run test:auth` covers every type, caching, refresh, the guard and redaction; no credential or token in any output. Pending: the live agent run (`npm run agent input/local-shop-login.json`). The UI form takes every auth type since Phase 9 PR A.
 
 ---
 
@@ -179,7 +185,9 @@ Pulled forward from Phases 4 and 5 because the first real client (multi-brand, m
 
 **Goal:** the generated suite lives in the client's pipeline and stays current.
 
-**Scale part built (Phase 9 PR):** `out/checkpoint.json` after every stage, `--resume`, `--only-new` (per-endpoint hash), `--endpoints`, `--budget` (default 60), `--concurrency`, `--test-workers` (Playwright; Pactum stays serial), the UI import cap lifted, and `FAKE_MODEL=1` so the pipeline is tested offline (`npm run test:checkpoint`). Still open here: the "never overwrite a human-edited test" marker, CI files in exports, the Jira draft.
+**Scale part built (Phase 9 PR):** `out/checkpoint.json` after every stage, `--resume`, `--only-new` (per-endpoint hash), `--endpoints`, `--budget` (default 60), `--concurrency`, `--test-workers` (Playwright; Pactum stays serial), the UI import cap lifted, and `FAKE_MODEL=1` so the pipeline is tested offline (`npm run test:checkpoint`). Still open here: the "never overwrite a human-edited test" marker and the Jira draft (CI files in exports are done, below).
+
+**CI behaviour and platforms (fix PRs B and C, Nov 2026):** exit codes 0 (no findings), 1 (findings, `--fail-on none` turns it off) and 2 (tool or config error), `summary.json` written before the export and kept when it fails, the zip written in-process, and this repository's CI on ubuntu, windows and macos with Node 22 and 24 (typecheck, every offline suite, the Pactum template, a `FAKE_MODEL` end-to-end run and `npm test` in both exported projects).
 
 **Deliverables**
 - Exported frameworks include CI files for GitHub Actions and Azure DevOps. **Done (Phase 9 hardening PR, Nov 2026):** `.github/workflows/api-tests.yml` and `azure-pipelines.yml` in both exports, secrets named after the env variables, README section "Run in CI". Still to prove: a green run in a sample repository.

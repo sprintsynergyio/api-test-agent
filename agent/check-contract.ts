@@ -31,6 +31,7 @@ try {
 }
 
 // Top level
+need(s.schemaVersion === 1, `summary.schemaVersion is ${JSON.stringify(s.schemaVersion)}, expected 1`);
 field('summary', s, 'status', ['string'], ['completed', 'stopped-budget', 'no-tests', 'refused']);
 field('summary', s, 'testFramework', ['string'], ['playwright', 'pactum']);
 field('summary', s, 'inputFile', ['string']);
@@ -127,6 +128,9 @@ for (const [i, e] of endpoints.entries()) {
   field(where, e, 'specFile', ['string', 'null']);
   field(where, e, 'failureReason', ['string', 'null']);
   field(where, e, 'skippedReason', ['string', 'null']);
+  if (e.responseSchemaIssues !== undefined && e.responseSchemaIssues !== null) {
+    need(Array.isArray(e.responseSchemaIssues) && e.responseSchemaIssues.every((x: unknown) => typeof x === 'string'), `${where}.responseSchemaIssues must be null or a list of strings`);
+  }
   for (const k of ['casesPlanned', 'passed', 'failed']) need(isInt(e[k]), `${where}.${k} is not a count`);
   need((e.specFile === null) === (e.specWritten === false), `${where}: specFile must be null exactly when specWritten is false`);
   sumPassed += Number(e.passed) || 0;

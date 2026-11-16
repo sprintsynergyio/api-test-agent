@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { callClaudeOutsideBudget, claudeEnv, describeModelChoice, hostedWithoutApiKeyProblem, modelChoice, redact, setFetchForTests, usingApiKey, verifyProviderKey } from './claude';
+import { callClaudeOutsideBudget, claudeCliArgs, claudeEnv, modelRetries, retryDelayMs, describeModelChoice, hostedWithoutApiKeyProblem, modelChoice, redact, setFetchForTests, usingApiKey, verifyProviderKey } from './claude';
 
 // npm run test:claude-api: the Messages API and Chat Completions paths of agent/claude.ts with a fake
 // fetch, plus verifyProviderKey. Offline, no key.
@@ -31,6 +31,8 @@ function fakeFetch(status: number, body: unknown, captured: Captured[]) {
 async function main() {
   process.env.ANTHROPIC_API_KEY = KEY;
   process.env.CLAUDE_MODEL = 'claude-test-model';
+  // Retries wait 1 ms here instead of seconds.
+  process.env.MODEL_RETRY_BASE_MS = '1';
 
   await check('with ANTHROPIC_API_KEY set the API path is used', () => {
     assert.equal(usingApiKey(), true);
@@ -67,6 +69,103 @@ async function main() {
       });
     });
   }
+
+  await check('429 and 5xx are retried with backoff and the call succeeds when the provider recovers', async () => {
+    for (const status of [429, 500, 502, 503, 504, 529]) {
+      const captured: Captured[] = [];
+      let n = 0;
+      setFetchForTests(async (url, init) => {
+        captured.push({ url: String(url), init: init ?? {} });
+        n++;
+        if (n < 3) return new Response(JSON.stringify({ error: { message: 'busy' } }), { status, headers: { 'retry-after': '0' } });
+        return new Response(JSON.stringify({ content: [{ type: 'text', text: 'done' }], stop_reason: 'end_turn' }), { status: 200 });
+      });
+      assert.equal(await callClaudeOutsideBudget('plan', 'ep-1', 's', 'u', 'test'), 'done', `HTTP ${status}`);
+      assert.equal(captured.length, 3, `HTTP ${status}: two retries then success`);
+    }
+  });
+  await check('a persistent 429 gives up after MODEL_RETRIES retries (default 3) with the status in the error', async () => {
+    const captured: Captured[] = [];
+    fakeFetch(429, { error: { message: 'rate limited' } }, captured);
+    await assert.rejects(callClaudeOutsideBudget('plan', 'ep-1', 's', 'u', 'test'), /HTTP 429/);
+    assert.equal(modelRetries(), 3);
+    assert.equal(captured.length, 4);
+    process.env.MODEL_RETRIES = '0';
+    const once: Captured[] = [];
+    fakeFetch(429, { error: { message: 'rate limited' } }, once);
+    await assert.rejects(callClaudeOutsideBudget('plan', 'ep-1', 's', 'u', 'test'), /HTTP 429/);
+    assert.equal(once.length, 1, 'MODEL_RETRIES=0 turns retries off');
+    delete process.env.MODEL_RETRIES;
+  });
+  await check('other 4xx (400, 401, 404) are not retried', async () => {
+    for (const status of [400, 401, 404]) {
+      const captured: Captured[] = [];
+      fakeFetch(status, { error: { message: 'no' } }, captured);
+      await assert.rejects(callClaudeOutsideBudget('plan', 'ep-1', 's', 'u', 'test'), new RegExp(`HTTP ${status}`));
+      assert.equal(captured.length, 1, `HTTP ${status} sent once`);
+    }
+  });
+  await check('a network error is retried; the OpenAI path retries too', async () => {
+    let n = 0;
+    setFetchForTests(async () => {
+      if (n++ === 0) throw new Error('ECONNRESET');
+      return new Response(JSON.stringify({ content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn' }), { status: 200 });
+    });
+    assert.equal(await callClaudeOutsideBudget('plan', 'ep-1', 's', 'u', 'test'), 'ok');
+    assert.equal(n, 2);
+    const prevProvider = process.env.LLM_PROVIDER;
+    process.env.LLM_PROVIDER = 'openai';
+    process.env.OPENAI_API_KEY = 'sk-openai-test-key-0123456789';
+    let m = 0;
+    setFetchForTests(async () => {
+      if (m++ === 0) return new Response('{}', { status: 503 });
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'hi' }, finish_reason: 'stop' }] }), { status: 200 });
+    });
+    try {
+      assert.equal(await callClaudeOutsideBudget('plan', 'ep-1', 's', 'u', 'test'), 'hi');
+      assert.equal(m, 2);
+    } finally {
+      if (prevProvider === undefined) delete process.env.LLM_PROVIDER;
+      else process.env.LLM_PROVIDER = prevProvider;
+      delete process.env.OPENAI_API_KEY;
+    }
+  });
+  await check('retryDelayMs: exponential with jitter, capped; Retry-After seconds or date wins', () => {
+    process.env.MODEL_RETRY_BASE_MS = '2000';
+    try {
+      assert.equal(retryDelayMs(1, null, 0, () => 1), 2000);
+      assert.equal(retryDelayMs(2, null, 0, () => 1), 4000);
+      assert.equal(retryDelayMs(3, null, 0, () => 0), 4000);
+      assert.equal(retryDelayMs(10, null, 0, () => 1), 30_000);
+      assert.equal(retryDelayMs(1, '7', 0), 7000);
+      assert.equal(retryDelayMs(1, new Date(10_000).toUTCString(), 0), 10_000);
+      assert.equal(retryDelayMs(1, '9999', 0), 60_000);
+    } finally {
+      process.env.MODEL_RETRY_BASE_MS = '1';
+    }
+  });
+  await check('Claude Code CLI path: LLM_MODEL is passed as --model, CLAUDE_MODEL as the fallback, none by default', () => {
+    const prevL = process.env.LLM_MODEL;
+    const prevC = process.env.CLAUDE_MODEL;
+    try {
+      process.env.LLM_MODEL = 'claude-from-llm-model';
+      process.env.CLAUDE_MODEL = 'claude-old-name';
+      let args = claudeCliArgs('SYS');
+      assert.equal(args[args.indexOf('--model') + 1], 'claude-from-llm-model');
+      delete process.env.LLM_MODEL;
+      args = claudeCliArgs('SYS');
+      assert.equal(args[args.indexOf('--model') + 1], 'claude-old-name');
+      delete process.env.CLAUDE_MODEL;
+      args = claudeCliArgs('SYS');
+      assert.ok(!args.includes('--model'));
+      assert.equal(args[args.indexOf('--system-prompt') + 1], 'SYS');
+    } finally {
+      if (prevL === undefined) delete process.env.LLM_MODEL;
+      else process.env.LLM_MODEL = prevL;
+      if (prevC === undefined) delete process.env.CLAUDE_MODEL;
+      else process.env.CLAUDE_MODEL = prevC;
+    }
+  });
 
   await check('401 with the key echoed back is redacted in the error', async () => {
     fakeFetch(401, { type: 'error', error: { type: 'authentication_error', message: `invalid x-api-key ${KEY}` } }, []);

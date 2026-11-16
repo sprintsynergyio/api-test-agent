@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { z } from 'zod';
 
 import { authRoles, DEFAULT_ROLE, type AuthConfig } from './auth';
+import { ResponseSchemaZ } from './response-schema';
 import { applyProfile, pathParams, setupSteps, type Selection } from './model';
 
 const SetupSchema = z.object({
@@ -25,6 +26,8 @@ const EndpointSchema = z.object({
   query: z.record(z.string(), QueryValue).optional(),
   headers: z.record(z.string(), z.string()).optional(),
   setup: z.union([SetupSchema, z.array(SetupSchema).min(1)]).optional(),
+  // The documented success response (the OpenAPI importer fills it in): agent/response-schema.ts.
+  responseSchema: ResponseSchemaZ.optional(),
 });
 
 const ProfileSchema = z.object({

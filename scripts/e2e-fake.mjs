@@ -76,6 +76,11 @@ try {
     const code = run(process.execPath, [tsxEntry(), "agent/cli.ts", input], { cwd: ROOT, env });
     check(code === 1, `${input}: agent exits 1 (findings against the planted bugs), got ${code}`);
     const summary = JSON.parse(fs.readFileSync(path.join(ROOT, "out", "summary.json"), "utf8"));
+    check(summary.schemaVersion === 1, `${input}: summary.json schemaVersion is 1`);
+    if (input === "input/local-shop.json") {
+      const list = (summary.endpoints || []).find((e) => e.id === "list-products");
+      check(Array.isArray(list?.responseSchemaIssues) && list.responseSchemaIssues.length === 0, `${input}: list-products probe matches its documented response schema`);
+    }
     check(summary.exitCode === code, `${input}: summary.json exitCode matches the process (${summary.exitCode})`);
     check((summary.findings || []).length > 0, `${input}: summary.json lists findings (${(summary.findings || []).length})`);
     check(summary.testFramework === framework && Boolean(summary.framework?.dir), `${input}: ${framework} project exported (${summary.framework?.dir})`);

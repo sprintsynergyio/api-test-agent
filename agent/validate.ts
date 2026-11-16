@@ -20,7 +20,29 @@ export type ValidateOptions = {
   planTypes: string[];
   // The probe status. happy and schema tests must assert exactly this status.
   probeStatus: number | null;
+  // Did the probe get a response body? false (or a 204, 205 or 304 probe status) lifts the body-assertion
+  // rule for [happy] and [schema] tests; anything else keeps it.
+  probeHasBody?: boolean;
+  // Required response fields from the documented response schema (endpoint.responseSchema). Every
+  // [schema] test must assert each one.
+  requiredFields?: string[];
 };
+
+const NO_BODY_STATUSES = [204, 205, 304];
+
+// Names of variables that hold a parsed response body, e.g. const body = (await response.json()) as X;
+function bodyVariables(code: string): string[] {
+  return [...code.matchAll(/\b(?:const|let|var)\s+(\w+)(?:\s*:\s*[^=]+)?\s*=\s*\(?\s*await\s+[\w.]+\.(?:json|text)\(\)/g)].map((m) => m[1]);
+}
+
+// An assertion about the body itself, not only that a body exists: expect(body.name).toBe(...),
+// expect(typeof body.id).toBe('number'), expect(Array.isArray(body)).toBe(true), expect(body).toHaveProperty('id').
+const EXISTENCE_ONLY = new Set(['toBeDefined', 'toBeTruthy', 'toBeNull', 'toBeUndefined', '']);
+function isBodyAssertion(call: ExpectCall, bodyVars: string[]): boolean {
+  const usesBody = /\.(?:json|text)\(\)/.test(call.arg) || bodyVars.some((v) => new RegExp(`(?<![.\\w$])${v}\\b`).test(call.arg));
+  if (!usesBody) return false;
+  return !EXISTENCE_ONLY.has(call.matcher);
+}
 
 function matchingParen(code: string, open: number): number {
   let depth = 0;
@@ -96,7 +118,7 @@ function statusAssertion(call: ExpectCall, statusVars: string[]): StatusAssertio
 
 // Per test type, the only status assertions allowed and the ones that must be there.
 // A test that checks something weaker, or the wrong thing, would pass against a broken API.
-function checkTypeRules(type: CaseType, title: string, body: string, code: string, probeStatus: number | null, reasons: string[]) {
+function checkTypeRules(type: CaseType, title: string, body: string, code: string, probeStatus: number | null, reasons: string[], probeHasBody = true, requiredFields: string[] = []) {
   const statusVars = statusVariables(code);
   const found = expectCalls(body)
     .map((call) => ({ call, a: statusAssertion(call, statusVars) }))
@@ -113,6 +135,21 @@ function checkTypeRules(type: CaseType, title: string, body: string, code: strin
     }
     if (!found.some(({ a }) => a.kind === 'exact' && a.code === probeStatus)) {
       reasons.push(`[${type}] test "${title}": must assert expect(response.status()).toBe(${probeStatus})`);
+    }
+    // A status check alone passes against an API that answers 200 with the wrong body.
+    const bodyVars = bodyVariables(body);
+    if (probeHasBody && !NO_BODY_STATUSES.includes(probeStatus) && !expectCalls(body).some((c) => isBodyAssertion(c, bodyVars))) {
+      reasons.push(`[${type}] test "${title}": must assert something about the response body (a field value or type, e.g. expect(typeof body.id).toBe('number')), not only the status`);
+    }
+    if (type === 'schema' && probeHasBody && requiredFields.length) {
+      const asserted = expectCalls(body).map((c) => c.arg).join('\n');
+      const missing = requiredFields.filter((f) => {
+        const esc = f.replace(/[$]/g, '\\$');
+        return !new RegExp(`\\.${esc}\\b|\\[\\s*['"\`]${esc}['"\`]\\s*\\]`).test(asserted) && !new RegExp(`toHaveProperty\\(\\s*['"\`]${esc}['"\`]`).test(body);
+      });
+      if (missing.length) {
+        reasons.push(`[${type}] test "${title}": must assert every required field of the documented response schema; missing: ${missing.join(', ')}`);
+      }
     }
   }
 
@@ -370,7 +407,7 @@ export function validateWithRules(code: string, opts: ValidateOptions, rules: Ga
     const body = code.slice(t.start, i + 1 < tests.length ? tests[i + 1].start : code.length);
     if (type) {
       testsPerType.set(type, (testsPerType.get(type) ?? 0) + 1);
-      checkTypeRules(type, t.title, body, code, opts.probeStatus, reasons);
+      checkTypeRules(type, t.title, body, code, opts.probeStatus, reasons, opts.probeHasBody ?? true, opts.requiredFields ?? []);
     }
     const annotationAt = Math.min(
       ...[body.indexOf('actual-status'), ...helpers.map((h) => body.search(new RegExp(`\\b${h}\\s*\\(`)))].filter((n) => n >= 0),
