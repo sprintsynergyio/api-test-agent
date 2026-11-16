@@ -68,7 +68,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - run: npm ci
@@ -112,8 +112,8 @@ pool:
 steps:
   - task: NodeTool@0
     inputs:
-      versionSpec: '20.x'
-    displayName: Use Node 20
+      versionSpec: '22.x'
+    displayName: Use Node 22
 
   - script: npm ci
     displayName: Install
@@ -147,7 +147,7 @@ export function ciReadmeSection(config: Config, testCommand: string, reportDir: 
     : 'This API needs no auth value, so there are no secrets to create.\n';
   return `## Run in CI
 
-Two ready-made pipeline files are included. Both install with \`npm ci\` on Node 20, run \`${testCommand}\`, and upload \`${reportDir}\` as a build artifact whether the tests pass or fail.
+Two ready-made pipeline files are included. Both install with \`npm ci\` on Node 22, run \`${testCommand}\`, and upload \`${reportDir}\` as a build artifact whether the tests pass or fail.
 
 - \`.github/workflows/api-tests.yml\` for GitHub Actions (Settings > Secrets and variables > Actions)
 - \`azure-pipelines.yml\` for Azure Pipelines (Pipelines > Edit > Variables, mark each one secret)

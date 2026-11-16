@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { claudeCommand } from './claude-bin';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -395,7 +396,8 @@ async function runClaudeCli(stepName: string, endpointId: string, system: string
       stderr: string;
       timedOut: boolean;
     }>((resolve, reject) => {
-      const child = spawn('claude', args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
+      const claude = claudeCommand();
+      const child = spawn(claude.command, [...claude.prefixArgs, ...args], { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
       let stdout = '';
       let stderr = '';
       let timedOut = false;

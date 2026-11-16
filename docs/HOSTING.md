@@ -22,7 +22,7 @@ sharing the link, and keep `HOSTED_RUNS_PER_HOUR` low.
   Access Server owns 443, run Nginx on 8443 and use `https://<host>:8443` in the steps below, or move
   the Access Server web UI to another port first.
 - You need a domain or subdomain pointing at the VPS (for example `agent.sprintsynergy.com`) for HTTPS.
-- Node 20 or newer, git, and `zip` installed (`node -v`, `zip -v`).
+- Node 22 or newer and git (`node -v`). No `zip` binary is needed; the agent writes the zip itself.
 
 ## 1. Install
 

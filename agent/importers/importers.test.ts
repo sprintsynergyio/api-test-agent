@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { nodeBin } from '../node-bin';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { ConfigSchema, configProblems, loadConfig } from '../config';
@@ -63,7 +64,7 @@ function lines(r: ImportResult): string[] {
 }
 
 function runCli(type: string, content: string) {
-  const res = spawnSync('node_modules/.bin/tsx', ['agent/import.ts', type], { input: content, encoding: 'utf8' });
+  const res = spawnSync(...nodeBin('tsx', ['agent/import.ts', type]), { input: content, encoding: 'utf8' });
   return { code: res.status, stdout: res.stdout, stderr: res.stderr };
 }
 

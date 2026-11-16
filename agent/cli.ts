@@ -1,4 +1,6 @@
 import 'dotenv/config';
+import { claudeCommand } from './claude-bin';
+import { redactHomeFolders } from './home-paths';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, join, sep } from 'node:path';
@@ -169,7 +171,7 @@ const PROJECT_ROOTS = [...new Set([process.cwd(), realpathSync(process.cwd())])]
 function relativePaths(text: string): string {
   let out = text;
   for (const root of PROJECT_ROOTS) out = out.split(root + sep).join('');
-  return out.replace(/(?:\/private)?\/(?:Users|home)\/[^/\s]+\//g, '~/');
+  return redactHomeFolders(out);
 }
 
 function cleanError(text: string, secrets: string[]): string {
@@ -183,7 +185,8 @@ function claudeCliProblem(): string | null {
   const hosted = hostedWithoutApiKeyProblem();
   if (hosted) return hosted;
   if (fakeModelEnabled() || usingApiKey()) return null;
-  const res = spawnSync('claude', ['--version'], { env: claudeEnv(), encoding: 'utf8', timeout: 30_000 });
+  const claude = claudeCommand();
+  const res = spawnSync(claude.command, [...claude.prefixArgs, '--version'], { env: claudeEnv(), encoding: 'utf8', timeout: 30_000, windowsHide: true });
   if ((res.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') return CLAUDE_NOT_FOUND;
   if (res.error || res.status !== 0) {
     const detail = res.error ? res.error.message : `exit code ${res.status}`;
@@ -511,7 +514,7 @@ async function main() {
       secrets,
       reportName: `${apiName(config, inputFile)} API tests`,
       cleanError: (t) => cleanError(t, secrets),
-      specFiles: written.map((s) => join('generated', s.specFile!)),
+      specFiles: written.map((s) => `generated/${s.specFile!}`),
       workers: flags.testWorkers,
     });
     for (const n of run.notes ?? []) console.log(n);
