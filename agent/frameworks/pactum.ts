@@ -51,9 +51,9 @@ const PACTUM_RULES: GateRules = {
 
 // ---- runner ----
 
-function runMocha(inputFile: string): Promise<number | null> {
+function runMocha(inputFile: string, specFiles?: string[]): Promise<number | null> {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn('node_modules/.bin/mocha', ['--config', MOCHA_CONFIG, 'generated/**/*.spec.ts'], {
+    const child = spawn('node_modules/.bin/mocha', ['--config', MOCHA_CONFIG, ...(specFiles ?? ['generated/**/*.spec.ts'])], {
       // The tests read their auth value from .env through the ctx file; the Claude API key never reaches them.
       env: testEnv(inputFile),
       stdio: ['ignore', 'inherit', 'inherit'],
@@ -360,12 +360,16 @@ export const pactumAdapter: FrameworkAdapter = {
     ];
   },
   validate: (code, opts) => validateWithRules(code, opts, PACTUM_RULES),
-  async run(inputFile, { cleanError }): Promise<RunResult> {
+  async run(inputFile, { cleanError, specFiles, workers }): Promise<RunResult> {
     rmSync(REPORT_DIR, { recursive: true, force: true });
-    await runMocha(inputFile);
+    const notes: string[] = [];
+    // Mocha's parallel mode runs files in worker processes; status.json is appended per test from one
+    // process today, so Pactum tests stay one at a time until that is made per-worker.
+    if ((workers ?? 1) > 1) notes.push(`pactum: --test-workers ${workers} ignored, Pactum tests run one at a time`);
+    await runMocha(inputFile, specFiles);
     if (!existsSync(RESULTS_FILE)) throw new Error(`Mocha did not write ${RESULTS_FILE}`);
     const read = readOutcomes(cleanError);
-    return { ...read, htmlReport: null, allureReport: null, allureReason: 'Allure is not wired for Pactum yet (ROADMAP Phase 2 gap)' };
+    return { ...read, notes, htmlReport: null, allureReport: null, allureReason: 'Allure is not wired for Pactum yet (ROADMAP Phase 2 gap)' };
   },
   exportFramework: exportPactumFramework,
 };
