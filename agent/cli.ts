@@ -13,6 +13,7 @@ import { planEndpoint, type Plan } from './plan';
 import { addCleanup, cleanupLine, emptyCleanup, type CleanupTotals } from './http';
 import { probeAll, type ProbeResult } from './probe';
 import { resolveHostAddresses } from './resolve-host';
+import { EXIT_ERROR, runExitCode, type FailOn } from './exit-codes';
 import { assessSafety, endpointAllowed, PRODUCTION_WRITES_WARNING, READ_ONLY_SKIP, refusalMessage, type Safety } from './safety';
 
 // Full pipeline: probe, plan, generate, run tests, summarize.
@@ -208,8 +209,11 @@ function writeSummary(o: {
   redactionReplaced: number;
   cleanup: CleanupTotals;
   scope: Scope;
+  exitCode: number;
+  failOn: FailOn;
+  frameworkError?: string | null;
 }) {
-  const { status, inputFile, config, startedAt, states, outcomes, findings, framework, allureReport, secrets, safety, requestsSent, testFramework, redactionReplaced, cleanup, scope } = o;
+  const { status, inputFile, config, startedAt, states, outcomes, findings, framework, allureReport, secrets, safety, requestsSent, testFramework, redactionReplaced, cleanup, scope, exitCode, failOn } = o;
   const choice = modelChoice();
   const summary = {
     status,
@@ -267,7 +271,12 @@ function writeSummary(o: {
     }),
     findings,
     framework,
+    // Why the standalone framework is missing when its export failed; the rest of the summary still holds.
+    frameworkError: o.frameworkError ? cleanError(o.frameworkError, secrets) : null,
     allureReport,
+    // The process exit code (README "Exit codes") and the --fail-on setting that produced it.
+    exitCode,
+    failOn,
   };
   mkdirSync('out', { recursive: true });
   writeFileSync(SUMMARY_FILE, JSON.stringify(summary, null, 2) + '\n');
@@ -380,9 +389,11 @@ async function main() {
       redactionReplaced: 0,
       cleanup: emptyCleanup(),
       scope,
+      exitCode: EXIT_ERROR,
+      failOn: flags.failOn,
     });
     console.log(`Summary written to ${SUMMARY_FILE}`);
-    process.exitCode = 1;
+    process.exitCode = EXIT_ERROR;
     return;
   }
 
@@ -414,10 +425,12 @@ async function main() {
       redactionReplaced: 0,
       cleanup: emptyCleanup(),
       scope,
+      exitCode: EXIT_ERROR,
+      failOn: flags.failOn,
     });
     console.log('NO TESTS GENERATED');
     console.log(`Summary written to ${SUMMARY_FILE}`);
-    process.exitCode = 1;
+    process.exitCode = EXIT_ERROR;
     return;
   }
 
@@ -521,21 +534,36 @@ async function main() {
     .filter((o) => !o.passed)
     .map((o) => toFinding(o, states.find((s) => s.endpoint.id === o.endpointId)?.plan));
 
-  let framework: FrameworkInfo | null = null;
-  if (status !== 'no-tests') {
-    framework = fw.exportFramework({
-      config,
-      inputFile,
-      secrets,
-      // The export README lists endpoints without a spec with their reason, read-only skips included.
-      endpoints: states.map((s) => ({ ...s, failureReason: s.failureReason ?? s.skippedReason })),
-      findings: findings.filter((f) => f.classification === 'suspected API finding'),
-    });
-  }
-
   // The prompt-level pass (agent/claude.ts) counts what the structured redaction did not already hide.
   redactionReplaced += promptRedaction.replaced;
-  const summary = writeSummary({ status, inputFile, config, startedAt, states, outcomes, findings, framework, allureReport, secrets, safety, requestsSent, testFramework: fw.name, redactionReplaced, cleanup, scope });
+  const untested = states.filter((s) => s.failureReason !== null && !s.skippedReason).length;
+  const summaryInput = { status, inputFile, config, startedAt, states, outcomes, findings, allureReport, secrets, safety, requestsSent, testFramework: fw.name, redactionReplaced, cleanup, scope, failOn: flags.failOn };
+  let exitCode = runExitCode({ status, findings: findings.length, untestedEndpoints: untested, exportFailed: false, failOn: flags.failOn });
+  // The summary is written before the export, so a failed export never loses the run's results.
+  let summary = writeSummary({ ...summaryInput, framework: null, exitCode });
+
+  let framework: FrameworkInfo | null = null;
+  let frameworkError: string | null = null;
+  if (status !== 'no-tests') {
+    try {
+      // AGENT_TEST_EXPORT_FAIL=1 (testing only) makes the export fail, to prove the summary survives it.
+      if (process.env.AGENT_TEST_EXPORT_FAIL === '1') throw new Error('FRAMEWORK EXPORT FAILED: AGENT_TEST_EXPORT_FAIL=1 (testing only)');
+      framework = fw.exportFramework({
+        config,
+        inputFile,
+        secrets,
+        // The export README lists endpoints without a spec with their reason, read-only skips included.
+        endpoints: states.map((s) => ({ ...s, failureReason: s.failureReason ?? s.skippedReason })),
+        findings: findings.filter((f) => f.classification === 'suspected API finding'),
+      });
+    } catch (err) {
+      frameworkError = (err as Error).message;
+      console.log(`framework export failed: ${cleanError(oneLine(frameworkError), secrets)}`);
+    }
+    exitCode = runExitCode({ status, findings: findings.length, untestedEndpoints: untested, exportFailed: frameworkError !== null, failOn: flags.failOn });
+    summary = writeSummary({ ...summaryInput, framework, frameworkError, exitCode });
+  }
+  process.exitCode = exitCode;
 
   console.log('=== SUMMARY ===');
   if (status === 'no-tests') {
@@ -543,7 +571,7 @@ async function main() {
     for (const s of states) console.log(`  ${s.endpoint.id}: ${oneLine(s.failureReason ?? s.skippedReason ?? 'unknown')}`);
     if (budgetHit) console.log(BUDGET_HINT);
     console.log(`Summary written to ${SUMMARY_FILE}`);
-    process.exitCode = 1;
+    process.exitCode = EXIT_ERROR;
     return;
   }
   const t = summary.totals;
@@ -570,9 +598,10 @@ async function main() {
   console.log(`Summary written to ${SUMMARY_FILE}${htmlReport ? `, report in ${htmlReport}` : ''}`);
   if (allureReport) console.log(`allure report written to ${allureReport}`);
   if (framework) console.log(`framework written to ${framework.dir} (${framework.files.length} files)`);
+  console.log(`Exit code: ${exitCode}${flags.failOn === 'none' ? ' (--fail-on none)' : ''}`);
 }
 
 main().catch((err) => {
   console.error(`agent FAILED ${redact((err as Error).message)}`);
-  process.exit(1);
+  process.exit(EXIT_ERROR);
 });

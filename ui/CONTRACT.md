@@ -353,3 +353,15 @@ On every run the summary also has:
   "Scope: <mode>[, endpoints a, b][, reused P probes, Q plans, N specs]".
 
 out/checkpoint.json itself (agent/checkpoint.ts) is not read by the UI.
+
+## 13. Exit codes and export result (additive)
+
+The agent's exit code is 0 (completed, nothing fails it), 1 (findings: at least one failed test, with
+`--fail-on finding`, the default) or 2 (tool or setup error: bad input or flags, refused host, no model,
+no tests, budget stop, an endpoint that could not be tested, a failed framework export, or a crash). The
+"done" event carries it; the page shows 0 and 1 as a completed run.
+
+`out/summary.json` also has `exitCode` (the same number), `failOn` ("finding" or "none") and
+`frameworkError` (null, or why the export failed; `framework` is then null). The summary is written
+before the framework export and rewritten after it, so a failed export never loses the run's results.
+The console's summary block ends with `Exit code: <n>`.

@@ -604,7 +604,8 @@ function startRun(job) {
     pushLine(`UI: could not start the agent: ${err.message}`);
   });
   proc.on("close", (code) => {
-    run.exitCode = code ?? 1;
+    // A run killed by a signal has no code: that is a tool error (exit 2), never a clean run.
+    run.exitCode = code ?? 2;
     if (run.dir) {
       try {
         snapshotRun(run);

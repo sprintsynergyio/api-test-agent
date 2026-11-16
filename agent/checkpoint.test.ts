@@ -153,6 +153,11 @@ type Summary = {
   endpoints: { id: string; specWritten: boolean }[];
   cleanup: { created: number; deleted: number; failed: number };
   safety: { mode: string };
+  findings: unknown[];
+  framework: unknown;
+  frameworkError: string | null;
+  exitCode: number;
+  failOn: string;
 };
 
 function agent(args: string[], env: Record<string, string> = {}): { out: string; code: number | null; summary: Summary } {
@@ -181,11 +186,41 @@ await check('pipeline: fresh FAKE_MODEL run completes with 5 specs, a checkpoint
   assert.deepEqual(stages(), { 'list-products': 'generated', 'create-product': 'generated', 'get-product': 'generated', 'update-product': 'generated', 'delete-product': 'generated' });
   const contract = spawnSync('node_modules/.bin/tsx', ['agent/check-contract.ts'], { encoding: 'utf8' });
   assert.equal(contract.status, 0, contract.stdout + contract.stderr);
+  // The local API's planted delete-without-auth bug is a finding, so the default --fail-on finding exits 1.
+  assert.equal(r.code, 1, 'findings exit 1');
+  assert.equal(r.summary.exitCode, 1);
+  assert.equal(r.summary.failOn, 'finding');
+  assert.match(r.out, /Exit code: 1/);
+  assert.ok(existsSync('out/framework.zip'), 'the zip is written in-process');
+});
+
+await check('pipeline: --fail-on none reports the findings and exits 0', () => {
+  const r = agent([inputFile, '--fail-on', 'none']);
+  assert.equal(r.summary.status, 'completed', r.out.slice(-800));
+  assert.ok(r.summary.findings.length > 0, 'the findings are still reported');
+  assert.equal(r.code, 0);
+  assert.equal(r.summary.exitCode, 0);
+  assert.equal(r.summary.failOn, 'none');
+  const bad = spawnSync('node_modules/.bin/tsx', ['agent/cli.ts', inputFile, '--fail-on', 'sometimes'], { encoding: 'utf8', env: { ...process.env, FAKE_MODEL: '1' } });
+  assert.equal(bad.status, 2);
+  assert.match(bad.stderr + bad.stdout, /--fail-on must be one of none, finding/);
+});
+
+await check('pipeline: a failed framework export keeps out/summary.json and exits 2', () => {
+  const r = agent([inputFile], { AGENT_TEST_EXPORT_FAIL: '1' });
+  assert.equal(r.code, 2, r.out.slice(-800));
+  assert.equal(r.summary.status, 'completed');
+  assert.ok(r.summary.findings.length > 0, 'the findings survive the failed export');
+  assert.equal(r.summary.framework, null);
+  assert.match(String(r.summary.frameworkError), /AGENT_TEST_EXPORT_FAIL/);
+  assert.equal(r.summary.exitCode, 2);
+  assert.match(r.out, /framework export failed:/);
 });
 
 await check('pipeline: --budget 3 stops, says how to resume, keeps the checkpoint, and is not a pass', () => {
   const r = agent([inputFile, '--budget', '3']);
-  assert.equal(r.code, 1, 'a run with no specs exits 1');
+  assert.equal(r.code, 2, 'a run with no specs is a tool error: exit 2');
+  assert.equal(r.summary.exitCode, 2);
   assert.equal(r.summary.status, 'no-tests');
   assert.equal(r.summary.claudeCalls.used, 3);
   assert.equal(r.summary.claudeCalls.budget, 3);
@@ -255,7 +290,7 @@ await check('pipeline: --endpoints restricts probing, planning, generation and t
   assert.deepEqual(readdirSync('generated').filter((f) => f.endsWith('.spec.ts')).sort(), ['get-product.spec.ts', 'list-products.spec.ts']);
   assert.match(r.out, /endpoints: get-product, list-products/);
   const bad = spawnSync('node_modules/.bin/tsx', ['agent/cli.ts', inputFile, '--endpoints', 'nope'], { encoding: 'utf8', env: { ...process.env, FAKE_MODEL: '1' } });
-  assert.equal(bad.status, 1);
+  assert.equal(bad.status, 2, 'a bad flag value is a tool error: exit 2');
   assert.match(bad.stderr + bad.stdout, /--endpoints: not in .*: nope/);
 });
 
@@ -292,7 +327,7 @@ await check('pipeline: FAKE_MODEL is refused in hosted mode before any request',
   const hostedInput = join(tmp, 'hosted.json');
   writeFileSync(hostedInput, readFileSync('input/local-shop.json', 'utf8').replace('http://localhost:4000', 'https://shop.staging.example.test'));
   const r = agent([hostedInput], { HOSTED: '1', UI_USERS: 'x:y', ANTHROPIC_API_KEY: 'sk-ant-fake-not-used' });
-  assert.equal(r.code, 1);
+  assert.equal(r.code, 2);
   assert.equal(r.summary.status, 'no-tests');
   assert.equal(r.summary.safety.mode, 'full');
   assert.match(r.out, /FAKE_MODEL=1 is a test mode and is refused in hosted mode/);
