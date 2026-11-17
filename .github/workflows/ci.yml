@@ -95,6 +95,10 @@ jobs:
         include:
           - node: 22
             where: 'J:\Api test agent\api-test-agent'
+          - node: 24.21.0
+            where: 'J:\Api test agent\api-test-agent'
+          - node: 24
+            where: 'j:\Api test agent\api-test-agent'
     defaults:
       run:
         shell: pwsh
@@ -110,7 +114,7 @@ jobs:
       - name: Copy the repo to ${{ matrix.where }}, then npm ci, UI smoke, UI tests and end-to-end run there
         run: |
           $ErrorActionPreference = 'Stop'
-          if ($env:WHERE.StartsWith('J:')) {
+          if ($env:WHERE.ToUpper().StartsWith('J:')) {
             $backing = Join-Path $env:RUNNER_TEMP 'jdrive'
             New-Item -ItemType Directory -Force -Path $backing | Out-Null
             subst J: $backing
@@ -121,6 +125,8 @@ jobs:
           if ($LASTEXITCODE -ge 8) { throw "robocopy failed ($LASTEXITCODE)" }
           Set-Location -LiteralPath $env:WHERE
           Write-Host "Running from $((Get-Location).Path)"
+          node -p "'node ' + process.version + ', cwd ' + process.cwd()"
+          npm -v
           function Run([string]$script) {
             npm run $script
             if ($LASTEXITCODE -ne 0) { throw "npm run $script failed ($LASTEXITCODE)" }
