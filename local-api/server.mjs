@@ -19,7 +19,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const PORT = Number(process.env.PORT || 4000);
-const TOKEN = "Bearer hackathon-demo-token";
+const TOKEN = "Bearer local-shop-demo-token";
 const LOG_REQUESTS = process.env.LOG_REQUESTS === "1";
 const FAIL_DELETE_IDS = new Set((process.env.FAIL_DELETE_IDS ?? "").split(",").map((s) => Number(s.trim())).filter((n) => Number.isInteger(n) && n > 0));
 let rateLimitLeft = Number(process.env.RATE_LIMIT_FIRST || 0);

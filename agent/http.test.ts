@@ -234,7 +234,7 @@ await check('Pactum setup file: RATE_LIMIT_FIRST=2 on the local shop API, the te
     mkdirSync('generated', { recursive: true });
     writeFileSync('generated/list-products.spec.ts', MOCHA_SPEC);
     const res = spawnSync(...nodeBin('mocha', ['--config', '.mocharc.pactum.json', 'generated/**/*.spec.ts']), {
-      env: { ...process.env, INPUT_FILE: inputFile, LOCAL_API_AUTH_VALUE: 'Bearer hackathon-demo-token' },
+      env: { ...process.env, INPUT_FILE: inputFile, LOCAL_API_AUTH_VALUE: 'Bearer local-shop-demo-token' },
       encoding: 'utf8',
       timeout: 120_000,
     });

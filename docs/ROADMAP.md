@@ -1,6 +1,6 @@
 # API Test Agent: Roadmap
 
-From a working hackathon agent to a complete API automation product that writes, runs and maintains API test suites in **Playwright** or **Pactum**, from any API description, safely.
+API Test Agent is a SprintSynergy product. This roadmap takes it from a working agent to a complete API automation product that writes, runs and maintains API test suites in **Playwright** or **Pactum**, from any API description, safely.
 
 We work through the phases in order, one step at a time. A phase is done only when every line in its "Proof" list passes with raw output pasted. Each phase is one to three Claude Code prompts.
 
@@ -213,7 +213,7 @@ For a team that clones the repo and runs it on their own machines. Model provide
 
 ---
 
-## Pitch summary (for the client)
+## Pitch summary
 
 **The problem:** API test coverage depends on how much time engineers have. Every endpoint needs the same baseline checks, and new endpoints often ship with few tests.
 
@@ -232,4 +232,3 @@ For a team that clones the repo and runs it on their own machines. Model provide
 3. The exported project running on its own.
 4. The eval score.
 
-**Before pitching:** agree with the client who owns the agent and the generated code, and how it may be used, since it was first built at the client's hackathon.

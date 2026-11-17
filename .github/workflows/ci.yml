@@ -28,7 +28,7 @@ jobs:
         # same on all three systems.
         shell: bash
     env:
-      LOCAL_API_AUTH_VALUE: Bearer hackathon-demo-token
+      LOCAL_API_AUTH_VALUE: Bearer local-shop-demo-token
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

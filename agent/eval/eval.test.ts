@@ -20,7 +20,7 @@ async function check(name: string, fn: () => void | Promise<void>) {
 }
 
 const catalog = loadCatalog();
-const TOKEN = 'Bearer hackathon-demo-token';
+const TOKEN = 'Bearer local-shop-demo-token';
 
 function summary(findings: SummaryFinding[], extra: Partial<Summary> = {}): Summary {
   return {
