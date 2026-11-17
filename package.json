@@ -49,6 +49,7 @@
     "test:gate": "tsx agent/validate.test.ts",
     "test:config": "tsx agent/config.test.ts",
     "test:gate:pactum": "tsx agent/frameworks/pactum.test.ts",
+    "test:response-schema": "tsx agent/response-schema.test.ts",
     "test:template:pactum": "cross-env INPUT_FILE=input/local-shop.json mocha --config .mocharc.pactum.json \"tests-pactum/template/*.spec.ts\"",
     "test:generated:pactum": "mocha --config .mocharc.pactum.json \"generated/**/*.spec.ts\"",
     "test:eval": "tsx agent/eval/eval.test.ts",

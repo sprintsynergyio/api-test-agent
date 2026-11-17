@@ -30,6 +30,7 @@ An agent that takes a base URL and a list of API endpoints, probes the real API,
 | `npm run test:cleanup` | test data cleanup against a real local API it starts itself: HTTP layer, records made directly by test code, nested resources, no DELETE endpoint, a failing DELETE, a Playwright run and a Mocha run (must stay all passed) |
 | `npm run test:gate` | Playwright static gate tests: per-type status rules, noAuthApi rule, per-type plan coverage (must stay all passed) |
 | `npm run test:gate:pactum` | Pactum static gate tests (must stay all passed) |
+| `npm run test:response-schema` | Documented response schemas: the OpenAPI conversion and the probe check (must stay all passed) |
 | `npm run eval -- [--runs N] [--bugs all\|none\|id,id] [--provider anthropic\|openai] [--dry-run]` | eval harness: runs the agent against every planted-bug set and prints detection, false alarm and flakiness rates (see Eval harness); `--provider` sets `LLM_PROVIDER` for the runs and is recorded in score.json |
 | `npm run test:eval` | eval harness tests, offline: the scorer, and every planted bug against a real local API (must stay all passed) |
 | `npm run test:claude-api` | Messages API and Chat Completions paths of `agent/claude.ts` with a fake fetch, plus `verifyProviderKey`: request shapes, error handling, keys never leak (must stay all passed) |
@@ -175,6 +176,8 @@ Shared rules (both frameworks) plus the framework rules in each adapter. Pactum 
 - any assertion expects a status of 500 or higher
 - it has fewer tests than plan cases, fewer tests of a type than the plan has cases of that type, or fails typecheck
 - a status assertion does not match the test's type, or a required one is missing. The only allowed forms, per type: `[happy]` and `[schema]` exactly `expect(<status>).toBe(<probe status>)`; `[invalid-input]` `toBeGreaterThanOrEqual(400)` and `toBeLessThanOrEqual(499)`, both required; `[auth]` `expect([401, 403]).toContain(<status>)` (or `toBe(401)` / `toBe(403)`). `<status>` is `response.status()` or a variable assigned from it. `.not` on a status is never allowed
+- a `[happy]` or `[schema]` test asserts only the status: it needs at least one assertion on the response body (a field value or type from `response.json()` / `.text()`, not just `toBeDefined()` or `toBeTruthy()`). Lifted when the probe got no body or a 204, 205 or 304
+- a `[schema]` test does not assert every required field of the endpoint's documented `responseSchema` (when the probe status is the documented one)
 - an `[auth]` test mentions `ctx.api` (or destructures `api` from ctx), or does not use `ctx.noAuthApi`
 - an `[authz]` test does not use `ctx.as('<role>')`, mentions `ctx.api` or `ctx.noAuthApi`, or asserts anything but `expect([403, 404]).toContain(<status>)` (or `toBe(403)` / `toBe(404)`)
 

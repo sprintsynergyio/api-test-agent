@@ -7,6 +7,7 @@ import { promptEndpoint, type Plan } from './plan';
 import type { ProbeResult } from './probe';
 import type { FrameworkAdapter } from './frameworks/types';
 import { untrusted, withUntrustedRule } from './untrusted';
+import { requiredResponseFields } from './response-schema';
 
 const GENERATED_DIR = 'generated';
 const CANDIDATE_DIR = join(GENERATED_DIR, '.candidate');
@@ -20,7 +21,8 @@ function system(fw: FrameworkAdapter): string {
 // Exported for the redaction tests: the prompt text must never carry client data.
 export function buildPrompt(fw: FrameworkAdapter, endpoint: Endpoint, plan: Plan, probe: ProbeResult): string {
   const read = (p: string) => readFileSync(p, 'utf8');
-  const shown = promptEndpoint(endpoint);
+  // The response schema gets its own block below, so it is not repeated in the endpoint config.
+  const { responseSchema: _documented, ...shown } = promptEndpoint(endpoint);
   const steps = setupSteps(endpoint);
   const params = pathParams(endpoint.path);
   const setupLine =
@@ -38,6 +40,14 @@ export function buildPrompt(fw: FrameworkAdapter, endpoint: Endpoint, plan: Plan
   const contextFiles = fw.contextFiles
     .map((f) => `FILE ${f} (shown for context, tests never import it):\n\`\`\`ts\n${read(f)}\n\`\`\`\n`)
     .join('\n');
+  const fields = documentedFields(endpoint, probe);
+  const schemaBlock = endpoint.responseSchema
+    ? `\nRESPONSE SCHEMA (the documented ${endpoint.responseSchema.status} response, from the API's OpenAPI spec):\n${untrusted('response-schema', JSON.stringify(endpoint.responseSchema.schema, null, 2))}\n${
+        fields.length
+          ? `Every [schema] test must assert each required field of this schema with its type (${fields.map((f) => `\`${f}\``).join(', ')}${endpoint.responseSchema.schema.items ? ', on the array items' : ''}).\n`
+          : `The probe answered ${probe.status}, not the documented ${endpoint.responseSchema.status}, so assert the shape the probe shows.\n`
+      }`
+    : '';
   return `Write the test file generated/${endpoint.id}.spec.ts (${fw.label}) for this endpoint, implementing every case in the plan as one test.
 
 ENDPOINT CONFIG:
@@ -48,7 +58,7 @@ ${untrusted('probe-response', JSON.stringify(probe, null, 2))}
 
 PLAN:
 ${untrusted('plan', JSON.stringify(plan, null, 2))}
-
+${schemaBlock}
 FILE ${fw.ctxFile} (the fixture; tests get everything from ctx):
 \`\`\`ts
 ${read(fw.ctxFile)}
@@ -64,11 +74,25 @@ RULES:
 ${setupLine}${queryLine ? `\n${queryLine}` : ''}${headersLine ? `\n${headersLine}` : ''}
 - Paths are relative, for example \`${params.length > 1 ? endpoint.path.replace(/\{([^}]+)\}/g, '${p.$1}') : endpoint.path.replace(/\{[^}]+\}/, '${id}')}\`. The base URL comes from ctx.api. Never write http:// or https://.
 - Use ctx.api for normal requests and ctx.noAuthApi for auth cases (the same valid request without the auth header).
-- Never expect a 5xx. Assert status codes, field presence and field types. Assert exact values only for values the test itself sent.
+- Never expect a 5xx. Assert status codes, field presence and field types. Every [happy] and [schema] test must assert at least one field value or type of the response body${probeHasBody(probe) && ![204, 205, 304].includes(probe.status ?? 0) ? '' : ' (this endpoint answered without a body, so here the status is enough)'}. Assert exact values only for values the test itself sent.
 - Tests run against a shared live API while other tests create, update and delete data. Never assert a list length or item count, never compare the results of two calls, and never assume a list is unchanged or contains (or lacks) a specific item you did not create in the same test. For lists, assert the array type and the shape of its items only.
 ${fw.generatorRules(endpoint, plan, probe).map((r) => `- ${r}`).join('\n')}
 
 Answer with exactly one \`\`\`ts code block containing the whole file.`;
+}
+
+// The required fields a [schema] test must assert, when the documented success status is the one the
+// probe saw (otherwise the documented shape may not apply to this response).
+export function documentedFields(endpoint: Endpoint, probe: ProbeResult): string[] {
+  const doc = endpoint.responseSchema;
+  if (!doc || doc.status !== probe.status) return [];
+  return requiredResponseFields(doc.schema);
+}
+
+// The probe got a response body worth asserting on.
+export function probeHasBody(probe: ProbeResult): boolean {
+  if (probe.body !== undefined && probe.body !== null && probe.body !== '') return true;
+  return typeof probe.bodyText === 'string' && probe.bodyText.trim() !== '';
 }
 
 function extractCode(text: string): string | null {
@@ -106,6 +130,8 @@ export async function generateEndpoint(fw: FrameworkAdapter, endpoint: Endpoint,
       name: endpoint.id,
       planTypes: plan.cases.map((c) => c.type),
       probeStatus: probe.status,
+      probeHasBody: probeHasBody(probe),
+      requiredFields: documentedFields(endpoint, probe),
     });
     if (result.ok) {
       renameSync(candidate, finalFile);

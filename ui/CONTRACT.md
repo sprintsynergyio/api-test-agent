@@ -365,3 +365,16 @@ no tests, budget stop, an endpoint that could not be tested, a failed framework 
 `frameworkError` (null, or why the export failed; `framework` is then null). The summary is written
 before the framework export and rewritten after it, so a failed export never loses the run's results.
 The console's summary block ends with `Exit code: <n>`.
+
+## 14. Schema version, response schemas (additive)
+
+`out/summary.json` starts with `schemaVersion: 1`. It is raised only when a field changes meaning or is
+removed; new fields do not raise it, so a reader can accept any summary whose `schemaVersion` it knows.
+
+An endpoint in the input may carry `responseSchema: { status, schema }`: the documented success response
+(the OpenAPI importer fills it in; `schema` is a JSON Schema subset with `type`, `nullable`, `properties`,
+`required`, `items` and `enum`). Each summary endpoint then has `responseSchemaIssues`: `null` without a
+schema or when the probe status is not the documented one, else a list (at most 20) of
+`"<path>: <what>"` lines where the probe response breaks the schema (`[]` when it matches). The console
+prints one line per endpoint with issues.
+

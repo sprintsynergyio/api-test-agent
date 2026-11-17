@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { claudeCommand } from './claude-bin';
 import { redactHomeFolders } from './home-paths';
+import { responseSchemaIssues } from './response-schema';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, join, sep } from 'node:path';
@@ -219,6 +220,8 @@ function writeSummary(o: {
   const { status, inputFile, config, startedAt, states, outcomes, findings, framework, allureReport, secrets, safety, requestsSent, testFramework, redactionReplaced, cleanup, scope, exitCode, failOn } = o;
   const choice = modelChoice();
   const summary = {
+    // Bumped when a field changes meaning or is removed (adding a field does not bump it). ui/CONTRACT.md.
+    schemaVersion: 1,
     status,
     testFramework,
     model: { provider: choice.provider, model: choice.model, via: choice.via },
@@ -270,6 +273,9 @@ function writeSummary(o: {
         failed: mine.filter((o) => !o.passed).length,
         failureReason: s.failureReason === null ? null : cleanError(oneLine(s.failureReason), secrets),
         skippedReason: s.skippedReason,
+        // Where the probe response breaks the documented response schema; null without a schema, or
+        // when the probe status is not the documented one.
+        responseSchemaIssues: schemaIssuesFor(s),
       };
     }),
     findings,
@@ -284,6 +290,12 @@ function writeSummary(o: {
   mkdirSync('out', { recursive: true });
   writeFileSync(SUMMARY_FILE, JSON.stringify(summary, null, 2) + '\n');
   return summary;
+}
+
+function schemaIssuesFor(s: EndpointState): string[] | null {
+  const doc = s.endpoint.responseSchema;
+  if (!doc || !s.probe || s.probe.status !== doc.status) return null;
+  return responseSchemaIssues(doc.schema, s.probe.body);
 }
 
 // Rule 4: a 5xx, or a 2xx where a rejection was expected (auth, authz, invalid-input), is an API finding.
@@ -485,6 +497,8 @@ async function main() {
   }
   for (const s of states) {
     if (s.probe && !s.probe.usable && !s.specFile) s.failureReason = `probe not usable: ${s.probe.status ?? s.probe.error}`;
+    const schemaIssues = schemaIssuesFor(s);
+    if (schemaIssues?.length) console.log(`${s.endpoint.id}: probe response differs from the documented schema: ${schemaIssues.slice(0, 3).join('; ')}${schemaIssues.length > 3 ? ` (+${schemaIssues.length - 3} more)` : ''}`);
     if (!s.skippedReason) record(s);
   }
 

@@ -155,8 +155,34 @@ export function fakeSpec(user: string, pactum: boolean): string {
     return `${client}.${method}(${p}${parts.length ? `, { ${parts.join(', ')} }` : ''})`;
   };
 
+  // happy and schema tests also check the body (the gate requires it when the probe got one): the array
+  // type for a list, or the type of the first field the probe saw.
+  const probeBody = probe.body as Json | undefined;
+  const bodyCheck = (() => {
+    if ([204, 205, 304].includes(status) || probeBody === undefined || probeBody === null) return '';
+    if (Array.isArray(probeBody)) return `\n    const body = (await response.json()) as unknown;\n    expect(Array.isArray(body)).toBe(true);`;
+    if (typeof probeBody === 'object') {
+      const key = Object.keys(probeBody)[0];
+      if (key === undefined) return `\n    const body = (await response.json()) as unknown;\n    expect(typeof body).toBe('object');`;
+      const kind = typeof (probeBody as Record<string, unknown>)[key];
+      return `\n    const body = (await response.json()) as Record<string, unknown>;\n    expect(typeof body[${JSON.stringify(key)}]).toBe('${kind}');`;
+    }
+    return `\n    const body = (await response.json()) as unknown;\n    expect(typeof body).toBe('${typeof probeBody}');`;
+  })();
+  // schema tests check every field the probe saw (so every documented required field the API returns).
+  const schemaCheck = (() => {
+    if (!bodyCheck) return '';
+    const sampleItem = Array.isArray(probeBody) ? probeBody[0] : probeBody;
+    if (!sampleItem || typeof sampleItem !== 'object' || Array.isArray(sampleItem)) return bodyCheck;
+    const lines = Object.entries(sampleItem as Record<string, unknown>).map(([k, v]) => `expect(typeof item[${JSON.stringify(k)}]).toBe('${v === null ? 'object' : typeof v}');`);
+    if (Array.isArray(probeBody)) {
+      return `\n    const body = (await response.json()) as Record<string, unknown>[];\n    expect(Array.isArray(body)).toBe(true);\n    for (const item of body) {\n${lines.map((l) => `      ${l}`).join('\n')}\n    }`;
+    }
+    return `\n    const item = (await response.json()) as Record<string, unknown>;\n${lines.map((l) => `    ${l}`).join('\n')}`;
+  })();
   const statusLines = (type: string) => {
-    if (type === 'happy' || type === 'schema') return `    expect(response.status()).toBe(${status});`;
+    if (type === 'schema') return `    expect(response.status()).toBe(${status});${schemaCheck}`;
+    if (type === 'happy') return `    expect(response.status()).toBe(${status});${bodyCheck}`;
     if (type === 'invalid-input') return `    expect(response.status()).toBeGreaterThanOrEqual(400);\n    expect(response.status()).toBeLessThanOrEqual(499);`;
     if (type === 'auth') return `    expect([401, 403]).toContain(response.status());`;
     return `    expect([403, 404]).toContain(response.status());`;

@@ -13,7 +13,8 @@
       "id": "list-products",
       "method": "GET",
       "path": "/products",
-      "requiresAuth": false
+      "requiresAuth": false,
+      "responseSchema": { "status": 200, "schema": { "type": "array", "items": { "type": "object", "properties": { "id": { "type": "integer" }, "name": { "type": "string" }, "price": { "type": "number" }, "category": { "type": "string" }, "inStock": { "type": "boolean" }, "createdAt": { "type": "string" } }, "required": ["id", "name", "price", "category", "inStock", "createdAt"] } } }
     },
     {
       "id": "create-product",
@@ -27,7 +28,8 @@
       "method": "GET",
       "path": "/products/{id}",
       "requiresAuth": false,
-      "setup": { "endpointId": "create-product", "idField": "id" }
+      "setup": { "endpointId": "create-product", "idField": "id" },
+      "responseSchema": { "status": 200, "schema": { "type": "object", "properties": { "id": { "type": "integer" }, "name": { "type": "string" }, "price": { "type": "number" }, "category": { "type": "string" }, "inStock": { "type": "boolean" }, "createdAt": { "type": "string" } }, "required": ["id", "name", "price", "category", "inStock", "createdAt"] } }
     },
     {
       "id": "update-product",

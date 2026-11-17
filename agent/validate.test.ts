@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { validateSpec } from './validate';
+import { validateSpec, type ValidateOptions } from './validate';
 
 // npm run test:gate: the static gate's per-type rules. Plain node:assert, offline, no Claude.
 // Every "rejects" case is a test that would PASS against a broken API if the gate let it through.
@@ -67,7 +67,7 @@ const AUTHZ = `  test('[authz] delete-product rejects a viewer deleting another 
 const ALL_TYPES = ['happy', 'schema', 'invalid-input', 'auth'];
 const opts = (planTypes: string[] = ALL_TYPES, probeStatus: number | null = 204) => ({ name: 'gate-test', planTypes, probeStatus });
 
-function rejects(name: string, code: string, reasonPart: string, o = opts()) {
+function rejects(name: string, code: string, reasonPart: string, o: ValidateOptions = opts()) {
   check(`rejects ${name}`, () => {
     const result = validateSpec(code, o);
     assert.equal(result.ok, false, 'expected the gate to reject');
@@ -78,7 +78,7 @@ function rejects(name: string, code: string, reasonPart: string, o = opts()) {
   });
 }
 
-function accepts(name: string, code: string, o = opts()) {
+function accepts(name: string, code: string, o: ValidateOptions = opts()) {
   check(`accepts ${name}`, () => {
     const result = validateSpec(code, o);
     assert.deepEqual(result.reasons, []);
@@ -321,6 +321,61 @@ rejects('a side-effect import', `import './evil';\n${spec(HAPPY)}`, 'imports "./
 rejects('an export-from of another module', `${spec(HAPPY)}export { x } from 'http';\n`, 'imports "http"', opts(['happy']));
 rejects('a test that takes the Playwright request fixture', spec(HAPPY.replace('async ({ ctx })', 'async ({ ctx, request })')), 'fixtures other than ctx', opts(['happy']));
 accepts('a test using ctx.api.fetch and a body field named process', withLine("const r2 = await ctx.api.fetch('/products', { method: 'GET' });\n    const body = { process: 1 };\n    void body.process; void r2;"), opts(['happy']));
+
+
+// --- [happy] and [schema] must assert on the body (not only the status) unless the probe had no body ---
+
+const get200 = (title: string, lines: string) => spec(`  test('${title}', async ({ ctx }) => {
+    const response = await ctx.api.get('/products');
+    recordStatus(response.status());
+    expect(response.status()).toBe(200);
+${lines}
+  });`);
+const opts200 = (probeHasBody = true) => ({ name: 'gate-test', planTypes: ['happy'], probeStatus: 200, probeHasBody });
+rejects('a 200 [happy] test that only checks the status', get200('[happy] lists products', ''), 'must assert something about the response body', opts200());
+rejects('a 200 [schema] test that only checks the status', get200('[schema] lists products', ''), 'must assert something about the response body', { ...opts200(), planTypes: ['schema'] });
+rejects(
+  'a 200 [happy] test whose only body check is toBeDefined()',
+  get200('[happy] lists products', '    const body = await response.json();\n    expect(body).toBeDefined();'),
+  'must assert something about the response body',
+  opts200(),
+);
+rejects(
+  'a 200 [happy] test that asserts on a value unrelated to the body',
+  get200('[happy] lists products', "    const x = 'a';\n    expect(x).toBe('a');"),
+  'must assert something about the response body',
+  opts200(),
+);
+accepts('a 200 [happy] test with a body type check', get200('[happy] lists products', '    const body = (await response.json()) as unknown[];\n    expect(Array.isArray(body)).toBe(true);'), opts200());
+accepts('a 200 [happy] test with a typed body variable', get200('[happy] lists products', '    const body: Record<string, unknown> = await response.json();\n    expect(typeof body.id).toBe(\'number\');'), opts200());
+accepts('a 200 [happy] test asserting on response.json() directly', get200('[happy] lists products', "    expect(await response.json()).toHaveProperty('id');"), opts200());
+accepts('a 200 [happy] test with status only when the probe got no body', get200('[happy] lists products', ''), opts200(false));
+accepts('a 204 [happy] test with status only (no-content status)', spec(HAPPY), opts(['happy'], 204));
+
+// --- [schema] tests must assert every required field of the documented response schema ---
+const schemaOpts = { ...opts200(), planTypes: ['schema'], requiredFields: ['id', 'name'] };
+rejects(
+  'a [schema] test that skips a documented required field',
+  get200('[schema] lists products', "    const body = (await response.json()) as Record<string, unknown>;\n    expect(typeof body.id).toBe('number');"),
+  'missing: name',
+  schemaOpts,
+);
+rejects(
+  'a [schema] test that names a required field only in a comment-free variable, not an assertion',
+  get200('[schema] lists products', "    const body = (await response.json()) as Record<string, unknown>;\n    const n = body.name;\n    expect(typeof body.id).toBe('number');"),
+  'missing: name',
+  schemaOpts,
+);
+accepts(
+  'a [schema] test asserting every required field (dot, bracket and toHaveProperty forms)',
+  get200('[schema] lists products', "    const body = (await response.json()) as Record<string, unknown>;\n    expect(typeof body['id']).toBe('number');\n    expect(body).toHaveProperty('name');\n    expect(typeof body.name).toBe('string');"),
+  schemaOpts,
+);
+accepts(
+  'required fields do not apply to [happy] tests',
+  get200('[happy] lists products', "    const body = (await response.json()) as Record<string, unknown>;\n    expect(typeof body.id).toBe('number');"),
+  { ...schemaOpts, planTypes: ['happy'] },
+);
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

@@ -14,7 +14,7 @@ Give the agent a base URL and a list of API endpoints, and it writes an API test
 - Auth: fixed header, API key in the query string, cookie, or a login call that fetches a token (cached, refreshed once on 401), plus extra roles for permission tests (`[authz]`).
 - Prompt safety: API responses, imported specs and ticket text go to the model inside marked untrusted-data blocks with an instruction to treat them as data only, and the test process never sees the model provider keys (`.env` is parsed into a private object, only the auth variables the input names are used).
 - Redaction before anything reaches the model: emails, phones, card numbers, tokens, IPs and secret-looking fields are replaced; optional field list and a strict mode that keeps only the shape.
-- Test data cleanup: every record the tests create is deleted at the end, through the same guarded client.
+- Test data cleanup: after each test (and after the probe), the records it made through `ctx.createResource` / `ctx.setup`, and its own 2xx POSTs, are deleted through the same guarded client, when the input has a DELETE for them (matched by path, or `setup.cleanup`). Without one they are counted as `no delete endpoint`, and a DELETE that fails is counted as `failed`, in `summary.json` `cleanup`; nothing is hidden, but nothing is retried either.
 - Production safety guard: production hosts are refused unless you say so, and then run read-only. Local, private and `staging`-style hosts run in full. Loopback (127/8), link-local (169.254/16), CGNAT (100.64/10) and private IPv6 count as local; a host name is also resolved, and one that points at a local address never gets looser rules by DNS.
 - Model providers: Claude (API key or your Claude Code login) or OpenAI. Set once from the UI on your own machine.
 - Eval harness: a local demo API with planted bugs and `npm run eval` to measure detection, false alarms and flakiness per provider.
@@ -31,7 +31,7 @@ Give the agent a base URL and a list of API endpoints, and it writes an API test
 1. Install Node 22+.
 2. `npm ci` (Playwright browsers are not needed, the tests only use Playwright's API client).
 3. Start the UI (`npm run ui`, http://localhost:3000). The first screen asks for a Claude or OpenAI API key, checks it, and saves it to `.env` on your machine. If Claude Code is installed and logged in, no key is needed and the card does not appear.
-4. `.env` also holds the auth values your input files name (for the kit: `API_AUTH_VALUE` for Restful Booker, `LOCAL_API_AUTH_VALUE` for the local shop API; copy them from `.env.example`). `MAX_CLAUDE_CALLS` caps model calls per run (default 60, about 2 per endpoint; `--budget N` overrides it for one run). `LLM_MODEL` is optional.
+4. `cp .env.example .env`. `.env` holds the auth values your input files name; `.env.example` already has the public demo values (`API_AUTH_VALUE` for Restful Booker's documented admin login, `LOCAL_API_AUTH_VALUE` for the local shop API), so the demos work as they are. `MAX_CLAUDE_CALLS` caps model calls per run (default 60, about 2 per endpoint; `--budget N` overrides it for one run). `LLM_MODEL` is optional and applies to the API key and the Claude Code paths. Model calls that get HTTP 429 or a 5xx are retried with backoff (`MODEL_RETRIES`, default 3).
 5. Check it works: `npm run typecheck` and `npm run test:template` (4 tests against Restful Booker).
 
 ## Run it
@@ -200,7 +200,7 @@ A failed test is a **suspected API finding** when the API returned a 5xx, or ret
 | `npm run api:local:fixed` | Local shop API with the bugs fixed |
 | `npx tsx agent/try-one.ts <input> <endpointId>` | Plan and generate one endpoint |
 | `npm run -s import <type> < file` | Import endpoints from Postman, OpenAPI, cURL, HAR or text (see Importers) |
-| `npm run test:importers` | Importer tests against `test-fixtures/importers/` (makes 2 live Claude calls) |
+| `npm run test:importers` | Importer tests against `test-fixtures/importers/`, offline; the 2 live text-importer tests run only with `RUN_LIVE_CLAUDE_TESTS=1` and a model |
 | `npm run test:platform` | The parts that differ between macOS, Windows and Linux (how tools are started, paths) |
 | `npm run test:e2e` | Whole agent with `FAKE_MODEL=1` (no key) for both frameworks against the local API, then `npm install` and `npm test` in each exported project |
 

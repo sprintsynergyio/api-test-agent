@@ -50,6 +50,7 @@ jobs:
       - run: npm run test:cleanup
       - run: npm run test:gate
       - run: npm run test:gate:pactum
+      - run: npm run test:response-schema
       - run: npm run test:eval
       - run: npm run test:claude-api
       - run: npm run test:settings
