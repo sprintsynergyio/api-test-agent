@@ -7,6 +7,7 @@ import { BudgetExceeded, callClaude } from './claude';
 import { loadConfig, PATH_PARAM, type Endpoint } from './config';
 import { readProbe, type ProbeResult } from './probe';
 import { redactValue } from './redact';
+import { untrusted, withUntrustedRule } from './untrusted';
 
 // The endpoint as the prompt shows it: the sample request body with valid stand-ins for personal data
 // (the generated tests copy it, so it must stay a body the API accepts).
@@ -76,7 +77,7 @@ function extractJson(text: string): unknown {
   return JSON.parse((fenced ? fenced[1] : text).trim());
 }
 
-const SYSTEM = 'You are a senior QA engineer planning API tests. You answer with one JSON object only, no prose.';
+const SYSTEM = withUntrustedRule('You are a senior QA engineer planning API tests. You answer with one JSON object only, no prose.');
 
 // Exported for the redaction tests: the prompt text must never carry client data.
 export function buildPrompt(endpoint: Endpoint, probe: ProbeResult, roles: string[]): string {
@@ -87,10 +88,10 @@ export function buildPrompt(endpoint: Endpoint, probe: ProbeResult, roles: strin
   return `Plan API test cases for one endpoint.
 
 ENDPOINT CONFIG:
-${JSON.stringify(promptEndpoint(endpoint), null, 2)}
+${untrusted('endpoint-config', JSON.stringify(promptEndpoint(endpoint), null, 2))}
 
 PROBE (a real call to this endpoint with its sample body${endpoint.requiresAuth ? ' and the auth header' : ''}; arrays truncated to 3 items):
-${JSON.stringify(probe, null, 2)}
+${untrusted('probe-response', JSON.stringify(probe, null, 2))}
 
 RULES:
 - Allowed case types for this endpoint: ${types.map((t) => `"${t}"`).join(', ')}. Include at least one case of each allowed type and no other types. Maximum 6 cases.

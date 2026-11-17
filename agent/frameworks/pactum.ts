@@ -35,6 +35,7 @@ const TYPES = ['happy', 'schema', 'invalid-input', 'auth', 'authz'] as const;
 const PACTUM_RULES: GateRules = {
   testFn: 'it',
   statusRecorders: ['recordStatus'],
+  allowedImport: /^(?:\.\.?\/)+(?:tests-pactum\/)?setup\/ctx(?:\.ts)?$/,
   frameworkRules(code) {
     const reasons: string[] = [];
     const imp = code.match(/import\s*\{([^}]*)\}\s*from\s*['"](?:\.\.?\/)+(?:tests-pactum\/)?setup\/ctx(?:\.ts)?['"]/);

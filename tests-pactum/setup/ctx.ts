@@ -1,4 +1,4 @@
-import 'dotenv/config';
+import { parse as parseDotenv } from 'dotenv';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import pactum from 'pactum';
@@ -31,6 +31,9 @@ import { redactHeaders, redactText, redactValue, type RedactionConfig } from '..
 // root hook plugin (mochaHooks below) to skip write endpoints in read-only mode and to write
 // reports/pactum/status.json, the Pactum equivalent of the actual-status annotation.
 
+// .env is parsed into this private object and never copied into process.env, so the model provider keys
+// in the agent's .env never reach test code. Only the auth variables the input names are read from it.
+const fileEnv: Record<string, string> = existsSync('.env') ? parseDotenv(readFileSync('.env')) : {};
 const INPUT_FILE = process.env.INPUT_FILE || 'input/endpoints.json'; // EXPORT-INPUT
 const REPORT_DIR = 'reports/pactum';
 const STATUS_FILE = join(REPORT_DIR, 'status.json');
@@ -82,7 +85,7 @@ function loadConfig(file: string): Config {
 const config = loadConfig(INPUT_FILE);
 // Only the environment variables the auth section names leave this file (the auth module). A missing
 // one throws with its name before any request.
-const authEnv = pickAuthEnv(config.auth, process.env);
+const authEnv = pickAuthEnv(config.auth, { ...fileEnv, ...process.env });
 
 // The safety guard, once at load: a refused host stops the whole run before any request.
 // AGENT_FORCE_PRODUCTION=1 (testing only) treats every host as production.

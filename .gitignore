@@ -14,3 +14,4 @@ profiles/local/*
 !profiles/local/.gitkeep
 .DS_Store
 runs/
+.security-check/

@@ -39,6 +39,7 @@
     "import": "tsx agent/import.ts",
     "test:importers": "tsx agent/importers/importers.test.ts",
     "test:safety": "tsx agent/safety.test.ts",
+    "test:security": "tsx agent/security.test.ts",
     "test:auth": "tsx agent/auth.test.ts",
     "test:http": "tsx agent/http.test.ts",
     "test:redact": "tsx agent/redact.test.ts",

@@ -4,7 +4,8 @@ import type { AddressInfo } from 'node:net';
 import { pathToFileURL } from 'node:url';
 import type { Config } from './config';
 import { createClients, createResource, disposeClients } from './http';
-import { assessSafety, classifyHost, endpointAllowed, ProductionRefused, ReadOnlyBlocked, refusalMessage, type HostClass } from './safety';
+import { resolveHostAddresses } from './resolve-host';
+import { assessSafety, classifyHost, isLocalAddress, endpointAllowed, ProductionRefused, ReadOnlyBlocked, refusalMessage, type HostClass } from './safety';
 
 // npm run test:safety: the host rules, the safety modes, and the guard inside the shared HTTP layer.
 // Plain node:assert, offline: the HTTP checks use a throwaway server on 127.0.0.1.
@@ -35,13 +36,32 @@ const HOSTS: [string, HostClass][] = [
   ['http://172.16.0.1', 'local'],
   ['http://172.31.255.254', 'local'],
   ['http://192.168.1.10', 'local'],
+  // loopback 127/8, 0/8, link-local, CGNAT, IPv6 loopback, unique local, link-local, IPv4-mapped
+  ['http://127.0.0.2', 'local'],
+  ['http://127.255.255.254:8080', 'local'],
+  ['http://0.0.0.0:3000', 'local'],
+  ['http://169.254.169.254/latest/meta-data', 'local'],
+  ['http://100.64.0.1', 'local'],
+  ['http://100.127.255.254', 'local'],
+  ['http://2130706433/', 'local'],
+  ['http://[::]:3000', 'local'],
+  ['http://[fd00::1]', 'local'],
+  ['http://[fc00::abcd]', 'local'],
+  ['http://[fe80::1]', 'local'],
+  ['http://[::ffff:127.0.0.1]:3000', 'local'],
+  ['http://[::ffff:10.1.2.3]', 'local'],
+  ['http://[::ffff:8.8.8.8]', 'production'],
+  ['http://100.63.255.255', 'production'],
+  ['http://100.128.0.1', 'production'],
+  ['http://169.253.1.1', 'production'],
+  ['http://[2001:db8::1]', 'production'],
+  ['http://[fec0::1]', 'production'],
   // not private: production
   ['http://172.15.0.1', 'production'],
   ['http://172.32.0.1', 'production'],
   ['http://192.169.1.10', 'production'],
   ['http://11.0.0.1', 'production'],
   ['http://8.8.8.8', 'production'],
-  ['http://127.0.0.2', 'production'],
   ['http://999.168.1.10', 'production'],
   // non-production: a whole part split on "." and "-"
   ['https://api-staging.example.com', 'non-production'],
@@ -117,6 +137,27 @@ async function main() {
     assert.equal(assessSafety({ baseUrl: url, allowWrites: true }).mode, 'refused', 'allowWrites alone does not allow production');
     assert.equal(assessSafety({ baseUrl: url, allowProduction: true }).mode, 'read-only');
     assert.equal(assessSafety({ baseUrl: url, allowProduction: true, allowWrites: true }).mode, 'full');
+  });
+  await check('a name that resolves to a local address keeps its class by name and is refused when hosted', () => {
+    const local = assessSafety({ baseUrl: 'http://127.0.0.1.nip.io:3000', allowProduction: true }, { resolved: ['127.0.0.1'] });
+    assert.equal(local.hostClass, 'production', 'DNS never makes a production name local');
+    assert.equal(local.mode, 'read-only');
+    assert.deepEqual(local.resolvesToLocal, ['127.0.0.1']);
+    assert.equal(assessSafety({ baseUrl: 'http://127.0.0.1.nip.io:3000' }, { resolved: ['127.0.0.1'] }).mode, 'refused');
+    const hosted = assessSafety({ baseUrl: 'https://api-staging.example.com', allowProduction: true }, { hosted: true, resolved: ['93.184.216.34', '10.0.0.7'] });
+    assert.equal(hosted.mode, 'refused', 'hosted: a non-production name that resolves to a private address is refused');
+    assert.match(refusalMessage(hosted), /resolves to a local or private address \(10\.0\.0\.7\)/);
+    const meta = assessSafety({ baseUrl: 'http://metadata.example.com', allowProduction: true }, { hosted: true, resolved: ['169.254.169.254'] });
+    assert.equal(meta.mode, 'refused', 'hosted: cloud metadata by name is refused');
+    const pub = assessSafety({ baseUrl: 'https://api-staging.example.com' }, { hosted: true, resolved: ['93.184.216.34'] });
+    assert.equal(pub.mode, 'full');
+    assert.equal(pub.resolvesToLocal, undefined);
+  });
+  await check('resolveHostAddresses: localhost resolves to a local address, an IP literal and a bad URL give []', async () => {
+    const addrs = await resolveHostAddresses('http://localhost:4000');
+    assert.ok(addrs.length > 0 && addrs.every(isLocalAddress), JSON.stringify(addrs));
+    assert.deepEqual(await resolveHostAddresses('http://127.0.0.1:4000'), []);
+    assert.deepEqual(await resolveHostAddresses('not a url'), []);
   });
   await check('the refusal message names the host', () => {
     const want = 'REFUSED: api.example.com looks like a production host. Set allowProduction to run read-only tests.';
