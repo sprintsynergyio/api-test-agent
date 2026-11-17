@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { zipFolder } from '../zip';
 import { randomUUID } from 'node:crypto';
 import { testEnv } from './test-env';
 import { builtinModules } from 'node:module';
@@ -445,9 +446,10 @@ export function exportPactumFramework(opts: ExportOptions): FrameworkInfo {
 
   mkdirSync(dirname(ZIP_FILE), { recursive: true });
   rmSync(ZIP_FILE, { force: true });
-  const zip = spawnSync('zip', ['-r', '-q', resolve(ZIP_FILE), name], { cwd: FRAMEWORKS_DIR, encoding: 'utf8' });
-  if (zip.error || zip.status !== 0 || !existsSync(ZIP_FILE)) {
-    throw new Error(`FRAMEWORK EXPORT FAILED: zip exited with ${zip.status}: ${zip.error?.message ?? zip.stderr}`);
+  try {
+    zipFolder(dir, name, resolve(ZIP_FILE));
+  } catch (err) {
+    throw new Error(`FRAMEWORK EXPORT FAILED: could not write ${ZIP_FILE}: ${(err as Error).message}`);
   }
   return { name, dir, zip: ZIP_FILE, files, specCount: specs.size };
 }

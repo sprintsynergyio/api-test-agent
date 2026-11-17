@@ -75,6 +75,18 @@ npm run ui            # then open http://localhost:3000
 - **Import** tab: pick a **Source** to import the endpoints (see Importers).
 - **Run options**: the framework (Playwright or Pactum) and redaction (standard or strict, plus extra fields to hide).
 
+### Exit codes
+
+`npm run agent` exits with a code a CI pipeline can act on, in the same style as the other SprintSynergy tools:
+
+| Code | Meaning |
+|---|---|
+| `0` | The run completed and nothing fails it: no failed tests, or `--fail-on none` |
+| `1` | Findings: at least one failed test (a suspected API finding or a failure that needs review), with `--fail-on finding` (the default) |
+| `2` | Tool or setup error: bad input or flags, a refused host, no model set up, no tests generated, a budget stop, an endpoint that could not be tested, a failed framework export, or a crash |
+
+`--fail-on none` still reports every finding in the console and `out/summary.json`; only the exit code changes. `out/summary.json` is written before the framework export and holds `exitCode`, `failOn` and, when the export failed, `frameworkError`, so a failed export never loses the results.
+
 ## Importers
 
 Instead of writing the input file by hand, import the endpoints from something you already have. In the UI: **Import** tab, **Source**. From the terminal (prints `{ input, skipped, warnings }` as JSON; save `input` as an input file):
