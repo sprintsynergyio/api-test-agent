@@ -30,7 +30,7 @@ Give the agent a base URL and a list of API endpoints, and it writes an API test
 1. Install Node 20+.
 2. `npm ci` (Playwright browsers are not needed, the tests only use Playwright's API client).
 3. Start the UI (`npm run ui`, http://localhost:3000). The first screen asks for a Claude or OpenAI API key, checks it, and saves it to `.env` on your machine. If Claude Code is installed and logged in, no key is needed and the card does not appear.
-4. `.env` also holds the auth values your input files name (for the kit: `API_AUTH_VALUE` for Restful Booker, `LOCAL_API_AUTH_VALUE` for the local shop API; copy them from `.env.example`). `MAX_CLAUDE_CALLS` caps model calls per run (default 30). `LLM_MODEL` is optional.
+4. `.env` also holds the auth values your input files name (for the kit: `API_AUTH_VALUE` for Restful Booker, `LOCAL_API_AUTH_VALUE` for the local shop API; copy them from `.env.example`). `MAX_CLAUDE_CALLS` caps model calls per run (default 60, about 2 per endpoint; `--budget N` overrides it for one run). `LLM_MODEL` is optional.
 5. Check it works: `npm run typecheck` and `npm run test:template` (4 tests against Restful Booker).
 
 ## Run it
@@ -41,6 +41,18 @@ Give the agent a base URL and a list of API endpoints, and it writes an API test
 npm run api:local                      # local shop API on http://localhost:4000 (two planted bugs)
 npm run agent input/local-shop.json    # any input file works
 ```
+
+Flags after the input file (use `npm run agent -- <input> <flags>`):
+
+| Flag | What it does |
+|---|---|
+| `--resume` | continue the last run of the same input from `out/checkpoint.json`: probes, plans and specs already made are reused, only the rest costs model calls. A run that stopped at the budget prints `stopped at budget: run again with --resume to continue` |
+| `--only-new` | after you change the input file, regenerate only the endpoints whose definition changed (id, method, path, body, query, headers, setup); the rest is kept and every spec runs |
+| `--endpoints a,b` | restrict the run to these endpoint ids |
+| `--budget N` | model calls allowed in this run (overrides `MAX_CLAUDE_CALLS`, default 60) |
+| `--concurrency N` | plans and generations in flight at once (default 3, max 8) |
+| `--test-workers N` | Playwright workers for the test run (default 1: the tests share one live API, so data-dependent tests may need 1; Pactum runs one at a time and says so) |
+| `--select k=v,...` | pick the profile dimensions (see Profiles) |
 
 The agent prints five phases (PROBING, PLANNING, GENERATING, RUNNING TESTS, SUMMARY) and writes:
 
@@ -80,7 +92,7 @@ npm run -s import postman < collection.json
 - **Auth.** Every credential is removed: Authorization, Cookie, any header whose name contains auth, token, key, secret or session, Postman auth blocks, curl `-u` and `-b`, credential query parameters, and `user:password@` in URLs. Those endpoints get `requiresAuth: true`, and the input gets `auth: { header, valueEnv: "CUSTOM_API_AUTH" }`. Enter the value in the auth field before running. Credential values never appear in the output, warnings or errors.
 - Ids are slugs of the method and path (`get-products-id`). Path params (`:id`, `{{id}}`, `{id}`) become `{id}`. A path with a placeholder gets `setup` from the POST on its parent path; check its `idField`.
 - A missing or relative base URL leaves `baseUrl` empty, and Generate stays disabled until you fill it in.
-- **Keep a run to 12 endpoints or fewer.** Each endpoint costs about 2 Claude calls of the 30-call budget. The preview checks the first 12 and warns above that.
+- **Big imports.** Every imported endpoint is selected. Each costs about 2 model calls of the 60-call budget; above 50 endpoints the preview shows the estimate. A run that stops at the budget is continued from the terminal with `--resume` (see Run it).
 - Acceptance criteria in a ticket are not turned into tests yet.
 
 ## What you get

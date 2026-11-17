@@ -119,16 +119,18 @@ export function redactProbe(result: ProbeResult, config: Config, counter: Redact
 // Endpoints the safety guard does not allow (read-only mode) are not probed: "<id> SKIPPED read-only mode".
 // createClients throws ProductionRefused before any request when the host is refused. authEnv holds
 // only the environment variables the auth section names (pickAuthEnv); the default role probes.
-export async function probeAll(config: Config, authEnv: Record<string, string | undefined>, opts: { forceProduction?: boolean } = {}): Promise<ProbeRun> {
-  rmSync(PROBE_DIR, { recursive: true, force: true });
+// opts.only (resume): probe just these endpoint ids and keep the other out/probes files.
+export async function probeAll(config: Config, authEnv: Record<string, string | undefined>, opts: { forceProduction?: boolean; only?: Set<string> } = {}): Promise<ProbeRun> {
+  if (!opts.only) rmSync(PROBE_DIR, { recursive: true, force: true });
   mkdirSync(PROBE_DIR, { recursive: true });
+  const endpoints = opts.only ? config.endpoints.filter((e) => opts.only!.has(e.id)) : config.endpoints;
 
   const clients = await createClients(config, authEnv, { timeoutMs: REQUEST_TIMEOUT_MS, forceProduction: opts.forceProduction });
   const results = new Map<string, ProbeResult>();
   const redaction: RedactionCounter = { replaced: 0 };
   let cleanup: CleanupTotals;
   try {
-    for (const endpoint of config.endpoints) {
+    for (const endpoint of endpoints) {
       if (!endpointAllowed(clients.safety, endpoint)) {
         console.log(`${endpoint.id} SKIPPED read-only mode`);
         continue;

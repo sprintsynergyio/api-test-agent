@@ -1,9 +1,11 @@
 import 'dotenv/config';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { basename, sep } from 'node:path';
+import { basename, join, sep } from 'node:path';
 import { extraRoles, pickAuthEnv, secretValues } from './auth';
-import { BudgetExceeded, claudeBudget, claudeCallsUsed, claudeEnv, describeModelChoice, hostedWithoutApiKeyProblem, modelChoice, promptRedaction, redact, usingApiKey } from './claude';
+import { BudgetExceeded, claudeBudget, claudeCallsUsed, claudeEnv, describeModelChoice, fakeModelEnabled, hostedWithoutApiKeyProblem, modelChoice, promptRedaction, redact, usingApiKey } from './claude';
+import { CHECKPOINT_FILE, endpointHash, inputHash, loadCheckpoint, newCheckpoint, reusable, saveCheckpoint, type Checkpoint, type ScopeMode } from './checkpoint';
+import { parseAgentFlags, type AgentFlags } from './flags';
 import { apiName, loadConfig, selectionLine, takeSelectFlag, type Config, type Endpoint } from './config';
 import { frameworkFor, type FrameworkAdapter, type FrameworkInfo, type TestOutcome } from './frameworks';
 import { generateEndpoint } from './generate';
@@ -16,7 +18,8 @@ import { assessSafety, endpointAllowed, PRODUCTION_WRITES_WARNING, READ_ONLY_SKI
 // Console output and out/summary.json follow ui/CONTRACT.md. The output framework (Playwright or
 // Pactum) is an adapter (agent/frameworks/); this file never knows which one runs.
 
-const CONCURRENCY = 3;
+// Plans and generations in flight at once; --concurrency N sets it per run.
+let CONCURRENCY = 3;
 const SUMMARY_FILE = 'out/summary.json';
 const CLAUDE_NOT_FOUND = "claude CLI not found on PATH. Run 'which claude' in the terminal that starts the agent or UI.";
 
@@ -41,7 +44,28 @@ type Finding = {
 
 type RunStatus = 'completed' | 'stopped-budget' | 'no-tests' | 'refused';
 
+type Reused = { probes: number; plans: number; specs: number };
+type Scope = { mode: ScopeMode; endpoints: string[] | null; reused: Reused; concurrency: number; testWorkers: number };
+
 let budgetHit = false;
+export const BUDGET_HINT = 'stopped at budget: run again with --resume to continue';
+
+// Set by main(): every stage change is written to out/checkpoint.json right away.
+let checkpoint: Checkpoint | null = null;
+function record(s: EndpointState) {
+  if (!checkpoint) return;
+  const stage = s.specFile ? 'generated' : s.failureReason ? 'failed' : s.plan ? 'planned' : s.probe ? 'probed' : 'failed';
+  checkpoint.endpoints[s.endpoint.id] = {
+    hash: endpointHash(s.endpoint),
+    stage,
+    ...(s.probe ? { probe: s.probe } : {}),
+    ...(s.plan ? { plan: s.plan } : {}),
+    ...(s.specFile ? { specFile: s.specFile } : {}),
+    ...(s.failureReason ? { failureReason: s.failureReason } : {}),
+    ...(s.skippedReason ? { skippedReason: s.skippedReason } : {}),
+  };
+  saveCheckpoint(checkpoint);
+}
 
 async function forEachLimited<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
   let next = 0;
@@ -62,7 +86,16 @@ async function planPhase(states: EndpointState[], roles: string[]) {
       console.log(`${id} SKIPPED read-only mode`);
       return;
     }
+    if (s.plan) {
+      console.log(`${id} OK ${s.plan.cases.length} cases (from checkpoint)`);
+      return;
+    }
+    if (s.failureReason) {
+      console.log(`${id} FAILED skipped: ${oneLine(s.failureReason)}`);
+      return;
+    }
     if (budgetHit) {
+      // Not recorded as a failure in the checkpoint: --resume picks these up from their last good stage.
       s.failureReason = 'skipped: budget reached';
       console.log(`${id} FAILED ${s.failureReason}`);
       return;
@@ -82,6 +115,7 @@ async function planPhase(states: EndpointState[], roles: string[]) {
       s.failureReason = 'budget reached during planning';
       console.log(`${id} FAILED ${s.failureReason}`);
     }
+    record(s);
   });
 }
 
@@ -92,11 +126,16 @@ async function generatePhase(fw: FrameworkAdapter, states: EndpointState[]) {
       console.log(`${id} SKIPPED read-only mode`);
       return;
     }
+    if (s.specFile) {
+      console.log(`${id} OK written generated/${s.specFile} (from checkpoint)`);
+      return;
+    }
     if (!s.plan) {
       console.log(`${id} FAILED skipped: no plan (${oneLine(s.failureReason ?? 'unknown')})`);
       return;
     }
     if (budgetHit) {
+      // Not recorded as a failure in the checkpoint: --resume picks these up from their last good stage.
       s.failureReason = 'skipped: budget reached';
       console.log(`${id} FAILED ${s.failureReason}`);
       return;
@@ -116,6 +155,7 @@ async function generatePhase(fw: FrameworkAdapter, states: EndpointState[]) {
       s.failureReason = 'budget reached during generation';
       console.log(`${id} FAILED ${s.failureReason}`);
     }
+    record(s);
   });
 }
 
@@ -140,7 +180,7 @@ function cleanError(text: string, secrets: string[]): string {
 function claudeCliProblem(): string | null {
   const hosted = hostedWithoutApiKeyProblem();
   if (hosted) return hosted;
-  if (usingApiKey()) return null;
+  if (fakeModelEnabled() || usingApiKey()) return null;
   const res = spawnSync('claude', ['--version'], { env: claudeEnv(), encoding: 'utf8', timeout: 30_000 });
   if ((res.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') return CLAUDE_NOT_FOUND;
   if (res.error || res.status !== 0) {
@@ -166,8 +206,9 @@ function writeSummary(o: {
   testFramework: string;
   redactionReplaced: number;
   cleanup: CleanupTotals;
+  scope: Scope;
 }) {
-  const { status, inputFile, config, startedAt, states, outcomes, findings, framework, allureReport, secrets, safety, requestsSent, testFramework, redactionReplaced, cleanup } = o;
+  const { status, inputFile, config, startedAt, states, outcomes, findings, framework, allureReport, secrets, safety, requestsSent, testFramework, redactionReplaced, cleanup, scope } = o;
   const choice = modelChoice();
   const summary = {
     status,
@@ -189,6 +230,16 @@ function writeSummary(o: {
     startedAt: startedAt.toISOString(),
     durationSec: Math.round((Date.now() - startedAt.getTime()) / 1000),
     claudeCalls: { used: claudeCallsUsed(), budget: claudeBudget() },
+    // Scale (Phase 9): how this run was scoped. resumable: out/checkpoint.json can continue it.
+    scope: {
+      mode: scope.mode,
+      endpoints: scope.endpoints,
+      reused: scope.reused,
+      resumable: budgetHit && checkpoint !== null,
+      fakeModel: fakeModelEnabled(),
+      concurrency: scope.concurrency,
+      testWorkers: scope.testWorkers,
+    },
     totals: {
       endpoints: states.length,
       testsGenerated: outcomes.length,
@@ -243,13 +294,62 @@ function toFinding(o: TestOutcome, plan: Plan | undefined): Finding {
   };
 }
 
+// Decide what this run covers: a fresh run, a resume of the last checkpoint, or only the changed
+// endpoints. Returns the checkpoint to continue (fresh: a new one) and the mode that was really applied.
+function resolveScope(flags: AgentFlags, config: Config, fw: FrameworkAdapter, inputFile: string): { mode: ScopeMode; cp: Checkpoint; prev: Checkpoint | null } {
+  let mode: ScopeMode = flags.resume ? 'resume' : flags.onlyNew ? 'only-new' : 'fresh';
+  let prev: Checkpoint | null = null;
+  if (mode !== 'fresh') {
+    prev = loadCheckpoint();
+    if (!prev) {
+      console.log(`${mode}: no ${CHECKPOINT_FILE} found, starting fresh`);
+      mode = 'fresh';
+    } else if (prev.inputFile !== inputFile || prev.framework !== fw.name) {
+      console.log(`${mode}: ${CHECKPOINT_FILE} belongs to ${prev.inputFile} (${prev.framework}), starting fresh`);
+      prev = null;
+      mode = 'fresh';
+    } else if (mode === 'resume' && prev.inputHash !== inputHash(config)) {
+      console.log(`resume: ${inputFile} changed since the checkpoint, starting fresh (use --only-new to regenerate only the changed endpoints)`);
+      prev = null;
+      mode = 'fresh';
+    }
+  }
+  if (mode === 'fresh') {
+    for (const dir of ['generated', 'out', 'reports', 'test-results']) rmSync(dir, { recursive: true, force: true });
+    return { mode, cp: newCheckpoint(config, inputFile, fw.name), prev: null };
+  }
+  // Resume or only-new: keep generated/ and out/, start the reports over.
+  for (const dir of ['reports', 'test-results', 'generated/.candidate']) rmSync(dir, { recursive: true, force: true });
+  const cp = prev!;
+  cp.inputHash = inputHash(config);
+  // Specs of endpoints that changed or were removed must not run again.
+  const current = new Set(config.endpoints.map((e) => e.id));
+  for (const [id, entry] of Object.entries(cp.endpoints)) {
+    const endpoint = config.endpoints.find((e) => e.id === id);
+    const stale = !endpoint || !current.has(id) || entry.hash !== endpointHash(endpoint);
+    if (stale) {
+      if (entry.specFile) rmSync(join('generated', entry.specFile), { force: true });
+      delete cp.endpoints[id];
+    }
+  }
+  return { mode, cp, prev };
+}
+
 async function main() {
-  const args = takeSelectFlag(process.argv.slice(2));
-  const inputFile = args[0] || 'input/endpoints.json';
+  const flags = parseAgentFlags(takeSelectFlag(process.argv.slice(2)));
+  if (flags.budget !== null) process.env.MAX_CLAUDE_CALLS = String(flags.budget);
+  CONCURRENCY = flags.concurrency;
+  const inputFile = flags.inputFile;
   const startedAt = new Date();
   const config = loadConfig(inputFile);
   const fw = frameworkFor(config);
-  for (const dir of ['generated', 'out', 'reports', 'test-results']) rmSync(dir, { recursive: true, force: true });
+  if (flags.endpoints) {
+    const unknown = flags.endpoints.filter((id) => !config.endpoints.some((e) => e.id === id));
+    if (unknown.length) throw new Error(`--endpoints: not in ${inputFile}: ${unknown.join(', ')}`);
+  }
+  const { mode, cp } = resolveScope(flags, config, fw, inputFile);
+  const inScope = flags.endpoints ? config.endpoints.filter((e) => flags.endpoints!.includes(e.id)) : config.endpoints;
+  const scope: Scope = { mode, endpoints: flags.endpoints, reused: { probes: 0, plans: 0, specs: 0 }, concurrency: flags.concurrency, testWorkers: flags.testWorkers };
 
   // Safety guard first: a refused run sends no request and needs neither an auth value nor Claude.
   // AGENT_FORCE_PRODUCTION=1 (testing only) treats every host as production; it reaches the probe and,
@@ -264,7 +364,7 @@ async function main() {
       inputFile,
       config,
       startedAt,
-      states: config.endpoints.map((endpoint) => ({ endpoint, specFile: null, failureReason: message, skippedReason: null })),
+      states: inScope.map((endpoint) => ({ endpoint, specFile: null, failureReason: message, skippedReason: null })),
       outcomes: [],
       findings: [],
       framework: null,
@@ -275,6 +375,7 @@ async function main() {
       testFramework: fw.name,
       redactionReplaced: 0,
       cleanup: emptyCleanup(),
+      scope,
     });
     console.log(`Summary written to ${SUMMARY_FILE}`);
     process.exitCode = 1;
@@ -291,7 +392,7 @@ async function main() {
   const claudeProblem = claudeCliProblem();
   if (claudeProblem) {
     console.log(claudeProblem);
-    const blocked: EndpointState[] = config.endpoints.map((endpoint) => ({ endpoint, specFile: null, failureReason: claudeProblem, skippedReason: null }));
+    const blocked: EndpointState[] = inScope.map((endpoint) => ({ endpoint, specFile: null, failureReason: claudeProblem, skippedReason: null }));
     writeSummary({
       status: 'no-tests',
       inputFile,
@@ -308,6 +409,7 @@ async function main() {
       testFramework: fw.name,
       redactionReplaced: 0,
       cleanup: emptyCleanup(),
+      scope,
     });
     console.log('NO TESTS GENERATED');
     console.log(`Summary written to ${SUMMARY_FILE}`);
@@ -315,27 +417,54 @@ async function main() {
     return;
   }
 
+  // What the checkpoint already holds for the endpoints in scope.
+  const states: EndpointState[] = inScope.map((endpoint) => {
+    const entry = reusable(cp, endpoint, mode);
+    const skippedReason = endpointAllowed(safety, endpoint) ? null : READ_ONLY_SKIP;
+    if (entry && !skippedReason) {
+      // A recorded failure is retried from its last good stage: with a plan, generate again; with a
+      // usable probe, plan again; otherwise probe again. Only a usable probe counts as done.
+      const probe = entry.probe && entry.probe.usable ? entry.probe : undefined;
+      const plan = probe && (entry.stage === 'planned' || entry.stage === 'generated' || entry.stage === 'failed') ? entry.plan : undefined;
+      const specFile = plan && entry.stage === 'generated' ? (entry.specFile ?? null) : null;
+      if (probe) scope.reused.probes++;
+      if (plan) scope.reused.plans++;
+      if (specFile) scope.reused.specs++;
+      return { endpoint, probe, plan, specFile, failureReason: null, skippedReason: null };
+    }
+    return { endpoint, specFile: null, failureReason: null, skippedReason };
+  });
+  checkpoint = cp;
+
   console.log('=== PROBING ===');
   console.log(`safety: ${safety.hostClass} host, ${safety.mode} mode`);
   console.log(`framework: ${fw.name}`);
   console.log(describeModelChoice());
+  if (fakeModelEnabled()) console.log('model: FAKE_MODEL=1 test mode, no model is called');
   const selected = selectionLine(config);
   if (selected) console.log(selected);
+  if (mode !== 'fresh') console.log(`${mode}: ${scope.reused.specs} of ${inScope.length} endpoints already done (reusing ${scope.reused.probes} probes, ${scope.reused.plans} plans, ${scope.reused.specs} specs)`);
+  if (flags.endpoints) console.log(`endpoints: ${flags.endpoints.join(', ')}`);
   if (safety.hostClass === 'production' && safety.mode === 'full') console.log(PRODUCTION_WRITES_WARNING);
-  const probeRun = await probeAll(config, authEnv, { forceProduction });
-  for (const s of probeRun.secrets) if (!secrets.includes(s)) secrets.push(s);
-  let requestsSent = probeRun.requestsSent;
-  let redactionReplaced = probeRun.redaction.replaced;
-  const cleanup = addCleanup(emptyCleanup(), probeRun.cleanup);
-  const states: EndpointState[] = config.endpoints.map((endpoint) => ({
-    endpoint,
-    probe: probeRun.results.get(endpoint.id),
-    specFile: null,
-    failureReason: null,
-    skippedReason: endpointAllowed(safety, endpoint) ? null : READ_ONLY_SKIP,
-  }));
+  const toProbe = new Set(states.filter((s) => !s.probe && !s.skippedReason).map((s) => s.endpoint.id));
+  for (const s of states) if (s.probe) console.log(`${s.endpoint.id} OK ${s.probe.status} (from checkpoint)`);
+  let requestsSent = 0;
+  let redactionReplaced = 0;
+  const cleanup = emptyCleanup();
+  if (toProbe.size > 0 || mode === 'fresh') {
+    const only = mode === 'fresh' && !flags.endpoints ? undefined : toProbe;
+    const probeRun = await probeAll(config, authEnv, { forceProduction, only });
+    for (const sec of probeRun.secrets) if (!secrets.includes(sec)) secrets.push(sec);
+    requestsSent += probeRun.requestsSent;
+    redactionReplaced += probeRun.redaction.replaced;
+    addCleanup(cleanup, probeRun.cleanup);
+    for (const s of states) {
+      if (!s.probe && probeRun.results.has(s.endpoint.id)) s.probe = probeRun.results.get(s.endpoint.id);
+    }
+  }
   for (const s of states) {
-    if (s.probe && !s.probe.usable) s.failureReason = `probe not usable: ${s.probe.status ?? s.probe.error}`;
+    if (s.probe && !s.probe.usable && !s.specFile) s.failureReason = `probe not usable: ${s.probe.status ?? s.probe.error}`;
+    if (!s.skippedReason) record(s);
   }
 
   console.log('=== PLANNING ===');
@@ -344,7 +473,10 @@ async function main() {
   console.log('=== GENERATING ===');
   await generatePhase(fw, states);
   rmSync('generated/.candidate', { recursive: true, force: true });
-  if (budgetHit) console.log('STOPPED: budget reached');
+  if (budgetHit) {
+    console.log('STOPPED: budget reached');
+    console.log(BUDGET_HINT);
+  }
 
   const written = states.filter((s) => s.specFile);
   let status: RunStatus = budgetHit ? 'stopped-budget' : 'completed';
@@ -356,7 +488,15 @@ async function main() {
     status = 'no-tests';
   } else {
     console.log('=== RUNNING TESTS ===');
-    const run = await fw.run(inputFile, { secrets, reportName: `${apiName(config, inputFile)} API tests`, cleanError: (t) => cleanError(t, secrets) });
+    if (flags.testWorkers > 1) console.log(`test workers: ${flags.testWorkers} (tests share the target API; use 1 if data-dependent tests interfere)`);
+    const run = await fw.run(inputFile, {
+      secrets,
+      reportName: `${apiName(config, inputFile)} API tests`,
+      cleanError: (t) => cleanError(t, secrets),
+      specFiles: written.map((s) => join('generated', s.specFile!)),
+      workers: flags.testWorkers,
+    });
+    for (const n of run.notes ?? []) console.log(n);
     outcomes = run.outcomes;
     requestsSent += run.requestsSent;
     redactionReplaced += run.redactionReplaced;
@@ -390,12 +530,13 @@ async function main() {
 
   // The prompt-level pass (agent/claude.ts) counts what the structured redaction did not already hide.
   redactionReplaced += promptRedaction.replaced;
-  const summary = writeSummary({ status, inputFile, config, startedAt, states, outcomes, findings, framework, allureReport, secrets, safety, requestsSent, testFramework: fw.name, redactionReplaced, cleanup });
+  const summary = writeSummary({ status, inputFile, config, startedAt, states, outcomes, findings, framework, allureReport, secrets, safety, requestsSent, testFramework: fw.name, redactionReplaced, cleanup, scope });
 
   console.log('=== SUMMARY ===');
   if (status === 'no-tests') {
     console.log('NO TESTS GENERATED');
     for (const s of states) console.log(`  ${s.endpoint.id}: ${oneLine(s.failureReason ?? s.skippedReason ?? 'unknown')}`);
+    if (budgetHit) console.log(BUDGET_HINT);
     console.log(`Summary written to ${SUMMARY_FILE}`);
     process.exitCode = 1;
     return;
@@ -404,7 +545,9 @@ async function main() {
   const api = findings.filter((f) => f.classification === 'suspected API finding');
   const review = findings.filter((f) => f.classification === 'needs review');
   console.log(`Status: ${status}`);
+  if (status === 'stopped-budget') console.log(BUDGET_HINT);
   console.log(`Framework: ${fw.name}`);
+  console.log(`Scope: ${mode}${flags.endpoints ? `, endpoints ${flags.endpoints.join(', ')}` : ''}${scope.reused.probes ? `, reused ${scope.reused.probes} probes, ${scope.reused.plans} plans, ${scope.reused.specs} specs` : ''}`);
   console.log(`Endpoints: ${t.endpoints}, specs written: ${written.length}, tests: ${t.testsGenerated}, passed: ${t.passed}, failed: ${t.failed}`);
   console.log(`Claude calls: ${summary.claudeCalls.used}/${summary.claudeCalls.budget}, duration: ${summary.durationSec}s`);
   console.log(`Safety: ${safety.hostClass} host, ${safety.mode} mode, requests sent: ${requestsSent}`);

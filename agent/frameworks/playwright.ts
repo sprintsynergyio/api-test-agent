@@ -15,9 +15,11 @@ const ALLURE_RESULTS = 'reports/allure-results';
 const ALLURE_REPORT = 'reports/allure-report';
 const HTML_REPORT = 'reports/html';
 
-function runPlaywright(inputFile: string): Promise<number | null> {
+function runPlaywright(inputFile: string, specFiles: string[] | undefined, workers: number): Promise<number | null> {
+  // --workers overrides the config's 1. Spec paths restrict the run to the endpoints in scope.
+  const args = ['test', '-c', 'playwright.generated.config.ts', '--workers', String(workers), ...(specFiles ?? [])];
   return new Promise((resolve, reject) => {
-    const child = spawn('node_modules/.bin/playwright', ['test', '-c', 'playwright.generated.config.ts'], {
+    const child = spawn('node_modules/.bin/playwright', args, {
       // The tests read their auth value from .env through the ctx file; the Claude API key never reaches them.
       env: testEnv(inputFile),
       stdio: ['ignore', 'inherit', 'inherit'],
@@ -135,8 +137,8 @@ export const playwrightAdapter: FrameworkAdapter = {
     ];
   },
   validate: validateSpec,
-  async run(inputFile, { secrets, reportName, cleanError }): Promise<RunResult> {
-    await runPlaywright(inputFile);
+  async run(inputFile, { secrets, reportName, cleanError, specFiles, workers }): Promise<RunResult> {
+    await runPlaywright(inputFile, specFiles, Math.max(1, workers ?? 1));
     if (!existsSync(RESULTS_FILE)) throw new Error(`Playwright did not write ${RESULTS_FILE}`);
     const read = readOutcomes(cleanError);
     const allure = generateAllure(reportName, secrets, cleanError);

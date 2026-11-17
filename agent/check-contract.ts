@@ -77,6 +77,20 @@ const claudeCalls = isObj(s.claudeCalls) ? s.claudeCalls : {};
 need(isObj(s.claudeCalls), 'summary.claudeCalls is missing');
 for (const k of ['used', 'budget']) need(isInt(claudeCalls[k]), `summary.claudeCalls.${k} is not a count`);
 
+// Scope (Phase 9, scale): how the run was scoped; resume and only-new reuse the checkpoint.
+need(isObj(s.scope), 'summary.scope is missing');
+if (isObj(s.scope)) {
+  field('summary.scope', s.scope, 'mode', ['string'], ['fresh', 'resume', 'only-new']);
+  field('summary.scope', s.scope, 'endpoints', ['array', 'null']);
+  need(isObj(s.scope.reused), 'summary.scope.reused is missing');
+  if (isObj(s.scope.reused)) for (const k of ['probes', 'plans', 'specs']) need(isInt(s.scope.reused[k]), `summary.scope.reused.${k} is not a count`);
+  field('summary.scope', s.scope, 'resumable', ['boolean']);
+  field('summary.scope', s.scope, 'fakeModel', ['boolean']);
+  need(isInt(s.scope.concurrency), 'summary.scope.concurrency is not a count');
+  need(isInt(s.scope.testWorkers), 'summary.scope.testWorkers is not a count');
+  if (s.scope.resumable) need(s.status === 'stopped-budget' || s.status === 'no-tests', 'scope.resumable is only set on a run the budget stopped');
+}
+
 const totals = isObj(s.totals) ? s.totals : {};
 need(isObj(s.totals), 'summary.totals is missing');
 for (const k of ['endpoints', 'testsGenerated', 'passed', 'failed']) need(isInt(totals[k]), `summary.totals.${k} is not a count`);

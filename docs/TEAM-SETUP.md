@@ -130,7 +130,7 @@ npx playwright test
 - `The service was stopped` from `tsx` on macOS: run `npm ci` again (macOS blocked a downloaded binary).
 - The setup card says the provider cannot be reached, and you are on a corporate network with Zscaler or another TLS proxy: export your company's root certificate as a `.pem` file and start the UI with `NODE_EXTRA_CA_CERTS=/path/to/zscaler-root.pem npm run ui`.
 - The run says `claude CLI not found` and you meant to use a key: open the setup card with **Change** and save the key; the header should then say `via API key`.
-- The run stops at `Claude call budget reached`: the default is 30 model calls per run, enough for about 12 endpoints. Raise `MAX_CLAUDE_CALLS` in `.env` for bigger APIs.
+- The run stops with `stopped at budget: run again with --resume to continue`: the default is 60 model calls per run, about 25 endpoints. Run `npm run agent -- input/<name>.json --resume` in the terminal and it continues where it stopped without paying for the finished endpoints again, or raise `MAX_CLAUDE_CALLS` in `.env`.
 - A finding on your API that you think is wrong: open the report, look at the request and response attached to the test, and decide. The agent never changes an expected status to make a test pass; it reports what the API did.
 
 ## Cost
