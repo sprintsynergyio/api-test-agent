@@ -154,7 +154,7 @@ const agentModules = {};
 async function agentModule(name) {
   if (!agentModules[name]) {
     const { tsImport } = await import("tsx/esm/api");
-    agentModules[name] = await tsImport(path.join(ROOT, "agent", `${name}.ts`), import.meta.url);
+    agentModules[name] = await tsImport(pathToFileURL(path.join(ROOT, "agent", `${name}.ts`)).href, import.meta.url);
   }
   return agentModules[name];
 }
