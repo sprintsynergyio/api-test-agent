@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { nodeBin } from '../node-bin';
 import { allAuthEnvNames, normalizeAuth } from '../auth';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -80,7 +81,7 @@ function freePort(): Promise<number> {
 
 function startApi(port: number, bugs: string[]): Promise<ChildProcess> {
   return new Promise((resolve, reject) => {
-    const child = spawn('node', ['local-api/server.mjs'], {
+    const child = spawn(process.execPath, ['local-api/server.mjs'], {
       env: { ...process.env, PORT: String(port), BUGS: bugs.join(','), FIXED: '' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -119,7 +120,7 @@ function stopApi(child: ChildProcess): Promise<void> {
 
 function runAgent(inputFile: string, logFile: string, provider: string | null): Promise<number | null> {
   return new Promise((resolve, reject) => {
-    const child = spawn('node_modules/.bin/tsx', ['agent/cli.ts', inputFile], {
+    const child = spawn(...nodeBin('tsx', ['agent/cli.ts', inputFile]), {
       env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1', ...(provider ? { LLM_PROVIDER: provider } : {}) },
       stdio: ['ignore', 'pipe', 'pipe'],
     });

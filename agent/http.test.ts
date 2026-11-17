@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { nodeBin } from './node-bin';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -203,7 +204,7 @@ function freePort(): Promise<number> {
 async function startApi(env: Record<string, string>): Promise<{ port: number; log: () => string[]; stop: () => void }> {
   const port = await freePort();
   let out = '';
-  const child: ChildProcess = spawn('node', ['local-api/server.mjs'], { env: { ...process.env, PORT: String(port), LOG_REQUESTS: '1', ...env }, stdio: ['ignore', 'pipe', 'inherit'] });
+  const child: ChildProcess = spawn(process.execPath, ['local-api/server.mjs'], { env: { ...process.env, PORT: String(port), LOG_REQUESTS: '1', ...env }, stdio: ['ignore', 'pipe', 'inherit'] });
   child.stdout!.on('data', (d) => (out += String(d)));
   for (let i = 0; i < 50 && !out.includes('running on'); i++) await sleep(100);
   if (!out.includes('running on')) throw new Error(`local API did not start: ${out}`);
@@ -232,7 +233,7 @@ await check('Pactum setup file: RATE_LIMIT_FIRST=2 on the local shop API, the te
     rmSync('reports', { recursive: true, force: true });
     mkdirSync('generated', { recursive: true });
     writeFileSync('generated/list-products.spec.ts', MOCHA_SPEC);
-    const res = spawnSync('node_modules/.bin/mocha', ['--config', '.mocharc.pactum.json', 'generated/**/*.spec.ts'], {
+    const res = spawnSync(...nodeBin('mocha', ['--config', '.mocharc.pactum.json', 'generated/**/*.spec.ts']), {
       env: { ...process.env, INPUT_FILE: inputFile, LOCAL_API_AUTH_VALUE: 'Bearer hackathon-demo-token' },
       encoding: 'utf8',
       timeout: 120_000,

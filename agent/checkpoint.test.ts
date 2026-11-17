@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { nodeBin } from './node-bin';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
@@ -45,7 +46,7 @@ type Api = { port: number; child: ChildProcess; log: () => string };
 async function startApi(): Promise<Api> {
   const port = await freePort();
   let log = '';
-  const child = spawn('node', ['local-api/server.mjs'], { env: { ...process.env, PORT: String(port), LOG_REQUESTS: '1' }, stdio: ['ignore', 'pipe', 'inherit'] });
+  const child = spawn(process.execPath, ['local-api/server.mjs'], { env: { ...process.env, PORT: String(port), LOG_REQUESTS: '1' }, stdio: ['ignore', 'pipe', 'inherit'] });
   child.stdout!.on('data', (d) => (log += d));
   for (let i = 0; i < 50; i++) {
     try {
@@ -161,7 +162,7 @@ type Summary = {
 };
 
 function agent(args: string[], env: Record<string, string> = {}): { out: string; code: number | null; summary: Summary } {
-  const res = spawnSync('node_modules/.bin/tsx', ['agent/cli.ts', ...args], {
+  const res = spawnSync(...nodeBin('tsx', ['agent/cli.ts', ...args]), {
     encoding: 'utf8',
     env: { ...process.env, FAKE_MODEL: '1', LOCAL_API_AUTH_VALUE: 'Bearer hackathon-demo-token', ...env },
     timeout: 240_000,
@@ -184,7 +185,7 @@ await check('pipeline: fresh FAKE_MODEL run completes with 5 specs, a checkpoint
   assert.equal(r.summary.scope.fakeModel, true);
   assert.match(r.out, /model: FAKE_MODEL=1 test mode/);
   assert.deepEqual(stages(), { 'list-products': 'generated', 'create-product': 'generated', 'get-product': 'generated', 'update-product': 'generated', 'delete-product': 'generated' });
-  const contract = spawnSync('node_modules/.bin/tsx', ['agent/check-contract.ts'], { encoding: 'utf8' });
+  const contract = spawnSync(...nodeBin('tsx', ['agent/check-contract.ts']), { encoding: 'utf8' });
   assert.equal(contract.status, 0, contract.stdout + contract.stderr);
   // The local API's planted delete-without-auth bug is a finding, so the default --fail-on finding exits 1.
   assert.equal(r.code, 1, 'findings exit 1');
@@ -201,7 +202,7 @@ await check('pipeline: --fail-on none reports the findings and exits 0', () => {
   assert.equal(r.code, 0);
   assert.equal(r.summary.exitCode, 0);
   assert.equal(r.summary.failOn, 'none');
-  const bad = spawnSync('node_modules/.bin/tsx', ['agent/cli.ts', inputFile, '--fail-on', 'sometimes'], { encoding: 'utf8', env: { ...process.env, FAKE_MODEL: '1' } });
+  const bad = spawnSync(...nodeBin('tsx', ['agent/cli.ts', inputFile, '--fail-on', 'sometimes']), { encoding: 'utf8', env: { ...process.env, FAKE_MODEL: '1' } });
   assert.equal(bad.status, 2);
   assert.match(bad.stderr + bad.stdout, /--fail-on must be one of none, finding/);
 });
@@ -289,7 +290,7 @@ await check('pipeline: --endpoints restricts probing, planning, generation and t
   assert.equal(r.summary.claudeCalls.used, 4);
   assert.deepEqual(readdirSync('generated').filter((f) => f.endsWith('.spec.ts')).sort(), ['get-product.spec.ts', 'list-products.spec.ts']);
   assert.match(r.out, /endpoints: get-product, list-products/);
-  const bad = spawnSync('node_modules/.bin/tsx', ['agent/cli.ts', inputFile, '--endpoints', 'nope'], { encoding: 'utf8', env: { ...process.env, FAKE_MODEL: '1' } });
+  const bad = spawnSync(...nodeBin('tsx', ['agent/cli.ts', inputFile, '--endpoints', 'nope']), { encoding: 'utf8', env: { ...process.env, FAKE_MODEL: '1' } });
   assert.equal(bad.status, 2, 'a bad flag value is a tool error: exit 2');
   assert.match(bad.stderr + bad.stdout, /--endpoints: not in .*: nope/);
 });

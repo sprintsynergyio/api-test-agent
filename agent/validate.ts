@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { nodeBin } from './node-bin';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -250,7 +251,7 @@ function typecheck(code: string, name: string): string | null {
       join(TSCHECK_DIR, 'tsconfig.json'),
       JSON.stringify({ extends: '../tsconfig.json', include: [], files: [`${name}.spec.ts`] }),
     );
-    const res = spawnSync('node_modules/.bin/tsc', ['-p', join(TSCHECK_DIR, 'tsconfig.json')], { encoding: 'utf8' });
+    const res = spawnSync(...nodeBin('tsc', ['-p', join(TSCHECK_DIR, 'tsconfig.json')]), { encoding: 'utf8' });
     if (res.status === 0) return null;
     return `${res.stdout}${res.stderr}`.trim().slice(0, 1500) || `tsc exited with ${res.status}`;
   } finally {

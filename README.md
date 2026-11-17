@@ -23,12 +23,12 @@ Give the agent a base URL and a list of API endpoints, and it writes an API test
 
 ## Requirements
 
-- Node 20 or newer.
+- Node 22 or newer, on macOS, Windows or Linux. CI runs every offline suite and a full end-to-end run on all three (Node 22 and 24).
 - A Claude or OpenAI API key, or a Claude Code login, if you want the agent to generate tests. Typechecking, the offline test suites and the hand-written template tests do not need a key.
 
 ## Setup
 
-1. Install Node 20+.
+1. Install Node 22+.
 2. `npm ci` (Playwright browsers are not needed, the tests only use Playwright's API client).
 3. Start the UI (`npm run ui`, http://localhost:3000). The first screen asks for a Claude or OpenAI API key, checks it, and saves it to `.env` on your machine. If Claude Code is installed and logged in, no key is needed and the card does not appear.
 4. `.env` also holds the auth values your input files name (for the kit: `API_AUTH_VALUE` for Restful Booker, `LOCAL_API_AUTH_VALUE` for the local shop API; copy them from `.env.example`). `MAX_CLAUDE_CALLS` caps model calls per run (default 60, about 2 per endpoint; `--budget N` overrides it for one run). `LLM_MODEL` is optional.
@@ -201,6 +201,8 @@ A failed test is a **suspected API finding** when the API returned a 5xx, or ret
 | `npx tsx agent/try-one.ts <input> <endpointId>` | Plan and generate one endpoint |
 | `npm run -s import <type> < file` | Import endpoints from Postman, OpenAPI, cURL, HAR or text (see Importers) |
 | `npm run test:importers` | Importer tests against `test-fixtures/importers/` (makes 2 live Claude calls) |
+| `npm run test:platform` | The parts that differ between macOS, Windows and Linux (how tools are started, paths) |
+| `npm run test:e2e` | Whole agent with `FAKE_MODEL=1` (no key) for both frameworks against the local API, then `npm install` and `npm test` in each exported project |
 
 ## License
 

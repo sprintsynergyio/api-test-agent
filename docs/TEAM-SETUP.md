@@ -8,7 +8,7 @@ You give it the base URL and the endpoints of an API. It calls each endpoint onc
 
 ## What you need
 
-1. Node.js 20 or newer. Check with `node --version`; you should see `v20` or higher. If not, install it from https://nodejs.org (the LTS build).
+1. Node.js 22 or newer (macOS, Windows or Linux). Check with `node --version`; you should see `v22` or higher. If not, install it from https://nodejs.org (the LTS build).
 2. git. Check with `git --version`.
 3. One of these, to pay for the model calls:
    - a Claude API key from https://console.anthropic.com (API Keys, Create Key), or
