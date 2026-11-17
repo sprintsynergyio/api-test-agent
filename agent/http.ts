@@ -26,8 +26,9 @@ import { assessSafety, ProductionRefused, READ_METHODS, ReadOnlyBlocked, refusal
 
 export type RequestCounter = { sent: number };
 
-// A resource createResource made on the target API, so cleanup can delete it afterwards.
-export type CreatedResource = { endpointId: string; id: string; params: Record<string, string> };
+// A resource made on the target API, so cleanup can delete it afterwards. source: 'setup' for
+// createResource and setup steps, 'test' for a POST the test code sent itself through ctx.api.
+export type CreatedResource = { endpointId: string; id: string; params: Record<string, string>; source?: 'setup' | 'test' };
 
 export type Clients = {
   api: APIRequestContext; // the default role
@@ -47,7 +48,28 @@ export type Clients = {
   _auth: Record<string, Authenticator>;
 };
 
-export type ClientOptions = { timeoutMs?: number; forceProduction?: boolean; hosted?: boolean };
+// retryBaseMs: the first back-off after a 429 without Retry-After (1 s, then 2 s, then 4 s); tests shorten it.
+export type ClientOptions = { timeoutMs?: number; forceProduction?: boolean; hosted?: boolean; retryBaseMs?: number };
+
+// 429 handling
+// A 429 means the server did not process the request, so it is safe to send again, writes included.
+// At most MAX_429_RETRIES retries: Retry-After (seconds or an HTTP date) when the server sends it,
+// else 1 s, 2 s, 4 s. Every retry counts as a request sent. After the last retry the 429 is returned
+// as the actual status (a test reports it, the probe marks the endpoint rate limited).
+export const MAX_429_RETRIES = 3;
+export const RETRY_BASE_MS = 1000;
+
+export function retryAfterMs(header: string | undefined, attempt: number, baseMs: number = RETRY_BASE_MS): number {
+  if (header) {
+    const seconds = Number(header);
+    if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1000, 60_000);
+    const at = Date.parse(header);
+    if (!Number.isNaN(at)) return Math.max(0, Math.min(at - Date.now(), 60_000));
+  }
+  return baseMs * 2 ** attempt;
+}
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 const REQUEST_METHODS = new Set(['get', 'post', 'put', 'patch', 'delete', 'head', 'fetch']);
 
@@ -60,7 +82,12 @@ type RequestOptions = {
   multipart?: unknown;
   // Set by the auth login transport: the request is a login, allowed in read-only mode (it changes no data).
   authLogin?: boolean;
+  // Set by createResource: it records what it made itself, so the generic POST tracking skips it.
+  skipCreatedTracking?: boolean;
 };
+
+// After every response: records what a test's own POST created (see trackCreated in createClients).
+type OnResponse = (method: string, path: string, response: APIResponse) => Promise<void>;
 type UrlOrRequest = string | { url(): string; method?(): string };
 
 function requestMethod(prop: string, urlOrRequest: UrlOrRequest, options: RequestOptions | undefined): string {
@@ -82,7 +109,15 @@ function cleanRequestError(err: unknown, secrets: () => string[]): Error {
 
 // Blocks writes in read-only mode before anything leaves the process, counts what is sent, applies
 // the role's auth (logging in first when needed) and retries once after a refresh status.
-function guarded(context: APIRequestContext, safety: Safety, counter: RequestCounter, auth: Authenticator | null, secrets: () => string[]): APIRequestContext {
+function guarded(
+  context: APIRequestContext,
+  safety: Safety,
+  counter: RequestCounter,
+  auth: Authenticator | null,
+  secrets: () => string[],
+  retryBaseMs: number,
+  onResponse: OnResponse | null,
+): APIRequestContext {
   return new Proxy(context, {
     get(target, prop) {
       const value = Reflect.get(target, prop, target);
@@ -93,7 +128,7 @@ function guarded(context: APIRequestContext, safety: Safety, counter: RequestCou
         if (safety.mode !== 'full' && !READ_METHODS.has(method) && !options.authLogin) {
           throw new ReadOnlyBlocked(method, urlOf(urlOrRequest));
         }
-        const { authLogin: _login, ...rest } = options;
+        const { authLogin: _login, skipCreatedTracking, ...rest } = options;
         const send = async (): Promise<APIResponse> => {
           let opts: RequestOptions = rest;
           if (auth) {
@@ -112,10 +147,82 @@ function guarded(context: APIRequestContext, safety: Safety, counter: RequestCou
           auth.invalidate();
           response = await send();
         }
+        for (let attempt = 0; response.status() === 429 && attempt < MAX_429_RETRIES; attempt++) {
+          await sleep(retryAfterMs(response.headers()['retry-after'], attempt, retryBaseMs));
+          response = await send();
+        }
+        if (onResponse && !skipCreatedTracking) await onResponse(method, urlOf(urlOrRequest), response);
         return response;
       };
     },
   });
+}
+
+// what a test's own POST created
+// A 2xx POST sent by test code through ctx.api (or ctx.as) whose path matches a POST endpoint with a
+// paired DELETE is recorded so cleanup deletes it, like a createResource record. The id comes from
+// the idField a setup step declares for that endpoint, else the first of id, _id, uuid at the top
+// level or under data.
+
+function matchTemplate(template: string, path: string): Record<string, string> | null {
+  const t = template.split('/');
+  const p = path.split('/');
+  if (t.length !== p.length) return null;
+  const params: Record<string, string> = {};
+  for (let i = 0; i < t.length; i++) {
+    const m = t[i].match(/^\{([^}]+)\}$/);
+    if (m) {
+      if (!p[i]) return null;
+      params[m[1]] = decodeURIComponent(p[i]);
+    } else if (t[i] !== p[i]) return null;
+  }
+  return params;
+}
+
+function pathOnly(url: string): string {
+  const q = url.indexOf('?');
+  const noQuery = q < 0 ? url : url.slice(0, q);
+  // An absolute URL on the API host: keep its path.
+  const abs = noQuery.match(/^https?:\/\/[^/]+(\/.*)?$/);
+  return abs ? abs[1] || '/' : noQuery;
+}
+
+export function createdIdFrom(body: unknown, idField?: string): string | undefined {
+  if (!body || typeof body !== 'object') return undefined;
+  const obj = body as Record<string, unknown>;
+  const pick = (o: Record<string, unknown>, key: string) => {
+    const v = o[key];
+    return (typeof v === 'string' && v.length > 0) || typeof v === 'number' ? String(v) : undefined;
+  };
+  if (idField) {
+    const direct = pick(obj, idField);
+    if (direct !== undefined) return direct;
+    const data = obj.data;
+    if (data && typeof data === 'object') return pick(data as Record<string, unknown>, idField);
+    return undefined;
+  }
+  for (const key of ['id', '_id', 'uuid']) {
+    const v = pick(obj, key);
+    if (v !== undefined) return v;
+  }
+  const data = obj.data;
+  if (data && typeof data === 'object') for (const key of ['id', '_id', 'uuid']) {
+    const v = pick(data as Record<string, unknown>, key);
+    if (v !== undefined) return v;
+  }
+  return undefined;
+}
+
+// The POST endpoint (with a paired DELETE) a request path belongs to, and its placeholder values.
+export function createEndpointFor(config: Config, path: string): { endpoint: Config['endpoints'][number]; params: Record<string, string> } | undefined {
+  for (const endpoint of config.endpoints) {
+    if (endpoint.method !== 'POST') continue;
+    const params = matchTemplate(endpoint.path, pathOnly(path));
+    if (!params) continue;
+    if (!deleteEndpointFor(config, endpoint.id)) continue;
+    return { endpoint, params };
+  }
+  return undefined;
 }
 
 // Throws ProductionRefused before any context exists when the host is production and the config
@@ -124,19 +231,41 @@ function guarded(context: APIRequestContext, safety: Safety, counter: RequestCou
 export async function createClients(config: Config, authEnv: Record<string, string | undefined> = {}, opts: ClientOptions = {}): Promise<Clients> {
   const safety = assessSafety(config, { forceProduction: opts.forceProduction, hosted: opts.hosted });
   if (safety.mode === 'refused') throw new ProductionRefused(refusalMessage(safety));
+  // An OAuth2 token URL on another host is classified too: a production token host is refused
+  // like any production host unless the config allows production.
+  const tokenHost = tokenHostSafety(config, opts);
+  if (tokenHost && tokenHost.mode === 'refused') throw new ProductionRefused(refusalMessage(tokenHost));
 
   const counter: RequestCounter = { sent: 0 };
   const authenticators: Record<string, Authenticator> = {};
   const secrets = () => [...new Set([...secretValues(config.auth, authEnv), ...Object.values(authenticators).flatMap((a) => a.secrets())])];
+  const retryBaseMs = opts.retryBaseMs ?? RETRY_BASE_MS;
+  const created: CreatedResource[] = [];
+
+  // Records what a test's own 2xx POST created (createResource records its own and skips this).
+  const trackCreated: OnResponse = async (method, path, response) => {
+    if (method !== 'POST' || !response.ok()) return;
+    const match = createEndpointFor(config, path);
+    if (!match) return;
+    let body: unknown;
+    try {
+      body = JSON.parse(await response.text());
+    } catch {
+      return;
+    }
+    const id = createdIdFrom(body, declaredIdField(config, match.endpoint.id));
+    if (id !== undefined) created.push({ endpointId: match.endpoint.id, id, params: match.params, source: 'test' });
+  };
 
   const newContext = () => request.newContext({ baseURL: config.baseUrl, extraHTTPHeaders: { ...config.defaultHeaders }, timeout: opts.timeoutMs });
 
   const rawNoAuth = await newContext();
-  const noAuthApi = guarded(rawNoAuth, safety, counter, null, secrets);
+  const noAuthApi = guarded(rawNoAuth, safety, counter, null, secrets, retryBaseMs, trackCreated);
   const box = { noAuthApi };
-  // The login transport: a guarded, recorded request with no auth of its own.
+  // The login transport: a guarded, recorded request with no auth of its own. A JSON body goes as
+  // data, a form body (OAuth2 token request) as form.
   const transport = async (req: AuthRequest) => {
-    const loginOptions: RequestOptions = { method: req.method, headers: req.headers, data: req.body, params: req.query, authLogin: true };
+    const loginOptions: RequestOptions = { method: req.method, headers: req.headers, params: req.query, authLogin: true, ...(req.form ? { form: req.form } : { data: req.body }) };
     const response = await box.noAuthApi.fetch(req.path, loginOptions as Parameters<APIRequestContext['fetch']>[1]);
     return { status: response.status(), text: await response.text() };
   };
@@ -149,7 +278,7 @@ export async function createClients(config: Config, authEnv: Record<string, stri
       authenticators[role] = createAuthenticator(config.auth, creds, transport);
       const raw = await newContext();
       contexts.push(raw);
-      clientsByRole[role] = guarded(raw, safety, counter, authenticators[role], secrets);
+      clientsByRole[role] = guarded(raw, safety, counter, authenticators[role], secrets, retryBaseMs, trackCreated);
     }
   }
   const api = config.auth ? clientsByRole[DEFAULT_ROLE] : noAuthApi;
@@ -165,7 +294,7 @@ export async function createClients(config: Config, authEnv: Record<string, stri
     },
     safety,
     counter,
-    created: [],
+    created,
     secrets,
     loginCount: () => Object.values(authenticators).reduce((n, a) => n + a.loginCount(), 0),
     _box: box,
@@ -176,6 +305,13 @@ export async function createClients(config: Config, authEnv: Record<string, stri
 }
 
 const disposables = new WeakMap<Clients, APIRequestContext[]>();
+
+// The safety assessment of an absolute OAuth2 token URL's host, undefined when the token URL is a
+// path on the API host (covered by the main assessment) or the auth type does not log in.
+export function tokenHostSafety(config: Config, opts: { forceProduction?: boolean; hosted?: boolean } = {}): Safety | undefined {
+  if (!config.auth || config.auth.type !== 'oauth2_client' || !/^https?:\/\//.test(config.auth.tokenUrl)) return undefined;
+  return assessSafety({ ...config, baseUrl: config.auth.tokenUrl }, opts);
+}
 
 // Evidence: every request and response made through the clients, for test reports.
 // Sensitive header values are shown as <redacted> and every secret value is scrubbed.
@@ -333,7 +469,8 @@ export async function createResource(
   const own = await runSetup(config, clients, endpoint, params);
   const path = resolvePath(endpoint.path, own);
   const client = endpoint.requiresAuth ? clients.api : clients.noAuthApi;
-  const response = await client.fetch(path, { method: endpoint.method, data: endpoint.body, params: endpoint.query, headers: endpoint.headers });
+  const options: RequestOptions = { method: endpoint.method, data: endpoint.body, params: endpoint.query, headers: endpoint.headers, skipCreatedTracking: true };
+  const response = await client.fetch(path, options as Parameters<APIRequestContext['fetch']>[1]);
   const text = await response.text();
   if (!response.ok()) {
     throw new Error(`createResource(${endpointId}) failed: status ${response.status()}, body: ${scrubSecrets(text, clients.secrets())}`);
@@ -347,22 +484,25 @@ export async function createResource(
   if (id === undefined || id === null || id === '') {
     throw new Error(`createResource(${endpointId}) returned no "${field}": status ${response.status()}, body: ${scrubSecrets(text, clients.secrets())}`);
   }
-  clients.created.push({ endpointId, id: String(id), params: own });
+  clients.created.push({ endpointId, id: String(id), params: own, source: 'setup' });
   return String(id);
 }
 
-// ---- cleanup ----
+// cleanup
 // Deletes what createResource made, newest first (a review goes before its product), through the same
 // guarded clients. Nothing is hidden: the totals say what was deleted, what failed and why, and what
 // had no DELETE endpoint to use.
 
-export type CleanupTotals = { created: number; deleted: number; failed: number; skippedNoDeleteEndpoint: number; failures: string[] };
+// created counts every record (setup and test-made); createdByTests says how many of them a test's
+// own POST made. deleted + failed + skippedNoDeleteEndpoint = created.
+export type CleanupTotals = { created: number; createdByTests: number; deleted: number; failed: number; skippedNoDeleteEndpoint: number; failures: string[] };
 
-export const emptyCleanup = (): CleanupTotals => ({ created: 0, deleted: 0, failed: 0, skippedNoDeleteEndpoint: 0, failures: [] });
+export const emptyCleanup = (): CleanupTotals => ({ created: 0, createdByTests: 0, deleted: 0, failed: 0, skippedNoDeleteEndpoint: 0, failures: [] });
 
 export function addCleanup(into: CleanupTotals, more: Partial<CleanupTotals> | null | undefined): CleanupTotals {
   if (!more) return into;
   into.created += more.created ?? 0;
+  into.createdByTests += more.createdByTests ?? 0;
   into.deleted += more.deleted ?? 0;
   into.failed += more.failed ?? 0;
   into.skippedNoDeleteEndpoint += more.skippedNoDeleteEndpoint ?? 0;
@@ -371,7 +511,8 @@ export function addCleanup(into: CleanupTotals, more: Partial<CleanupTotals> | n
 }
 
 export function cleanupLine(t: CleanupTotals): string {
-  return `cleanup: created ${t.created}, deleted ${t.deleted}, failed ${t.failed}, no delete endpoint ${t.skippedNoDeleteEndpoint}`;
+  const byTests = t.createdByTests ? ` (${t.createdByTests} by test code)` : '';
+  return `cleanup: created ${t.created}${byTests}, deleted ${t.deleted}, failed ${t.failed}, no delete endpoint ${t.skippedNoDeleteEndpoint}`;
 }
 
 // The DELETE endpoint for resources made by createEndpointId: the setup step's explicit cleanup, else the
@@ -399,6 +540,7 @@ export async function cleanupResources(config: Config, clients: Clients): Promis
   const totals = emptyCleanup();
   const list = clients.created.splice(0).reverse();
   totals.created = list.length;
+  totals.createdByTests = list.filter((m) => m.source === 'test').length;
   for (const made of list) {
     const del = deleteEndpointFor(config, made.endpointId);
     if (!del) {

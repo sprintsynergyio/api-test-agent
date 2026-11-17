@@ -36,7 +36,13 @@ export type BuildOptions = {
   authHeader?: string; // header name when endpoints require auth but no credential was seen
   noBaseUrlWarning?: string; // replaces the generic warning when no origin was found
   noEndpointsMessage?: string; // replaces the start of the error when nothing could be imported
+  // OpenAPI: the token URL of an oauth2 clientCredentials flow. When the chosen credential is the
+  // oauth2 Authorization header, the input gets the oauth2_client auth type instead of a fixed header.
+  oauth2TokenUrl?: string;
 };
+
+export const CLIENT_ID_ENV = 'CUSTOM_API_CLIENT_ID';
+export const CLIENT_SECRET_ENV = 'CUSTOM_API_CLIENT_SECRET';
 
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const;
 type Method = (typeof METHODS)[number];
@@ -517,8 +523,14 @@ export function buildInput(requests: RawRequest[], opts: BuildOptions = {}): Imp
     }
     const schemes = chosen ? [...chosen.schemes] : [];
     if (schemes.includes('bearer')) warnings.push(`The ${kept} uses a bearer token: set ${VALUE_ENV} to the whole value including the "Bearer " prefix.`);
-    if (schemes.some((sch) => sch === 'oauth2' || sch === 'openIdConnect')) {
-      warnings.push(`The API uses ${schemes.filter((sch) => sch === 'oauth2' || sch === 'openIdConnect').join(' and ')}: the import keeps a fixed ${kept}. To let the agent log in itself, change auth to the login type by hand (see CLAUDE.md, Auth).`);
+    if (schemes.includes('oauth2') && opts.oauth2TokenUrl && chosen?.where === 'header') {
+      // The spec declares a client credentials flow: the agent can fetch the token itself.
+      auth = { type: 'oauth2_client', tokenUrl: opts.oauth2TokenUrl, clientIdEnv: CLIENT_ID_ENV, clientSecretEnv: CLIENT_SECRET_ENV };
+      warnings.push(
+        `The API uses OAuth2 client credentials (token URL ${opts.oauth2TokenUrl}): auth is set to the oauth2_client type. Put the client id in ${CLIENT_ID_ENV} and the client secret in ${CLIENT_SECRET_ENV} in .env; the agent fetches the access token itself.`,
+      );
+    } else if (schemes.some((sch) => sch === 'oauth2' || sch === 'openIdConnect')) {
+      warnings.push(`The API uses ${schemes.filter((sch) => sch === 'oauth2' || sch === 'openIdConnect').join(' and ')}: the import keeps a fixed ${kept}. To let the agent log in itself, change auth to the login or oauth2_client type by hand (see CLAUDE.md, Auth).`);
     }
   }
   if (dropped.size) warnings.push(`${CREDENTIALS_DROPPED} ${[...dropped].sort().join(', ')}.`);

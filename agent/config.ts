@@ -46,6 +46,8 @@ const ProfileSchema = z.object({
 const RoleSchema = z.object({
   valueEnv: z.string().min(1).optional(),
   credentialsEnv: z.record(z.string().min(1), z.string().min(1)).optional(),
+  clientIdEnv: z.string().min(1).optional(),
+  clientSecretEnv: z.string().min(1).optional(),
 });
 const roles = z.record(z.string().min(1), RoleSchema).optional();
 const ApplySchema = z.discriminatedUnion('type', [
@@ -68,6 +70,19 @@ const AuthUnion = z.discriminatedUnion('type', [
     credentialsEnv: z.record(z.string().min(1), z.string().min(1)),
     tokenPath: z.string().min(1),
     apply: ApplySchema,
+    refresh: z.object({ statuses: z.array(z.number().int().min(100).max(599)).min(1), once: z.literal(true).optional() }).optional(),
+    roles,
+  }),
+  z.object({
+    type: z.literal('oauth2_client'),
+    tokenUrl: z.string().regex(/^(\/|https?:\/\/)/, 'must be a path starting with / or an absolute http(s) URL'),
+    clientIdEnv: z.string().min(1),
+    clientSecretEnv: z.string().min(1),
+    scope: z.string().min(1).optional(),
+    audience: z.string().min(1).optional(),
+    clientAuth: z.enum(['body', 'basic']).optional(),
+    tokenPath: z.string().min(1).optional(),
+    apply: ApplySchema.optional(),
     refresh: z.object({ statuses: z.array(z.number().int().min(100).max(599)).min(1), once: z.literal(true).optional() }).optional(),
     roles,
   }),
@@ -184,6 +199,12 @@ export function authProblems(auth: AuthConfig | undefined): string[] {
   for (const role of authRoles(auth)) {
     if (role === DEFAULT_ROLE) continue;
     const r = auth.roles![role];
+    if (auth.type === 'oauth2_client') {
+      if (!r.clientIdEnv || !r.clientSecretEnv) problems.push(`field "auth.roles.${role}" needs clientIdEnv and clientSecretEnv for an oauth2_client auth`);
+      if (r.valueEnv || r.credentialsEnv) problems.push(`field "auth.roles.${role}" uses valueEnv or credentialsEnv, which an oauth2_client auth does not read; use clientIdEnv and clientSecretEnv`);
+      continue;
+    }
+    if (r.clientIdEnv || r.clientSecretEnv) problems.push(`field "auth.roles.${role}" uses clientIdEnv or clientSecretEnv, which only an oauth2_client auth reads`);
     if (auth.type === 'login') {
       const fields = Object.keys(auth.credentialsEnv).sort();
       const own = Object.keys(r.credentialsEnv ?? {}).sort();

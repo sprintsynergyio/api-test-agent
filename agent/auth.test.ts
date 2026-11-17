@@ -50,6 +50,7 @@ let tokenCounter = 0;
 const issued = new Map<string, string>(); // token -> role
 let expireFirstToken = false;
 const ADMIN_TOKEN = 'fixed-admin-token-value';
+const oauthSeen: { contentType: string; grant: string | null; scope: string | null; audience: string | null; basic: boolean }[] = [];
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve) => {
@@ -68,6 +69,20 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     res.writeHead(status, { 'Content-Type': 'application/json' });
     res.end(data === undefined ? '' : JSON.stringify(data));
   };
+  if (req.method === 'POST' && url.pathname === '/oauth/token') {
+    // Client credentials: form body, or client id and secret in a Basic header.
+    const form = new URLSearchParams(body);
+    let id = form.get('client_id');
+    let secret = form.get('client_secret');
+    const basic = headers.authorization?.match(/^Basic (.+)$/)?.[1];
+    if (basic) [id, secret] = Buffer.from(basic, 'base64').toString('utf8').split(':');
+    oauthSeen.push({ contentType: headers['content-type'] ?? '', grant: form.get('grant_type'), scope: form.get('scope'), audience: form.get('audience'), basic: Boolean(basic) });
+    if (form.get('grant_type') !== 'client_credentials') return reply(400, { error: 'unsupported_grant_type' });
+    if (id !== 'test-client' || secret !== 'test-client-secret-value') return reply(401, { error: 'invalid_client' });
+    const token = `oauth-tok-${++tokenCounter}`;
+    issued.set(token, 'admin');
+    return reply(200, { access_token: token, token_type: 'Bearer', expires_in: 3600 });
+  }
   if (req.method === 'POST' && url.pathname === '/login') {
     const b = JSON.parse(body || '{}') as { user?: string; pass?: string };
     const roles: Record<string, string> = { 'alice@example.com': 'admin', 'bob@example.com': 'viewer' };
@@ -121,6 +136,9 @@ const LOGIN: AuthConfig = {
 const LOGIN_ENV = { T_ADMIN_USER: 'alice@example.com', T_ADMIN_PASS: 'alice@example.com-secret', T_VIEWER_USER: 'bob@example.com', T_VIEWER_PASS: 'bob@example.com-secret' };
 const HEADER: AuthConfig = { type: 'header', header: 'X-API-Key', valueEnv: 'T_KEY', roles: { viewer: { valueEnv: 'T_VIEWER_KEY' } } };
 const HEADER_ENV = { T_KEY: ADMIN_TOKEN, T_VIEWER_KEY: 'viewer-key-value' };
+
+const OAUTH: AuthConfig = { type: 'oauth2_client', tokenUrl: '/oauth/token', clientIdEnv: 'T_CLIENT_ID', clientSecretEnv: 'T_CLIENT_SECRET', scope: 'read write' };
+const OAUTH_ENV = { T_CLIENT_ID: 'test-client', T_CLIENT_SECRET: 'test-client-secret-value' };
 
 const lastRequest = () => seen[seen.length - 1];
 
@@ -343,6 +361,115 @@ await check('login auth: a request that keeps failing is retried once only', asy
     assert.equal(c.loginCount(), 1);
     assert.equal(seen.length, 2);
   });
+});
+
+await check('oauth2_client: helpers, env names, secrets and redaction', () => {
+  assert.deepEqual(authEnvNames(OAUTH), ['T_CLIENT_ID', 'T_CLIENT_SECRET']);
+  assert.deepEqual(allAuthEnvNames({ ...OAUTH, roles: { viewer: { clientIdEnv: 'V_ID', clientSecretEnv: 'V_SECRET' } } }), ['T_CLIENT_ID', 'T_CLIENT_SECRET', 'V_ID', 'V_SECRET']);
+  assert.deepEqual(readCredentials(OAUTH, OAUTH_ENV), { role: 'default', fields: { client_id: 'test-client', client_secret: 'test-client-secret-value' } });
+  assert.throws(() => readCredentials(OAUTH, { T_CLIENT_ID: 'x' }), /environment variable T_CLIENT_SECRET is not set \(role default\)/);
+  // Only the secret is scrubbed from every text; the client id is redacted in the token request evidence.
+  assert.deepEqual(secretValues(OAUTH, OAUTH_ENV), ['test-client-secret-value']);
+  assert.deepEqual(redactLoginRequest(OAUTH, { grant_type: 'client_credentials', client_id: 'a', client_secret: 'b', scope: 's' }), { grant_type: 'client_credentials', client_id: '<redacted>', client_secret: '<redacted>', scope: 's' });
+  assert.equal(redactLoginResponse(OAUTH, '{"access_token":"abc","token_type":"Bearer"}'), '{"access_token":"<redacted>","token_type":"Bearer"}');
+  assert.deepEqual(redactHeaders(OAUTH, { Authorization: 'Bearer x', Accept: 'a' }), { Authorization: '<redacted>', Accept: 'a' });
+  assert.deepEqual(authProblems(OAUTH), []);
+  assert.match(authProblems({ ...OAUTH, roles: { viewer: { clientIdEnv: 'V' } } })[0], /roles\.viewer" needs clientIdEnv and clientSecretEnv/);
+  assert.match(authProblems({ ...HEADER, roles: { viewer: { valueEnv: 'X', clientIdEnv: 'V' } } })[0], /clientIdEnv/);
+});
+
+await check('oauth2_client authenticator: form grant, cached token, refresh once on 401, basic client auth', async () => {
+  const calls: AuthRequest[] = [];
+  let n = 0;
+  const transport = async (req: AuthRequest) => {
+    calls.push(req);
+    return { status: 200, text: JSON.stringify({ access_token: `at${++n}`, token_type: 'Bearer' }) };
+  };
+  const a = createAuthenticator(OAUTH, readCredentials(OAUTH, OAUTH_ENV), transport);
+  const r1 = await a.decorate({ method: 'GET', path: '/x', headers: {} });
+  const r2 = await a.decorate({ method: 'GET', path: '/x', headers: {} });
+  assert.equal(r1.headers.Authorization, 'Bearer at1');
+  assert.equal(r2.headers.Authorization, 'Bearer at1', 'token cached');
+  assert.equal(a.loginCount(), 1);
+  assert.equal(calls[0].method, 'POST');
+  assert.equal(calls[0].path, '/oauth/token');
+  assert.deepEqual(calls[0].form, { grant_type: 'client_credentials', client_id: 'test-client', client_secret: 'test-client-secret-value', scope: 'read write' });
+  assert.equal(calls[0].body, undefined, 'form encoded, not JSON');
+  assert.equal(a.shouldRefresh(401), true);
+  assert.equal(a.shouldRefresh(403), false);
+  a.invalidate();
+  const r3 = await a.decorate({ method: 'GET', path: '/x', headers: {} });
+  assert.equal(r3.headers.Authorization, 'Bearer at2');
+  assert.equal(a.loginCount(), 2);
+  assert.ok(a.secrets().includes('at1') && a.secrets().includes('at2'), 'issued tokens are secrets');
+  // clientAuth basic: id and secret go in an Authorization header, never in the form.
+  const b = createAuthenticator({ ...OAUTH, clientAuth: 'basic', audience: 'api://shop' }, readCredentials(OAUTH, OAUTH_ENV), transport);
+  await b.decorate({ method: 'GET', path: '/x', headers: {} });
+  const last = calls[calls.length - 1];
+  assert.equal(last.headers?.Authorization, `Basic ${Buffer.from('test-client:test-client-secret-value').toString('base64')}`);
+  assert.deepEqual(last.form, { grant_type: 'client_credentials', scope: 'read write', audience: 'api://shop' });
+  assert.ok(b.secrets().includes(Buffer.from('test-client:test-client-secret-value').toString('base64')), 'the base64 client pair is a secret');
+  // Failures throw with the reason, never an empty token.
+  const bad = createAuthenticator(OAUTH, readCredentials(OAUTH, OAUTH_ENV), async () => ({ status: 401, text: '{"error":"invalid_client"}' }));
+  await assert.rejects(bad.decorate({ method: 'GET', path: '/x', headers: {} }), /401/);
+  const noToken = createAuthenticator(OAUTH, readCredentials(OAUTH, OAUTH_ENV), async () => ({ status: 200, text: '{"token_type":"Bearer"}' }));
+  await assert.rejects(noToken.decorate({ method: 'GET', path: '/x', headers: {} }), /access_token/);
+});
+
+await check('oauth2_client through the HTTP layer: one token request, counted, recorded redacted; the token never leaks', async () => {
+  seen.length = 0;
+  oauthSeen.length = 0;
+  issued.clear();
+  await withClients(config(OAUTH), OAUTH_ENV, async (c) => {
+    const exchanges: Exchange[] = [];
+    const rc = recordClients(config(OAUTH), c, async (e) => {
+      exchanges.push(e);
+    });
+    assert.equal((await rc.api.post('/items', { data: { name: 'a' } })).status(), 201);
+    assert.equal((await rc.api.get('/whoami')).status(), 200);
+    assert.equal(c.loginCount(), 1);
+    assert.deepEqual(seen.map((s) => `${s.method} ${s.path}`), ['POST /oauth/token', 'POST /items', 'GET /whoami']);
+    assert.match(oauthSeen[0].contentType, /application\/x-www-form-urlencoded/);
+    assert.deepEqual([oauthSeen[0].grant, oauthSeen[0].scope, oauthSeen[0].basic], ['client_credentials', 'read write', false]);
+    assert.match(seen[1].headers.authorization, /^Bearer oauth-tok-\d+$/);
+    assert.equal(c.counter.sent, 3, 'the token request counts');
+    const tokenReq = exchanges.find((e) => e.role === 'login');
+    assert.ok(tokenReq, 'token exchange recorded');
+    const { name, body } = formatExchange(config(OAUTH), tokenReq!, c.secrets());
+    assert.equal(name, 'POST /oauth/token (auth login) -> 200');
+    assert.ok(!body.includes('test-client-secret-value'), `client secret redacted: ${body}`);
+    assert.ok(!body.includes('"test-client"'), `client id redacted: ${body}`);
+    assert.ok(!/oauth-tok-\d/.test(body), `token redacted: ${body}`);
+    const created = exchanges.find((e) => e.role === 'default' && e.method === 'POST');
+    assert.ok(!/oauth-tok-\d/.test(formatExchange(config(OAUTH), created!, c.secrets()).body), 'token scrubbed from the echo');
+    // noAuthApi sends nothing.
+    assert.equal((await rc.noAuthApi.post('/items', { data: {} })).status(), 401);
+    assert.equal(c.loginCount(), 1, 'noAuthApi never fetches a token');
+  });
+});
+
+await check('oauth2_client: an expired token is refreshed once and the request re-sent', async () => {
+  seen.length = 0;
+  issued.clear();
+  tokenCounter = 0;
+  expireFirstToken = true;
+  try {
+    await withClients(config(OAUTH), OAUTH_ENV, async (c) => {
+      assert.equal((await c.api.get('/whoami')).status(), 200);
+      assert.deepEqual(seen.map((s) => `${s.method} ${s.path}`), ['POST /oauth/token', 'GET /whoami', 'POST /oauth/token', 'GET /whoami']);
+      assert.equal(c.loginCount(), 2);
+    });
+  } finally {
+    expireFirstToken = false;
+  }
+});
+
+await check('oauth2_client: a production token URL is refused before any request; a missing variable is named', async () => {
+  seen.length = 0;
+  await assert.rejects(createClients(config({ ...OAUTH, tokenUrl: 'https://login.example.com/oauth/token' }), OAUTH_ENV), /login\.example\.com.*production/);
+  assert.deepEqual(seen, []);
+  await assert.rejects(createClients(config(OAUTH), { T_CLIENT_ID: 'test-client' }), /environment variable T_CLIENT_SECRET is not set \(role default\)/);
+  assert.deepEqual(seen, []);
 });
 
 await check('guard: on a refused host no login request is sent; in read-only mode the login goes through but writes do not', async () => {

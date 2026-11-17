@@ -88,6 +88,27 @@ const authEnv = pickAuthEnv(config.auth, process.env);
 // AGENT_FORCE_PRODUCTION=1 (testing only) treats every host as production.
 const safety: Safety = assessSafety(config, { forceProduction: process.env.AGENT_FORCE_PRODUCTION === '1' });
 if (safety.mode === 'refused') throw new ProductionRefused(refusalMessage(safety));
+// An OAuth2 token URL on another host is classified too: a production token host is refused as well.
+if (config.auth?.type === 'oauth2_client' && /^https?:\/\//.test(config.auth.tokenUrl)) {
+  const tokenHost = assessSafety({ ...config, baseUrl: config.auth.tokenUrl }, { forceProduction: process.env.AGENT_FORCE_PRODUCTION === '1' });
+  if (tokenHost.mode === 'refused') throw new ProductionRefused(refusalMessage(tokenHost));
+}
+
+// 429 handling: the server did not process the request, so it is sent again, writes included. At most
+// MAX_429_RETRIES retries, waiting Retry-After (seconds or an HTTP date) or 1 s, 2 s, 4 s. Every retry
+// is counted. After the last retry the 429 is returned as the actual status.
+const MAX_429_RETRIES = 3;
+const RETRY_BASE_MS = 1000;
+function retryAfterMs(header: string | undefined, attempt: number): number {
+  if (header) {
+    const seconds = Number(header);
+    if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1000, 60_000);
+    const at = Date.parse(header);
+    if (!Number.isNaN(at)) return Math.max(0, Math.min(at - Date.now(), 60_000));
+  }
+  return RETRY_BASE_MS * 2 ** attempt;
+}
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 pactum.settings.setLogLevel('ERROR');
 
@@ -126,8 +147,9 @@ export type Ctx = {
 
 const counter = { sent: 0 };
 const redaction = { replaced: 0 };
-// Everything createResource made on the API and cleanup has not deleted yet, newest last.
-type CreatedResource = { endpointId: string; id: string; params: Record<string, string> };
+// Everything made on the API and not deleted yet, newest last. source: 'setup' for createResource and
+// setup steps, 'test' for a POST the test code sent itself through ctx.api or ctx.as.
+type CreatedResource = { endpointId: string; id: string; params: Record<string, string>; source: 'setup' | 'test' };
 const created: CreatedResource[] = [];
 
 type Current = { file: string; title: string; actualStatus: number | null; sentBefore: number; redactedBefore: number; evidence: string[] } | null;
@@ -176,21 +198,25 @@ function writeEvidence(method: string, path: string, role: string | null, header
 }
 
 // Sends one request with the headers and query exactly as given. Counts it and writes evidence.
-async function transmit(m: string, path: string, headers: Record<string, string>, query: Query | undefined, body: unknown, role: string | null): Promise<ApiResponse> {
+// form: a form-encoded body (OAuth2 token request) instead of a JSON body. An absolute path (a token
+// URL on another host) is sent as it is; everything else is relative to the API's base URL.
+async function transmit(m: string, path: string, headers: Record<string, string>, query: Query | undefined, body: unknown, role: string | null, form?: Record<string, string>): Promise<ApiResponse> {
   const fullPath = path + queryString(query);
   counter.sent++;
-  let s = pactum.spec().withMethod(m).withPath(config.baseUrl + fullPath).withHeaders(headers);
-  if (body !== undefined) s = s.withJson(body as Record<string, unknown>);
+  const url = /^https?:\/\//.test(path) ? fullPath : config.baseUrl + fullPath;
+  let s = pactum.spec().withMethod(m).withPath(url).withHeaders(headers);
+  if (form) s = s.withForm(form);
+  else if (body !== undefined) s = s.withJson(body as Record<string, unknown>);
   let res: PactumResponse;
   try {
     res = (await s.toss()) as unknown as PactumResponse;
   } catch (err) {
     const message = scrubSecrets(String((err as Error)?.message ?? err).split('\n')[0], secrets());
-    writeEvidence(m, fullPath, role, headers, body, null, '', message);
+    writeEvidence(m, fullPath, role, headers, form ?? body, null, '', message);
     throw new Error(`request ${m} ${redactQuery(config.auth, fullPath)} failed: ${message}`);
   }
   const text = typeof res.text === 'string' ? res.text : res.body === undefined || res.body === '' ? '' : JSON.stringify(res.body);
-  writeEvidence(m, fullPath, role, headers, body, res.statusCode, text);
+  writeEvidence(m, fullPath, role, headers, form ?? body, res.statusCode, text);
   return {
     status: () => res.statusCode,
     ok: () => res.statusCode >= 200 && res.statusCode < 300,
@@ -203,27 +229,98 @@ async function transmit(m: string, path: string, headers: Record<string, string>
 // The one guarded request path. Blocks writes in read-only mode before anything is sent (a login
 // request is not a data write and is let through), applies the role's auth (logging in first when
 // needed) and re-sends once after a refresh status. role null: no auth (noAuthApi).
-async function send(method: string, path: string, body: unknown, role: string | null, options: RequestOptions = {}, login = false): Promise<ApiResponse> {
+type SendFlags = { login?: boolean; form?: Record<string, string>; track?: boolean };
+async function send(method: string, path: string, body: unknown, role: string | null, options: RequestOptions = {}, flags: SendFlags = {}): Promise<ApiResponse> {
   const m = method.toUpperCase();
+  const login = flags.login === true;
   if (safety.mode !== 'full' && !READ_METHODS.has(m) && !login) throw new ReadOnlyBlocked(m, path + queryString(options.params));
   const auth = role ? authenticators[role] : null;
   if (role && !auth) throw new Error(`ctx.as: unknown auth role "${role}" (roles: ${authRoles(config.auth).join(', ') || 'none'})`);
   const base: AuthRequest = { method: m, path, headers: { ...config.defaultHeaders, ...(options.headers ?? {}) }, query: options.params, body };
   const once = async () => {
     const req = auth ? await auth.decorate(base) : base;
-    return transmit(m, path, req.headers, req.query, body, login ? 'login' : role);
+    return transmit(m, path, req.headers, req.query, body, login ? 'login' : role, flags.form);
   };
   let response = await once();
   if (auth && auth.shouldRefresh(response.status())) {
     auth.invalidate();
     response = await once();
   }
+  for (let attempt = 0; response.status() === 429 && attempt < MAX_429_RETRIES; attempt++) {
+    await sleep(retryAfterMs(response.headers()['retry-after'], attempt));
+    response = await once();
+  }
+  if (flags.track !== false && !login) await trackCreated(m, path, response);
   return response;
 }
 
-// The login transport for the login auth type: a guarded, recorded request with no auth of its own.
+// A 2xx POST the test code sent itself, to a POST endpoint with a paired DELETE, is recorded so the
+// per-test cleanup deletes it (createResource records its own and passes track: false).
+async function trackCreated(method: string, path: string, response: ApiResponse): Promise<void> {
+  if (method !== 'POST' || !response.ok()) return;
+  const match = createEndpointFor(path);
+  if (!match) return;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await response.text());
+  } catch {
+    return;
+  }
+  const id = createdIdFrom(parsed, declaredIdField(match.endpoint.id));
+  if (id !== undefined) created.push({ endpointId: match.endpoint.id, id, params: match.params, source: 'test' });
+}
+
+function matchTemplate(template: string, path: string): Record<string, string> | null {
+  const t = template.split('/');
+  const p = path.split('/');
+  if (t.length !== p.length) return null;
+  const params: Record<string, string> = {};
+  for (let i = 0; i < t.length; i++) {
+    const m = t[i].match(/^\{([^}]+)\}$/);
+    if (m) {
+      if (!p[i]) return null;
+      params[m[1]] = decodeURIComponent(p[i]);
+    } else if (t[i] !== p[i]) return null;
+  }
+  return params;
+}
+
+function createEndpointFor(path: string): { endpoint: Config['endpoints'][number]; params: Record<string, string> } | undefined {
+  const q = path.indexOf('?');
+  const bare = q < 0 ? path : path.slice(0, q);
+  for (const endpoint of config.endpoints) {
+    if (endpoint.method !== 'POST') continue;
+    const params = matchTemplate(endpoint.path, bare);
+    if (params && deleteEndpointFor(endpoint.id)) return { endpoint, params };
+  }
+  return undefined;
+}
+
+// The new record's id: the declared idField (top level or under data), else id, _id or uuid.
+function createdIdFrom(body: unknown, idField?: string): string | undefined {
+  if (!body || typeof body !== 'object') return undefined;
+  const obj = body as Record<string, unknown>;
+  const pick = (o: Record<string, unknown>, key: string) => {
+    const v = o[key];
+    return (typeof v === 'string' && v.length > 0) || typeof v === 'number' ? String(v) : undefined;
+  };
+  const data = obj.data && typeof obj.data === 'object' ? (obj.data as Record<string, unknown>) : undefined;
+  const keys = idField ? [idField] : ['id', '_id', 'uuid'];
+  for (const key of keys) {
+    const v = pick(obj, key);
+    if (v !== undefined) return v;
+  }
+  if (data) for (const key of keys) {
+    const v = pick(data, key);
+    if (v !== undefined) return v;
+  }
+  return undefined;
+}
+
+// The login transport for the login and oauth2_client auth types: a guarded, recorded request with no
+// auth of its own. A form body (OAuth2 token request) is sent form-encoded, a JSON body as JSON.
 const transport = async (req: AuthRequest) => {
-  const res = await send(req.method, req.path, req.body, null, { headers: req.headers, params: req.query }, true);
+  const res = await send(req.method, req.path, req.body, null, { headers: req.headers, params: req.query }, { login: true, form: req.form });
   return { status: res.status(), text: await res.text() };
 };
 if (config.auth) {
@@ -246,6 +343,8 @@ function client(role: string | null): Client {
 const noAuthApi = client(null);
 // Without an auth section, api and noAuthApi are the same.
 const api = config.auth ? client(DEFAULT_ROLE) : noAuthApi;
+// The role createResource sends as when the endpoint needs auth (none without an auth section).
+const DEFAULT_ROLE_OR_NULL: string | null = config.auth ? DEFAULT_ROLE : null;
 const roleClients: Record<string, Client> = {};
 for (const role of authRoles(config.auth)) roleClients[role] = client(role);
 function as(role: string): Client {
@@ -272,12 +371,7 @@ async function createResource(endpointId: string, idField?: string, params: Reco
   const field = idField ?? declaredIdField(endpointId);
   if (!field) throw new Error(`createResource: no endpoint uses "${endpointId}" as setup, so idField is unknown`);
   const own = await runSetup(endpoint, params);
-  const response = await (endpoint.requiresAuth ? api : noAuthApi).fetch(resolvePath(endpoint.path, own), {
-    method: endpoint.method,
-    data: endpoint.body,
-    params: endpoint.query,
-    headers: endpoint.headers,
-  });
+  const response = await send(endpoint.method, resolvePath(endpoint.path, own), endpoint.body, endpoint.requiresAuth ? DEFAULT_ROLE_OR_NULL : null, { params: endpoint.query, headers: endpoint.headers }, { track: false });
   const text = await response.text();
   if (!response.ok()) throw new Error(`createResource(${endpointId}) failed: status ${response.status()}, body: ${scrubSecrets(text, secrets())}`);
   let id: unknown;
@@ -289,15 +383,15 @@ async function createResource(endpointId: string, idField?: string, params: Reco
   if (id === undefined || id === null || id === '') {
     throw new Error(`createResource(${endpointId}) returned no "${field}": status ${response.status()}, body: ${scrubSecrets(text, secrets())}`);
   }
-  created.push({ endpointId, id: String(id), params: own });
+  created.push({ endpointId, id: String(id), params: own, source: 'setup' });
   return String(id);
 }
 
-// ---- cleanup ----
+// cleanup
 // Deletes what createResource made, newest first, through send() (so the guard covers it). The totals
 // go to status.json per test; the agent adds them into summary.cleanup. Failures are listed, never hidden.
 
-export type CleanupTotals = { created: number; deleted: number; failed: number; skippedNoDeleteEndpoint: number; failures: string[] };
+export type CleanupTotals = { created: number; createdByTests: number; deleted: number; failed: number; skippedNoDeleteEndpoint: number; failures: string[] };
 
 const isPlaceholder = (seg: string) => /^\{[^}]+\}$/.test(seg);
 
@@ -321,9 +415,10 @@ function deleteEndpointFor(createEndpointId: string): Config['endpoints'][number
 }
 
 async function cleanupResources(): Promise<CleanupTotals> {
-  const totals: CleanupTotals = { created: 0, deleted: 0, failed: 0, skippedNoDeleteEndpoint: 0, failures: [] };
+  const totals: CleanupTotals = { created: 0, createdByTests: 0, deleted: 0, failed: 0, skippedNoDeleteEndpoint: 0, failures: [] };
   const list = created.splice(0).reverse();
   totals.created = list.length;
+  totals.createdByTests = list.filter((m) => m.source === 'test').length;
   for (const made of list) {
     const del = deleteEndpointFor(made.endpointId);
     if (!del) {
