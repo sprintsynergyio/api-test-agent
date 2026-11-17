@@ -56,6 +56,7 @@
     "eval": "tsx agent/eval/run.ts",
     "test:settings": "node ui/settings.test.mjs",
     "test:ui": "node ui/ui.test.mjs",
+    "test:ui-smoke": "node scripts/ui-smoke.mjs",
     "test:claude-api": "tsx agent/claude-api.test.ts",
     "ui:hash": "node ui/hash-password.mjs",
     "check:contract": "tsx agent/check-contract.ts",
