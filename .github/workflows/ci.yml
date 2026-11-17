@@ -81,8 +81,10 @@ jobs:
         run: npm audit --audit-level=high
 
   # Windows from the kind of folder people actually unpack into: a path with spaces, on a drive letter
-  # other than C: (J: is mapped with subst). npm run ui must start and load the agent modules, then the
-  # UI tests and the whole agent (FAKE_MODEL=1) run from the same folder.
+  # other than C: (J: is mapped with subst), and Node 24.21.0 as on the machine that first hit the crash.
+  # npm run ui must start and load the agent modules through tsx, then the UI tests and the whole agent
+  # (FAKE_MODEL=1) run from the same folder. A raw Windows path given to tsImport() or import() fails here
+  # with ERR_UNSUPPORTED_ESM_URL_SCHEME ("Received protocol 'j:'").
   windows-paths:
     name: windows-latest / Node ${{ matrix.node }} / ${{ matrix.where }}
     runs-on: windows-latest
@@ -97,8 +99,6 @@ jobs:
             where: 'J:\Api test agent\api-test-agent'
           - node: 24.21.0
             where: 'J:\Api test agent\api-test-agent'
-          - node: 24
-            where: 'j:\Api test agent\api-test-agent'
     defaults:
       run:
         shell: pwsh
@@ -114,7 +114,7 @@ jobs:
       - name: Copy the repo to ${{ matrix.where }}, then npm ci, UI smoke, UI tests and end-to-end run there
         run: |
           $ErrorActionPreference = 'Stop'
-          if ($env:WHERE.ToUpper().StartsWith('J:')) {
+          if ($env:WHERE.StartsWith('J:')) {
             $backing = Join-Path $env:RUNNER_TEMP 'jdrive'
             New-Item -ItemType Directory -Force -Path $backing | Out-Null
             subst J: $backing

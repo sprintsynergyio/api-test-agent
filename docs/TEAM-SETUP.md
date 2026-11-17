@@ -138,6 +138,7 @@ APIs behind OAuth2 client credentials use `"auth": { "type": "oauth2_client", "t
 ## Troubleshooting
 
 - `Port 3000 is already in use` or `4000`: another copy is running. On macOS or Linux: `lsof -ti tcp:3000 -sTCP:LISTEN | xargs kill` (same for 4000). On Windows: close the other terminal.
+- Windows: `npm run ui` starts, then stops with `ERR_UNSUPPORTED_ESM_URL_SCHEME ... Received protocol 'c:'` (or `'j:'`, your drive letter) as soon as the page opens: your copy is older than Nov 17, 2026. Run `git pull`, then `npm ci`, then `npm run ui` again.
 - `The service was stopped` from `tsx` on macOS: run `npm ci` again (macOS blocked a downloaded binary).
 - The setup card says the provider cannot be reached, and you are on a corporate network with Zscaler or another TLS proxy: export your company's root certificate as a `.pem` file and start the UI with `NODE_EXTRA_CA_CERTS=/path/to/zscaler-root.pem npm run ui`.
 - The run says `claude CLI not found` and you meant to use a key: open the setup card with **Change** and save the key; the header should then say `via API key`.

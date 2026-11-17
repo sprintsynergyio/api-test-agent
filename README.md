@@ -213,6 +213,7 @@ All numbers below come from runs on a developer Mac with Claude (`claude-sonnet-
 | `npm run -s import <type> < file` | Import endpoints from Postman, OpenAPI, cURL, HAR or text (see Importers) |
 | `npm run test:importers` | Importer tests against `test-fixtures/importers/`, offline; the 2 live text-importer tests run only with `RUN_LIVE_CLAUDE_TESTS=1` and a model |
 | `npm run test:platform` | The parts that differ between macOS, Windows and Linux (how tools are started, paths) |
+| `npm run test:ui-smoke` | Starts the UI with `npm run ui` and calls the routes that load the agent modules (input validation, key check); CI runs it on Windows from a folder with spaces on a J: drive |
 | `npm run test:e2e` | Whole agent with `FAKE_MODEL=1` (no key) for both frameworks against the local API, then `npm install` and `npm test` in each exported project |
 
 ## License
