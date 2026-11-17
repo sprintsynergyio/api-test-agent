@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { nodeBin } from '../node-bin';
 import { testEnv } from './test-env';
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
@@ -19,7 +20,7 @@ function runPlaywright(inputFile: string, specFiles: string[] | undefined, worke
   // --workers overrides the config's 1. Spec paths restrict the run to the endpoints in scope.
   const args = ['test', '-c', 'playwright.generated.config.ts', '--workers', String(workers), ...(specFiles ?? [])];
   return new Promise((resolve, reject) => {
-    const child = spawn('node_modules/.bin/playwright', args, {
+    const child = spawn(...nodeBin('playwright', args), {
       // The tests read their auth value from .env through the ctx file; the Claude API key never reaches them.
       env: testEnv(inputFile),
       stdio: ['ignore', 'inherit', 'inherit'],
@@ -96,11 +97,7 @@ function filesUnder(dir: string): string[] {
 // Builds the Allure HTML report from the raw results. Never fails the run: returns the reason instead.
 function generateAllure(reportName: string, secrets: string[], cleanError: (text: string) => string): { dir: string | null; reason?: string } {
   if (!existsSync(ALLURE_RESULTS)) return { dir: null, reason: `${ALLURE_RESULTS} was not written` };
-  const res = spawnSync(
-    'node_modules/.bin/allure',
-    ['generate', ALLURE_RESULTS, '--output', ALLURE_REPORT, '--report-name', reportName],
-    { encoding: 'utf8', timeout: 120_000 },
-  );
+  const res = spawnSync(...nodeBin('allure', ['generate', ALLURE_RESULTS, '--output', ALLURE_REPORT, '--report-name', reportName]), { encoding: 'utf8', timeout: 120_000 });
   if (res.error || res.status !== 0) {
     const detail = res.error?.message ?? `${res.stderr}${res.stdout}`.trim().split('\n')[0];
     return { dir: null, reason: cleanError(`allure exited with ${res.status}: ${detail}`) };

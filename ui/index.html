@@ -1247,7 +1247,9 @@
       const { exitCode, runId } = JSON.parse(ev.data);
       stopTimer();
       setRunning(false);
+      // Agent exit codes (README "Exit codes"): 0 clean, 1 findings, 2 tool or setup error.
       if (exitCode === 0) { setPhase(4); setPill("done", "Run complete"); }
+      else if (exitCode === 1) { setPhase(4); setPill("done", "Run complete, findings reported"); }
       else {
         document.querySelectorAll(".step.active").forEach((el) => { el.classList.remove("active"); el.classList.add("failed"); });
         setPill("error", "Run ended with errors");
@@ -1786,7 +1788,7 @@
     ];
     renderEps();
     $("cMsg").className = "hint";
-    $("cMsg").textContent = "The built-in demo shop (npm run api:local). Its token is Bearer hackathon-demo-token.";
+    $("cMsg").textContent = "The built-in demo shop (npm run api:local). Its token is Bearer local-shop-demo-token.";
   });
 
   // Builds the input JSON from the form. Auth values typed in the form travel with this run only.

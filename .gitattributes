@@ -1,0 +1,5 @@
+# Keep LF everywhere so the code that reads its own source files (exports, templates) and the
+# tests behave the same on Windows checkouts.
+* text=auto eol=lf
+*.png binary
+*.zip binary

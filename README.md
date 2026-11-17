@@ -4,6 +4,8 @@
 
 Give the agent a base URL and a list of API endpoints, and it writes an API test suite in Playwright or Pactum, runs it, and reports suspected API bugs. It first calls each endpoint once to see how the API really responds. Then a model (Claude or OpenAI) plans the test cases (happy path, response schema, invalid input, missing auth, wrong role) and writes one spec file per endpoint. Each file must pass a static gate before it is kept. The suite runs and every failure is classified. The result is a standalone test project you can download and run anywhere.
 
+API Test Agent is a SprintSynergy product, built and maintained by [SprintSynergy](https://sprintsynergy.com).
+
 **New to the repo? Team setup: see [docs/TEAM-SETUP.md](docs/TEAM-SETUP.md).** Clone, `npm ci`, `npm run ui`, paste a model API key once, run.
 
 ## What it does today
@@ -12,25 +14,27 @@ Give the agent a base URL and a list of API endpoints, and it writes an API test
 - Importers: OpenAPI or Swagger, Postman, cURL, HAR, ticket text. Credentials are dropped on import.
 - Inputs for real APIs: nested paths with several ids, query parameters, per-endpoint headers, and a profile block for environments, brands and regions (`--select env=staging,brand=alpha,region=eu`), so one export serves every combination.
 - Auth: fixed header, API key in the query string, cookie, or a login call that fetches a token (cached, refreshed once on 401), plus extra roles for permission tests (`[authz]`).
+- Prompt safety: API responses, imported specs and ticket text go to the model inside marked untrusted-data blocks with an instruction to treat them as data only, and the test process never sees the model provider keys (`.env` is parsed into a private object, only the auth variables the input names are used).
 - Redaction before anything reaches the model: emails, phones, card numbers, tokens, IPs and secret-looking fields are replaced; optional field list and a strict mode that keeps only the shape.
-- Test data cleanup: every record the tests create is deleted at the end, through the same guarded client.
-- Production safety guard: production hosts are refused unless you say so, and then run read-only. Local, private and `staging`-style hosts run in full.
+- Test data cleanup: after each test (and after the probe), the records it made through `ctx.createResource` / `ctx.setup`, and its own 2xx POSTs, are deleted through the same guarded client, when the input has a DELETE for them (matched by path, or `setup.cleanup`). Without one they are counted as `no delete endpoint`, and a DELETE that fails is counted as `failed`, in `summary.json` `cleanup`; nothing is hidden, but nothing is retried either.
+- Production safety guard: production hosts are refused unless you say so, and then run read-only. Local, private and `staging`-style hosts run in full. Loopback (127/8), link-local (169.254/16), CGNAT (100.64/10) and private IPv6 count as local; a host name is also resolved, and one that points at a local address never gets looser rules by DNS.
 - Model providers: Claude (API key or your Claude Code login) or OpenAI. Set once from the UI on your own machine.
 - Eval harness: a local demo API with planted bugs and `npm run eval` to measure detection, false alarms and flakiness per provider.
 - Hosted mode for a shared server: login, per-user runs, rate limits, local hosts refused. See [docs/HOSTING.md](docs/HOSTING.md).
+- Showing it to someone: [docs/DEMO.md](docs/DEMO.md).
 - Plan and open items: [docs/ROADMAP.md](docs/ROADMAP.md). Rules for changing the code: `CLAUDE.md`.
 
 ## Requirements
 
-- Node 20 or newer.
+- Node 22 or newer, on macOS, Windows or Linux. CI runs every offline suite and a full end-to-end run on all three (Node 22 and 24).
 - A Claude or OpenAI API key, or a Claude Code login, if you want the agent to generate tests. Typechecking, the offline test suites and the hand-written template tests do not need a key. See [Model providers](#model-providers) for which one is used when several are set and what each costs.
 
 ## Setup
 
-1. Install Node 20+.
+1. Install Node 22+.
 2. `npm ci` (Playwright browsers are not needed, the tests only use Playwright's API client).
 3. Start the UI (`npm run ui`, http://localhost:3000). The first screen asks for a Claude or OpenAI API key, checks it, and saves it to `.env` on your machine. If Claude Code is installed and logged in, no key is needed and the card does not appear.
-4. `.env` also holds the auth values your input files name (for the kit: `API_AUTH_VALUE` for Restful Booker, `LOCAL_API_AUTH_VALUE` for the local shop API; copy them from `.env.example`). `MAX_CLAUDE_CALLS` caps model calls per run (default 60, about 2 per endpoint; `--budget N` overrides it for one run). `LLM_MODEL` is optional.
+4. `cp .env.example .env`. `.env` holds the auth values your input files name; `.env.example` already has the public demo values (`API_AUTH_VALUE` for Restful Booker's documented admin login, `LOCAL_API_AUTH_VALUE` for the local shop API), so the demos work as they are. `MAX_CLAUDE_CALLS` caps model calls per run (default 60, about 2 per endpoint; `--budget N` overrides it for one run). `LLM_MODEL` is optional and applies to the API key and the Claude Code paths. Model calls that get HTTP 429 or a 5xx are retried with backoff (`MODEL_RETRIES`, default 3).
 5. Check it works: `npm run typecheck` and `npm run test:template` (4 tests against Restful Booker).
 
 ## Run it
@@ -73,6 +77,18 @@ npm run ui            # then open http://localhost:3000
 - **Build** tab: enter a name, base URL, auth (header, query parameter, cookie or a login call, plus optional roles for permission tests) and endpoints in a form. A header, query or cookie value typed here is passed to that one run through an environment variable and is never written to disk; login credentials and role values are read from `.env`. **Save as input file** stores the config (without any auth value) in `input/<name>.json`.
 - **Import** tab: pick a **Source** to import the endpoints (see Importers).
 - **Run options**: the framework (Playwright or Pactum) and redaction (standard or strict, plus extra fields to hide).
+
+### Exit codes
+
+`npm run agent` exits with a code a CI pipeline can act on, in the same style as the other SprintSynergy tools:
+
+| Code | Meaning |
+|---|---|
+| `0` | The run completed and nothing fails it: no failed tests, or `--fail-on none` |
+| `1` | Findings: at least one failed test (a suspected API finding or a failure that needs review), with `--fail-on finding` (the default) |
+| `2` | Tool or setup error: bad input or flags, a refused host, no model set up, no tests generated, a budget stop, an endpoint that could not be tested, a failed framework export, or a crash |
+
+`--fail-on none` still reports every finding in the console and `out/summary.json`; only the exit code changes. `out/summary.json` is written before the framework export and holds `exitCode`, `failOn` and, when the export failed, `frameworkError`, so a failed export never loses the results.
 
 ## Importers
 
@@ -164,6 +180,7 @@ Every generated spec must pass the static gate (`agent/validate.ts`) before it i
 - No `process.env` in tests: everything comes from the `ctx` fixture.
 - Assert status codes, field presence and field types. Assert exact values only for data the test itself sent.
 - Nothing hides errors: no `test.only`, no `test.skip`, no empty or swallowing `catch`, no `.catch()`.
+- Generated code is untrusted: the only import allowed is the ctx file, and the gate rejects `require`, dynamic `import()`, `eval`, `Function`, `process`, `globalThis`, `fetch`, Node built-in modules (`child_process`, `fs`, `net`, `http`, ...) and any Playwright fixture other than `ctx`. Every request goes through `ctx`, so the safety guard sees it.
 - Never expect a 5xx. A 5xx on bad input fails the test, and that is reported as a suspected API bug. Expectations are never changed to match a bug.
 - Every test title starts with its type (`[happy]`, `[schema]`, `[invalid-input]`, `[auth]`), records the real status before asserting, and the file must typecheck.
 
@@ -194,7 +211,9 @@ All numbers below come from runs on a developer Mac with Claude (`claude-sonnet-
 | `npm run api:local:fixed` | Local shop API with the bugs fixed |
 | `npx tsx agent/try-one.ts <input> <endpointId>` | Plan and generate one endpoint |
 | `npm run -s import <type> < file` | Import endpoints from Postman, OpenAPI, cURL, HAR or text (see Importers) |
-| `npm run test:importers` | Importer tests against `test-fixtures/importers/` (makes 2 live Claude calls) |
+| `npm run test:importers` | Importer tests against `test-fixtures/importers/`, offline; the 2 live text-importer tests run only with `RUN_LIVE_CLAUDE_TESTS=1` and a model |
+| `npm run test:platform` | The parts that differ between macOS, Windows and Linux (how tools are started, paths) |
+| `npm run test:e2e` | Whole agent with `FAKE_MODEL=1` (no key) for both frameworks against the local API, then `npm install` and `npm test` in each exported project |
 
 ## License
 

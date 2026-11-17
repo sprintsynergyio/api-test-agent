@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { nodeBin } from './node-bin';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -19,7 +20,29 @@ export type ValidateOptions = {
   planTypes: string[];
   // The probe status. happy and schema tests must assert exactly this status.
   probeStatus: number | null;
+  // Did the probe get a response body? false (or a 204, 205 or 304 probe status) lifts the body-assertion
+  // rule for [happy] and [schema] tests; anything else keeps it.
+  probeHasBody?: boolean;
+  // Required response fields from the documented response schema (endpoint.responseSchema). Every
+  // [schema] test must assert each one.
+  requiredFields?: string[];
 };
+
+const NO_BODY_STATUSES = [204, 205, 304];
+
+// Names of variables that hold a parsed response body, e.g. const body = (await response.json()) as X;
+function bodyVariables(code: string): string[] {
+  return [...code.matchAll(/\b(?:const|let|var)\s+(\w+)(?:\s*:\s*[^=]+)?\s*=\s*\(?\s*await\s+[\w.]+\.(?:json|text)\(\)/g)].map((m) => m[1]);
+}
+
+// An assertion about the body itself, not only that a body exists: expect(body.name).toBe(...),
+// expect(typeof body.id).toBe('number'), expect(Array.isArray(body)).toBe(true), expect(body).toHaveProperty('id').
+const EXISTENCE_ONLY = new Set(['toBeDefined', 'toBeTruthy', 'toBeNull', 'toBeUndefined', '']);
+function isBodyAssertion(call: ExpectCall, bodyVars: string[]): boolean {
+  const usesBody = /\.(?:json|text)\(\)/.test(call.arg) || bodyVars.some((v) => new RegExp(`(?<![.\\w$])${v}\\b`).test(call.arg));
+  if (!usesBody) return false;
+  return !EXISTENCE_ONLY.has(call.matcher);
+}
 
 function matchingParen(code: string, open: number): number {
   let depth = 0;
@@ -95,7 +118,7 @@ function statusAssertion(call: ExpectCall, statusVars: string[]): StatusAssertio
 
 // Per test type, the only status assertions allowed and the ones that must be there.
 // A test that checks something weaker, or the wrong thing, would pass against a broken API.
-function checkTypeRules(type: CaseType, title: string, body: string, code: string, probeStatus: number | null, reasons: string[]) {
+function checkTypeRules(type: CaseType, title: string, body: string, code: string, probeStatus: number | null, reasons: string[], probeHasBody = true, requiredFields: string[] = []) {
   const statusVars = statusVariables(code);
   const found = expectCalls(body)
     .map((call) => ({ call, a: statusAssertion(call, statusVars) }))
@@ -112,6 +135,21 @@ function checkTypeRules(type: CaseType, title: string, body: string, code: strin
     }
     if (!found.some(({ a }) => a.kind === 'exact' && a.code === probeStatus)) {
       reasons.push(`[${type}] test "${title}": must assert expect(response.status()).toBe(${probeStatus})`);
+    }
+    // A status check alone passes against an API that answers 200 with the wrong body.
+    const bodyVars = bodyVariables(body);
+    if (probeHasBody && !NO_BODY_STATUSES.includes(probeStatus) && !expectCalls(body).some((c) => isBodyAssertion(c, bodyVars))) {
+      reasons.push(`[${type}] test "${title}": must assert something about the response body (a field value or type, e.g. expect(typeof body.id).toBe('number')), not only the status`);
+    }
+    if (type === 'schema' && probeHasBody && requiredFields.length) {
+      const asserted = expectCalls(body).map((c) => c.arg).join('\n');
+      const missing = requiredFields.filter((f) => {
+        const esc = f.replace(/[$]/g, '\\$');
+        return !new RegExp(`\\.${esc}\\b|\\[\\s*['"\`]${esc}['"\`]\\s*\\]`).test(asserted) && !new RegExp(`toHaveProperty\\(\\s*['"\`]${esc}['"\`]`).test(body);
+      });
+      if (missing.length) {
+        reasons.push(`[${type}] test "${title}": must assert every required field of the documented response schema; missing: ${missing.join(', ')}`);
+      }
     }
   }
 
@@ -250,7 +288,7 @@ function typecheck(code: string, name: string): string | null {
       join(TSCHECK_DIR, 'tsconfig.json'),
       JSON.stringify({ extends: '../tsconfig.json', include: [], files: [`${name}.spec.ts`] }),
     );
-    const res = spawnSync('node_modules/.bin/tsc', ['-p', join(TSCHECK_DIR, 'tsconfig.json')], { encoding: 'utf8' });
+    const res = spawnSync(...nodeBin('tsc', ['-p', join(TSCHECK_DIR, 'tsconfig.json')]), { encoding: 'utf8' });
     if (res.status === 0) return null;
     return `${res.stdout}${res.stderr}`.trim().slice(0, 1500) || `tsc exited with ${res.status}`;
   } finally {
@@ -266,10 +304,13 @@ export type GateRules = {
   frameworkRules: (code: string) => string[];
   // Imported helpers that record the actual status (local helpers containing 'actual-status' are found automatically).
   statusRecorders?: string[];
+  // The only module a generated spec may import: the framework's ctx file. Anything else is rejected.
+  allowedImport: RegExp;
 };
 
 const PLAYWRIGHT_RULES: GateRules = {
   testFn: 'test',
+  allowedImport: /^(?:\.\.?\/)+(?:tests\/)?fixtures\/ctx(?:\.ts)?$/,
   frameworkRules(code) {
     const reasons: string[] = [];
     const imp = code.match(/import\s*\{([^}]*)\}\s*from\s*['"](?:\.\.?\/)+(?:tests\/)?fixtures\/ctx(?:\.ts)?['"]/);
@@ -280,9 +321,67 @@ const PLAYWRIGHT_RULES: GateRules = {
     if (/@playwright\/test/.test(code)) reasons.push('imports from @playwright/test directly instead of the ctx fixture');
     if (/\btest(?:\.describe)?\.only\b/.test(code)) reasons.push('contains test.only');
     if (/\btest(?:\.describe)?\.skip\b/.test(code)) reasons.push('contains test.skip');
+    // Playwright's own fixtures (request, page, browser, context, playwright) are clients outside the
+    // guarded ctx: a test may only take { ctx }.
+    for (const m of code.matchAll(/\basync\s*\(\s*\{([^}]*)\}/g)) {
+      const names = m[1].split(',').map((n) => n.trim().split(':')[0].trim()).filter(Boolean);
+      const other = names.filter((n) => n !== 'ctx');
+      if (other.length) reasons.push(`uses Playwright fixtures other than ctx (${other.join(', ')}); every request must go through ctx`);
+    }
     return reasons;
   },
 };
+
+// Generated code is model output built from API responses and imported text, so it is untrusted: a spec
+// may only call the API through ctx. Anything that reaches the machine (modules, the process, the file
+// system, the network outside ctx, code built from strings) is rejected, wherever it appears.
+const NB = String.raw`(?<![.\w$])`; // not a property access: body.process or ctx.api.fetch stay allowed
+// Identifier rules run on the code with string contents and comments blanked, so a test title like
+// "[happy] starts the process" is not a match; rules about strings run on the raw code.
+const UNSAFE_CODE: [RegExp, string, 'code' | 'raw'][] = [
+  [new RegExp(String.raw`${NB}require\s*\(`), 'calls require()', 'code'],
+  [/\bimport\s*\(/, 'uses a dynamic import()', 'code'],
+  [/\bimport\s*\.\s*meta\b/, 'uses import.meta', 'code'],
+  [new RegExp(String.raw`${NB}eval\s*\(`), 'calls eval()', 'code'],
+  [new RegExp(String.raw`\bnew\s+Function\b|${NB}Function\s*\(`), 'builds a function from a string (Function)', 'code'],
+  [/\bconstructor\s*\.\s*constructor\b|\[\s*['"`]constructor['"`]\s*\]|__proto__/, 'reaches a constructor or prototype (a way to build code from strings)', 'raw'],
+  [new RegExp(String.raw`${NB}(?:setTimeout|setInterval|setImmediate)\s*\(\s*['"\x60]`), 'passes a string to a timer (runs it as code)', 'raw'],
+  [new RegExp(String.raw`${NB}(?:globalThis|global|window|self)\s*(?:\??\.|\[)|\bglobalThis\b`), 'uses the global object', 'code'],
+  [new RegExp(String.raw`${NB}process\b(?!\s*:)`), 'uses process', 'code'],
+  [new RegExp(String.raw`${NB}(?:Deno|Bun)\s*(?:\??\.|\[)`), 'uses a runtime global', 'code'],
+  [new RegExp(String.raw`${NB}fetch\s*\(|\bXMLHttpRequest\b|\bWebSocket\b|\bEventSource\b`), 'sends a request outside ctx (fetch, XMLHttpRequest, WebSocket)', 'code'],
+  [/\bnewContext\s*\(/, 'creates its own request context outside ctx', 'code'],
+  [/['"`](?:node:)?(?:child_process|fs|fs\/promises|net|http|https|http2|dgram|dns|tls|vm|worker_threads|cluster|inspector)['"`]/, 'names a Node built-in module (child_process, fs, net, http, ...)', 'raw'],
+  [/['"`]node:/, 'names a node: module', 'raw'],
+  [/\bchild_process\b|\bexecSync\b|\bspawnSync\b|\bexecFile(?:Sync)?\b/, 'mentions child_process or a process-spawning function', 'code'],
+];
+
+// Every static import, export-from and side-effect import must name the framework's ctx file.
+function importSpecifiers(code: string): string[] {
+  const specs: string[] = [];
+  for (const m of code.matchAll(/^\s*(?:import|export)\b[^'"`;]*?\bfrom\s*['"`]([^'"`]+)['"`]/gm)) specs.push(m[1]);
+  for (const m of code.matchAll(/^\s*import\s*['"`]([^'"`]+)['"`]/gm)) specs.push(m[1]);
+  return specs;
+}
+
+// The code with the contents of '...' and "..." strings and of comments blanked (template literals are
+// kept: their \${...} parts are code).
+function codeOnly(code: string): string {
+  return code
+    .replace(/'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"/g, "''")
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+}
+
+export function unsafeCodeReasons(code: string, allowedImport: RegExp): string[] {
+  const reasons: string[] = [];
+  const stripped = codeOnly(code);
+  for (const spec of importSpecifiers(code)) {
+    if (!allowedImport.test(spec)) reasons.push(`imports "${spec}"; a generated spec may only import the ctx file`);
+  }
+  for (const [re, why, on] of UNSAFE_CODE) if (re.test(on === 'raw' ? code : stripped)) reasons.push(`unsafe code: ${why}`);
+  return reasons;
+}
 
 // The Playwright gate.
 export function validateSpec(code: string, opts: ValidateOptions): ValidationResult {
@@ -295,6 +394,7 @@ export function validateWithRules(code: string, opts: ValidateOptions, rules: Ga
 
   reasons.push(...rules.frameworkRules(code));
   if (/process\.env/.test(code)) reasons.push('contains process.env');
+  reasons.push(...unsafeCodeReasons(code, rules.allowedImport));
   if (/https?:\/\//.test(code)) reasons.push('contains http:// or https://');
   checkCatches(code, reasons);
 
@@ -307,7 +407,7 @@ export function validateWithRules(code: string, opts: ValidateOptions, rules: Ga
     const body = code.slice(t.start, i + 1 < tests.length ? tests[i + 1].start : code.length);
     if (type) {
       testsPerType.set(type, (testsPerType.get(type) ?? 0) + 1);
-      checkTypeRules(type, t.title, body, code, opts.probeStatus, reasons);
+      checkTypeRules(type, t.title, body, code, opts.probeStatus, reasons, opts.probeHasBody ?? true, opts.requiredFields ?? []);
     }
     const annotationAt = Math.min(
       ...[body.indexOf('actual-status'), ...helpers.map((h) => body.search(new RegExp(`\\b${h}\\s*\\(`)))].filter((n) => n >= 0),

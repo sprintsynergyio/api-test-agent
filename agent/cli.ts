@@ -1,4 +1,7 @@
 import 'dotenv/config';
+import { claudeCommand } from './claude-bin';
+import { redactHomeFolders } from './home-paths';
+import { responseSchemaIssues } from './response-schema';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, join, sep } from 'node:path';
@@ -12,6 +15,8 @@ import { generateEndpoint } from './generate';
 import { planEndpoint, type Plan } from './plan';
 import { addCleanup, cleanupLine, emptyCleanup, type CleanupTotals } from './http';
 import { probeAll, type ProbeResult } from './probe';
+import { resolveHostAddresses } from './resolve-host';
+import { EXIT_ERROR, runExitCode, type FailOn } from './exit-codes';
 import { assessSafety, endpointAllowed, PRODUCTION_WRITES_WARNING, READ_ONLY_SKIP, refusalMessage, type Safety } from './safety';
 
 // Full pipeline: probe, plan, generate, run tests, summarize.
@@ -167,7 +172,7 @@ const PROJECT_ROOTS = [...new Set([process.cwd(), realpathSync(process.cwd())])]
 function relativePaths(text: string): string {
   let out = text;
   for (const root of PROJECT_ROOTS) out = out.split(root + sep).join('');
-  return out.replace(/(?:\/private)?\/(?:Users|home)\/[^/\s]+\//g, '~/');
+  return redactHomeFolders(out);
 }
 
 function cleanError(text: string, secrets: string[]): string {
@@ -181,7 +186,8 @@ function claudeCliProblem(): string | null {
   const hosted = hostedWithoutApiKeyProblem();
   if (hosted) return hosted;
   if (fakeModelEnabled() || usingApiKey()) return null;
-  const res = spawnSync('claude', ['--version'], { env: claudeEnv(), encoding: 'utf8', timeout: 30_000 });
+  const claude = claudeCommand();
+  const res = spawnSync(claude.command, [...claude.prefixArgs, '--version'], { env: claudeEnv(), encoding: 'utf8', timeout: 30_000, windowsHide: true });
   if ((res.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') return CLAUDE_NOT_FOUND;
   if (res.error || res.status !== 0) {
     const detail = res.error ? res.error.message : `exit code ${res.status}`;
@@ -207,10 +213,15 @@ function writeSummary(o: {
   redactionReplaced: number;
   cleanup: CleanupTotals;
   scope: Scope;
+  exitCode: number;
+  failOn: FailOn;
+  frameworkError?: string | null;
 }) {
-  const { status, inputFile, config, startedAt, states, outcomes, findings, framework, allureReport, secrets, safety, requestsSent, testFramework, redactionReplaced, cleanup, scope } = o;
+  const { status, inputFile, config, startedAt, states, outcomes, findings, framework, allureReport, secrets, safety, requestsSent, testFramework, redactionReplaced, cleanup, scope, exitCode, failOn } = o;
   const choice = modelChoice();
   const summary = {
+    // Bumped when a field changes meaning or is removed (adding a field does not bump it). ui/CONTRACT.md.
+    schemaVersion: 1,
     status,
     testFramework,
     model: { provider: choice.provider, model: choice.model, via: choice.via },
@@ -262,15 +273,29 @@ function writeSummary(o: {
         failed: mine.filter((o) => !o.passed).length,
         failureReason: s.failureReason === null ? null : cleanError(oneLine(s.failureReason), secrets),
         skippedReason: s.skippedReason,
+        // Where the probe response breaks the documented response schema; null without a schema, or
+        // when the probe status is not the documented one.
+        responseSchemaIssues: schemaIssuesFor(s),
       };
     }),
     findings,
     framework,
+    // Why the standalone framework is missing when its export failed; the rest of the summary still holds.
+    frameworkError: o.frameworkError ? cleanError(o.frameworkError, secrets) : null,
     allureReport,
+    // The process exit code (README "Exit codes") and the --fail-on setting that produced it.
+    exitCode,
+    failOn,
   };
   mkdirSync('out', { recursive: true });
   writeFileSync(SUMMARY_FILE, JSON.stringify(summary, null, 2) + '\n');
   return summary;
+}
+
+function schemaIssuesFor(s: EndpointState): string[] | null {
+  const doc = s.endpoint.responseSchema;
+  if (!doc || !s.probe || s.probe.status !== doc.status) return null;
+  return responseSchemaIssues(doc.schema, s.probe.body);
 }
 
 // Rule 4: a 5xx, or a 2xx where a rejection was expected (auth, authz, invalid-input), is an API finding.
@@ -356,7 +381,9 @@ async function main() {
   // AGENT_FORCE_PRODUCTION=1 (testing only) treats every host as production; it reaches the probe and,
   // through the environment, the Playwright run.
   const forceProduction = process.env.AGENT_FORCE_PRODUCTION === '1';
-  const safety = assessSafety(config, { forceProduction });
+  // The host name is resolved once: a name that points at this machine or a private network is marked,
+  // and refused in hosted mode, before any request (agent/safety.ts, resolved option).
+  const safety = assessSafety(config, { forceProduction, resolved: await resolveHostAddresses(config.baseUrl) });
   if (safety.mode === 'refused') {
     const message = refusalMessage(safety);
     console.log(message);
@@ -377,9 +404,11 @@ async function main() {
       redactionReplaced: 0,
       cleanup: emptyCleanup(),
       scope,
+      exitCode: EXIT_ERROR,
+      failOn: flags.failOn,
     });
     console.log(`Summary written to ${SUMMARY_FILE}`);
-    process.exitCode = 1;
+    process.exitCode = EXIT_ERROR;
     return;
   }
 
@@ -411,10 +440,12 @@ async function main() {
       redactionReplaced: 0,
       cleanup: emptyCleanup(),
       scope,
+      exitCode: EXIT_ERROR,
+      failOn: flags.failOn,
     });
     console.log('NO TESTS GENERATED');
     console.log(`Summary written to ${SUMMARY_FILE}`);
-    process.exitCode = 1;
+    process.exitCode = EXIT_ERROR;
     return;
   }
 
@@ -439,6 +470,7 @@ async function main() {
 
   console.log('=== PROBING ===');
   console.log(`safety: ${safety.hostClass} host, ${safety.mode} mode`);
+  if (safety.resolvesToLocal?.length) console.log(`safety note: ${safety.host} resolves to a local or private address (${safety.resolvesToLocal.join(', ')}); it keeps its ${safety.hostClass} rules`);
   console.log(`framework: ${fw.name}`);
   console.log(describeModelChoice());
   if (fakeModelEnabled()) console.log('model: FAKE_MODEL=1 test mode, no model is called');
@@ -465,6 +497,8 @@ async function main() {
   }
   for (const s of states) {
     if (s.probe && !s.probe.usable && !s.specFile) s.failureReason = `probe not usable: ${s.probe.status ?? s.probe.error}`;
+    const schemaIssues = schemaIssuesFor(s);
+    if (schemaIssues?.length) console.log(`${s.endpoint.id}: probe response differs from the documented schema: ${schemaIssues.slice(0, 3).join('; ')}${schemaIssues.length > 3 ? ` (+${schemaIssues.length - 3} more)` : ''}`);
     if (!s.skippedReason) record(s);
   }
 
@@ -494,7 +528,7 @@ async function main() {
       secrets,
       reportName: `${apiName(config, inputFile)} API tests`,
       cleanError: (t) => cleanError(t, secrets),
-      specFiles: written.map((s) => join('generated', s.specFile!)),
+      specFiles: written.map((s) => `generated/${s.specFile!}`),
       workers: flags.testWorkers,
     });
     for (const n of run.notes ?? []) console.log(n);
@@ -517,21 +551,36 @@ async function main() {
     .filter((o) => !o.passed)
     .map((o) => toFinding(o, states.find((s) => s.endpoint.id === o.endpointId)?.plan));
 
-  let framework: FrameworkInfo | null = null;
-  if (status !== 'no-tests') {
-    framework = fw.exportFramework({
-      config,
-      inputFile,
-      secrets,
-      // The export README lists endpoints without a spec with their reason, read-only skips included.
-      endpoints: states.map((s) => ({ ...s, failureReason: s.failureReason ?? s.skippedReason })),
-      findings: findings.filter((f) => f.classification === 'suspected API finding'),
-    });
-  }
-
   // The prompt-level pass (agent/claude.ts) counts what the structured redaction did not already hide.
   redactionReplaced += promptRedaction.replaced;
-  const summary = writeSummary({ status, inputFile, config, startedAt, states, outcomes, findings, framework, allureReport, secrets, safety, requestsSent, testFramework: fw.name, redactionReplaced, cleanup, scope });
+  const untested = states.filter((s) => s.failureReason !== null && !s.skippedReason).length;
+  const summaryInput = { status, inputFile, config, startedAt, states, outcomes, findings, allureReport, secrets, safety, requestsSent, testFramework: fw.name, redactionReplaced, cleanup, scope, failOn: flags.failOn };
+  let exitCode = runExitCode({ status, findings: findings.length, untestedEndpoints: untested, exportFailed: false, failOn: flags.failOn });
+  // The summary is written before the export, so a failed export never loses the run's results.
+  let summary = writeSummary({ ...summaryInput, framework: null, exitCode });
+
+  let framework: FrameworkInfo | null = null;
+  let frameworkError: string | null = null;
+  if (status !== 'no-tests') {
+    try {
+      // AGENT_TEST_EXPORT_FAIL=1 (testing only) makes the export fail, to prove the summary survives it.
+      if (process.env.AGENT_TEST_EXPORT_FAIL === '1') throw new Error('FRAMEWORK EXPORT FAILED: AGENT_TEST_EXPORT_FAIL=1 (testing only)');
+      framework = fw.exportFramework({
+        config,
+        inputFile,
+        secrets,
+        // The export README lists endpoints without a spec with their reason, read-only skips included.
+        endpoints: states.map((s) => ({ ...s, failureReason: s.failureReason ?? s.skippedReason })),
+        findings: findings.filter((f) => f.classification === 'suspected API finding'),
+      });
+    } catch (err) {
+      frameworkError = (err as Error).message;
+      console.log(`framework export failed: ${cleanError(oneLine(frameworkError), secrets)}`);
+    }
+    exitCode = runExitCode({ status, findings: findings.length, untestedEndpoints: untested, exportFailed: frameworkError !== null, failOn: flags.failOn });
+    summary = writeSummary({ ...summaryInput, framework, frameworkError, exitCode });
+  }
+  process.exitCode = exitCode;
 
   console.log('=== SUMMARY ===');
   if (status === 'no-tests') {
@@ -539,7 +588,7 @@ async function main() {
     for (const s of states) console.log(`  ${s.endpoint.id}: ${oneLine(s.failureReason ?? s.skippedReason ?? 'unknown')}`);
     if (budgetHit) console.log(BUDGET_HINT);
     console.log(`Summary written to ${SUMMARY_FILE}`);
-    process.exitCode = 1;
+    process.exitCode = EXIT_ERROR;
     return;
   }
   const t = summary.totals;
@@ -566,9 +615,10 @@ async function main() {
   console.log(`Summary written to ${SUMMARY_FILE}${htmlReport ? `, report in ${htmlReport}` : ''}`);
   if (allureReport) console.log(`allure report written to ${allureReport}`);
   if (framework) console.log(`framework written to ${framework.dir} (${framework.files.length} files)`);
+  console.log(`Exit code: ${exitCode}${flags.failOn === 'none' ? ' (--fail-on none)' : ''}`);
 }
 
 main().catch((err) => {
   console.error(`agent FAILED ${redact((err as Error).message)}`);
-  process.exit(1);
+  process.exit(EXIT_ERROR);
 });

@@ -1,4 +1,5 @@
 import { parseDocument } from 'yaml';
+import { liteSchemaFrom, type ResponseSchema } from '../response-schema';
 import {
   buildInput,
   ImportError,
@@ -268,8 +269,31 @@ export function importOpenApi(content: string): ImportResult {
         } else if (types.length) body = { unsupported: types[0] };
       }
 
+      // The documented success response: the lowest 2xx with a JSON schema.
+      let responseSchema: ResponseSchema | undefined;
+      const responses = isObj(op.responses) ? op.responses : {};
+      for (const code of Object.keys(responses).filter((c) => /^2\d\d$/.test(c)).sort()) {
+        const res = deref(responses[code]);
+        if (!isObj(res)) continue;
+        let schemaNode: unknown;
+        if (swagger) schemaNode = res.schema;
+        else if (isObj(res.content)) {
+          const types = Object.keys(res.content);
+          const jsonType = types.find((t) => t.split(';')[0].trim().toLowerCase() === 'application/json') ?? types.find((t) => /[/+]json\b/i.test(t));
+          if (jsonType) {
+            const media = deref(res.content[jsonType]);
+            schemaNode = isObj(media) ? media.schema : undefined;
+          }
+        }
+        const lite = schemaNode === undefined ? undefined : liteSchemaFrom(schemaNode, deref);
+        if (lite) {
+          responseSchema = { status: Number(code), schema: lite };
+          break;
+        }
+      }
+
       const url = `${origin}${prefix}${path}${query.length ? `?${query.join('&')}` : ''}`;
-      requests.push({ item: label, method, url, headers, body, credentials, requiresAuth });
+      requests.push({ item: label, method, url, headers, body, credentials, requiresAuth, ...(responseSchema ? { responseSchema } : {}) });
     }
   }
 

@@ -24,14 +24,14 @@
   "keywords": [],
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "test:template": "playwright test -c playwright.config.ts",
     "test:generated": "playwright test -c playwright.generated.config.ts",
     "typecheck": "tsc -p tsconfig.json",
     "api:local": "node local-api/server.mjs",
-    "api:local:fixed": "FIXED=1 node local-api/server.mjs",
+    "api:local:fixed": "cross-env FIXED=1 node local-api/server.mjs",
     "probe": "tsx agent/probe.ts",
     "agent": "tsx agent/cli.ts",
     "ui": "node ui/server.mjs",
@@ -39,6 +39,9 @@
     "import": "tsx agent/import.ts",
     "test:importers": "tsx agent/importers/importers.test.ts",
     "test:safety": "tsx agent/safety.test.ts",
+    "test:security": "tsx agent/security.test.ts",
+    "test:exit": "tsx agent/exit-codes.test.ts",
+    "test:platform": "tsx agent/platform.test.ts",
     "test:auth": "tsx agent/auth.test.ts",
     "test:http": "tsx agent/http.test.ts",
     "test:redact": "tsx agent/redact.test.ts",
@@ -46,8 +49,9 @@
     "test:gate": "tsx agent/validate.test.ts",
     "test:config": "tsx agent/config.test.ts",
     "test:gate:pactum": "tsx agent/frameworks/pactum.test.ts",
+    "test:response-schema": "tsx agent/response-schema.test.ts",
     "test:template:pactum": "cross-env INPUT_FILE=input/local-shop.json mocha --config .mocharc.pactum.json \"tests-pactum/template/*.spec.ts\"",
-    "test:generated:pactum": "mocha --config .mocharc.pactum.json 'generated/**/*.spec.ts'",
+    "test:generated:pactum": "mocha --config .mocharc.pactum.json \"generated/**/*.spec.ts\"",
     "test:eval": "tsx agent/eval/eval.test.ts",
     "eval": "tsx agent/eval/run.ts",
     "test:settings": "node ui/settings.test.mjs",
@@ -55,7 +59,8 @@
     "test:claude-api": "tsx agent/claude-api.test.ts",
     "ui:hash": "node ui/hash-password.mjs",
     "check:contract": "tsx agent/check-contract.ts",
-    "test:checkpoint": "tsx agent/checkpoint.test.ts"
+    "test:checkpoint": "tsx agent/checkpoint.test.ts",
+    "test:e2e": "node scripts/e2e-fake.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",

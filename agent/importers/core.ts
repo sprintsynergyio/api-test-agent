@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ConfigSchema, configProblems, zodProblems, type Config, type Endpoint, type Setup } from '../config';
+import type { ResponseSchema } from '../response-schema';
 
 // Shared importer logic. Each importer turns its source into RawRequest entries; buildInput turns them
 // into the input file shape (validated with the config schema), plus skipped items and warnings.
@@ -26,6 +27,7 @@ export type RawRequest = {
   credentials?: Credential[]; // found outside headers and query (Postman auth block, curl -u, ...)
   requiresAuth?: boolean; // stated by the source (OpenAPI security, text)
   unresolved?: string; // an unresolved variable the importer found in the URL, e.g. a shell $VAR
+  responseSchema?: ResponseSchema; // the documented success response (OpenAPI)
 };
 
 export type BuildOptions = {
@@ -358,6 +360,7 @@ type Kept = {
   requiresAuth: boolean;
   credentials: Credential[];
   extraHeaders: { name: string; value: string }[];
+  responseSchema?: ResponseSchema;
 };
 
 export function buildInput(requests: RawRequest[], opts: BuildOptions = {}): ImportResult {
@@ -412,6 +415,7 @@ export function buildInput(requests: RawRequest[], opts: BuildOptions = {}): Imp
       requiresAuth: Boolean(r.requiresAuth) || credentials.length > 0,
       credentials,
       extraHeaders,
+      ...(r.responseSchema ? { responseSchema: r.responseSchema } : {}),
     });
   }
 
@@ -446,6 +450,7 @@ export function buildInput(requests: RawRequest[], opts: BuildOptions = {}): Imp
       ...(Object.keys(query).length ? { query } : {}),
       ...(Object.keys(headers).length ? { headers } : {}),
       ...(k.body ? { body: k.body } : {}),
+      ...(k.responseSchema ? { responseSchema: k.responseSchema } : {}),
     };
   });
 

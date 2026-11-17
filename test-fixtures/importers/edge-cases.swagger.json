@@ -28,7 +28,7 @@
       "get": {
         "operationId": "getPet",
         "parameters": [{ "name": "petId", "in": "path", "required": true, "type": "integer" }],
-        "responses": { "200": { "description": "ok" } }
+        "responses": { "200": { "description": "ok", "schema": { "$ref": "#/definitions/NewPet" } } }
       },
       "delete": {
         "operationId": "deletePet",

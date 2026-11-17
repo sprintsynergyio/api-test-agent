@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { pactumAdapter } from './pactum';
+import type { ValidateOptions } from '../validate';
 
 // npm run test:gate:pactum: the Pactum static gate. Offline, no Claude, no API. Same shape as
 // agent/validate.test.ts: every "rejects" case would pass against a broken API if it got through.
@@ -57,14 +58,14 @@ const AUTHZ = `  it('[authz] delete-product rejects a viewer deleting another ro
 const ALL = ['happy', 'schema', 'invalid-input', 'auth'];
 const opts = (planTypes: string[] = ALL, probeStatus: number | null = 204) => ({ name: 'pactum-gate-test', planTypes, probeStatus });
 
-function rejects(name: string, code: string, reasonPart: string, o = opts()) {
+function rejects(name: string, code: string, reasonPart: string, o: ValidateOptions = opts()) {
   check(`rejects ${name}`, () => {
     const r = pactumAdapter.validate(code, o);
     assert.equal(r.ok, false, 'expected the gate to reject');
     assert.ok(r.reasons.some((x) => x.includes(reasonPart)), `expected a reason containing "${reasonPart}", got:\n${r.reasons.join('\n')}`);
   });
 }
-function accepts(name: string, code: string, o = opts()) {
+function accepts(name: string, code: string, o: ValidateOptions = opts()) {
   check(`accepts ${name}`, () => {
     const r = pactumAdapter.validate(code, o);
     assert.deepEqual(r.reasons, []);
@@ -73,6 +74,26 @@ function accepts(name: string, code: string, o = opts()) {
 }
 
 accepts('the template-style file with one test per type', spec([HAPPY, SCHEMA, INVALID, AUTH].join('\n\n')));
+
+// [happy] and [schema] must check the body, not only the status (unless the probe had no body).
+const list200 = (title: string, lines: string) => spec(`  it('${title}', async () => {
+    const response = await ctx.api.get('/products');
+    recordStatus(response.status());
+    expect(response.status()).toBe(200);
+${lines}
+  });`);
+rejects('a Pactum 200 [happy] test that only checks the status', list200('[happy] lists products', ''), 'must assert something about the response body', { ...opts(['happy'], 200), probeHasBody: true });
+accepts(
+  'a Pactum 200 [schema] test asserting every documented required field',
+  list200('[schema] lists products', "    const body = (await response.json()) as Record<string, unknown>[];\n    for (const item of body) {\n      expect(typeof item['id']).toBe('number');\n      expect(typeof item.name).toBe('string');\n    }\n    expect(Array.isArray(body)).toBe(true);"),
+  { ...opts(['schema'], 200), probeHasBody: true, requiredFields: ['id', 'name'] },
+);
+rejects(
+  'a Pactum [schema] test missing a documented required field',
+  list200('[schema] lists products', "    const body = (await response.json()) as Record<string, unknown>[];\n    expect(Array.isArray(body)).toBe(true);"),
+  'missing: id, name',
+  { ...opts(['schema'], 200), probeHasBody: true, requiredFields: ['id', 'name'] },
+);
 accepts(
   'the real Pactum template (import path as generated/ would have it)',
   readFileSync(pactumAdapter.templateFile, 'utf8').replace("'../setup/ctx'", "'../tests-pactum/setup/ctx'"),
@@ -174,6 +195,12 @@ rejects(
   'empty catch',
   opts(['happy']),
 );
+
+// Untrusted generated code (PR A), Pactum side: only the setup ctx file may be imported.
+rejects('a file that imports child_process', `import { execSync } from 'node:child_process';\n${spec(HAPPY)}`, 'may only import the ctx file', opts(['happy']));
+rejects('a file that reads the file system', spec(HAPPY.replace('recordStatus(response.status());', "recordStatus(response.status());\n    const fs = await import('fs');")), 'dynamic import()', opts(['happy']));
+rejects('a file that uses fetch', spec(HAPPY.replace('recordStatus(response.status());', "recordStatus(response.status());\n    await fetch('/x');")), 'outside ctx', opts(['happy']));
+rejects('a file that uses process', spec(HAPPY.replace('recordStatus(response.status());', 'recordStatus(response.status());\n    const d = process.cwd();')), 'uses process', opts(['happy']));
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

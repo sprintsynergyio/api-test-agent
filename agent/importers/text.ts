@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { callClaudeOutsideBudget, claudeBudget } from '../claude';
+import { untrusted, withUntrustedRule } from '../untrusted';
 import { ConfigSchema, zodProblems } from '../config';
 import { buildInput, ImportError, isCredentialHeader, isCredentialParam, type ImportResult, type RawRequest, type Skipped } from './core';
 
@@ -48,7 +49,7 @@ export function maskCredentials(text: string): { text: string; removed: string[]
   return { text: out, removed };
 }
 
-const SYSTEM = 'You extract HTTP API endpoints from tickets and wiki pages. You answer with one JSON object only, no prose.';
+const SYSTEM = withUntrustedRule('You extract HTTP API endpoints from tickets and wiki pages. You answer with one JSON object only, no prose.');
 
 function buildPrompt(text: string): string {
   return `Extract the HTTP API endpoints described in the text below, in this JSON shape (an API test agent's input file):
@@ -66,9 +67,7 @@ RULES:
 - If the text describes no endpoints, answer {"baseUrl":"","endpoints":[]}.
 
 TEXT:
-<<<
-${text}
->>>`;
+${untrusted('ticket-text', text)}`;
 }
 
 function extractJson(text: string): unknown {

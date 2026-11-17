@@ -20,7 +20,7 @@ async function check(name: string, fn: () => void | Promise<void>) {
 }
 
 const catalog = loadCatalog();
-const TOKEN = 'Bearer hackathon-demo-token';
+const TOKEN = 'Bearer local-shop-demo-token';
 
 function summary(findings: SummaryFinding[], extra: Partial<Summary> = {}): Summary {
   return {
@@ -153,7 +153,7 @@ type Api = { port: number; proc: ChildProcess; startLine: string };
 function startApi(env: Record<string, string>): Promise<Api> {
   return new Promise(async (resolve, reject) => {
     const port = await freePort();
-    const proc = spawn('node', ['local-api/server.mjs'], { env: { ...process.env, PORT: String(port), FIXED: '', BUGS: undefined, ...env } as NodeJS.ProcessEnv, stdio: ['ignore', 'pipe', 'pipe'] });
+    const proc = spawn(process.execPath, ['local-api/server.mjs'], { env: { ...process.env, PORT: String(port), FIXED: '', BUGS: undefined, ...env } as NodeJS.ProcessEnv, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
     const timer = setTimeout(() => reject(new Error(`API did not start: ${out}`)), 10_000);
     proc.stdout.on('data', (d) => {

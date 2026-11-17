@@ -14,12 +14,21 @@ concurrency:
 
 jobs:
   test:
-    name: Node ${{ matrix.node }}
-    runs-on: ubuntu-latest
+    name: ${{ matrix.os }} / Node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        node: [20, 22]
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node: [22, 24]
+    defaults:
+      run:
+        # Git Bash on Windows; every step only calls node and npm, so the commands themselves are the
+        # same on all three systems.
+        shell: bash
+    env:
+      LOCAL_API_AUTH_VALUE: Bearer local-shop-demo-token
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -27,38 +36,45 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
-      # Offline suites and the local Pactum template. Playwright template tests
-      # hit Restful Booker and are not run here.
+      # Offline suites. The Playwright template tests hit Restful Booker and are not run here.
       - run: npm run typecheck
+      - run: npm run test:platform
       - run: npm run test:config
       - run: npm run test:importers
       - run: npm run test:safety
+      - run: npm run test:security
+      - run: npm run test:exit
       - run: npm run test:auth
+      - run: npm run test:http
       - run: npm run test:redact
       - run: npm run test:cleanup
       - run: npm run test:gate
       - run: npm run test:gate:pactum
+      - run: npm run test:response-schema
       - run: npm run test:eval
       - run: npm run test:claude-api
       - run: npm run test:settings
-      - name: Pactum template tests
-        env:
-          LOCAL_API_AUTH_VALUE: Bearer hackathon-demo-token
+      - run: npm run test:ui
+      - run: npm run test:checkpoint
+      - name: Pactum template tests against the local API
         run: |
           mkdir -p reports/pactum
           node local-api/server.mjs &
           api_pid=$!
-          trap 'kill "$api_pid" 2>/dev/null || true' EXIT
-          for i in $(seq 1 30); do
-            if curl -sf http://127.0.0.1:4000/products >/dev/null; then
-              break
-            fi
-            if ! kill -0 "$api_pid" 2>/dev/null; then
-              echo "local API exited before it was ready"
-              exit 1
-            fi
-            sleep 1
-          done
-          curl -sf http://127.0.0.1:4000/products >/dev/null
-          npm run test:template:pactum
-      - run: npm audit --audit-level=high
+          node -e "
+            const until = Date.now() + 30000;
+            (async function wait() {
+              try { await fetch('http://127.0.0.1:4000/products'); process.exit(0); }
+              catch { if (Date.now() > until) { console.error('local API not ready'); process.exit(1); } setTimeout(wait, 500); }
+            })();"
+          status=0
+          npm run test:template:pactum || status=$?
+          kill "$api_pid" 2>/dev/null || true
+          exit $status
+      # The whole agent with FAKE_MODEL=1 (no model key) for both frameworks, then npm install and
+      # npm test in each exported project, outside the repo.
+      - name: End-to-end run, framework export, npm test in the export
+        run: npm run test:e2e
+      - name: npm audit
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 22
+        run: npm audit --audit-level=high

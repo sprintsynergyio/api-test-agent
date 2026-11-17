@@ -29,7 +29,7 @@ import path from "node:path";
 dotenv.config({ quiet: true, ...(process.env.ENV_FILE ? { path: path.resolve(process.env.ENV_FILE) } : {}) });
 import crypto from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { classifyHost, localRefusalMessage, refusalMessage, safetyMode } from "./host-class.mjs";
 
@@ -103,7 +103,9 @@ const ENV_EXAMPLE = path.join(ROOT, ".env.example");
 const CLI_FOUND = process.env.SKIP_CLI_DETECT === "1" ? false : detectClaudeCli();
 function detectClaudeCli() {
   try {
-    const r = spawnSync("claude", ["--version"], { encoding: "utf8", timeout: 15000, env: childEnvWithoutSecrets() });
+    // Windows: an npm install of Claude Code is a claude.cmd shim, which needs a shell to start; this
+    // fixed command has no user input, so the shell is safe here (the agent itself runs the CLI without one).
+    const r = spawnSync("claude", ["--version"], { encoding: "utf8", timeout: 15000, env: childEnvWithoutSecrets(), shell: process.platform === "win32", windowsHide: true });
     return !r.error && r.status === 0;
   } catch {
     return false;
@@ -152,7 +154,7 @@ const agentModules = {};
 async function agentModule(name) {
   if (!agentModules[name]) {
     const { tsImport } = await import("tsx/esm/api");
-    agentModules[name] = await tsImport(path.join(ROOT, "agent", `${name}.ts`), import.meta.url);
+    agentModules[name] = await tsImport(pathToFileURL(path.join(ROOT, "agent", `${name}.ts`)).href, import.meta.url);
   }
   return agentModules[name];
 }
@@ -511,8 +513,10 @@ function readBodyCapped(req, limit) {
 function runImport(type, content) {
   return new Promise((resolve) => {
     const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/AUTH/i.test(name)));
-    const child = spawn(path.join(ROOT, "node_modules", ".bin", "tsx"), ["agent/import.ts", type], {
+    const imp = nodeBin("tsx", "tsx", ["agent/import.ts", type]);
+    const child = spawn(imp.cmd, imp.args, {
       cwd: ROOT,
+      windowsHide: true,
       env: { ...env, FORCE_COLOR: "0", NO_COLOR: "1" },
     });
     let stdout = "";
@@ -520,7 +524,7 @@ function runImport(type, content) {
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGKILL");
+      killTree(child, "SIGKILL");
     }, IMPORT_TIMEOUT_MS);
     child.stdout.on("data", (d) => (stdout += d));
     child.stderr.on("data", (d) => (stderr += d));
@@ -562,13 +566,32 @@ function pushLine(line) {
   broadcast("log", clean);
 }
 
+// A dev dependency's command through the current Node binary (never node_modules/.bin, whose Windows .cmd
+// shims spawn() cannot start without a shell). Same rule as agent/node-bin.ts.
+function nodeBin(pkg, bin, args) {
+  const dir = path.join(ROOT, "node_modules", ...pkg.split("/"));
+  const meta = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8"));
+  const rel = typeof meta.bin === "string" ? meta.bin : meta.bin[bin];
+  return { cmd: process.execPath, args: [path.join(dir, rel), ...args] };
+}
+
+// Stops a child and everything it started. On Windows a signal only ends the direct child (tsx), so the
+// agent's own children (Node, Playwright, Mocha) are ended with taskkill /T.
+function killTree(child, signal = "SIGTERM") {
+  if (!child || child.exitCode !== null) return;
+  if (process.platform === "win32" && child.pid) {
+    spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+    return;
+  }
+  child.kill(signal);
+}
+
 function agentCommand() {
   if (process.env.AGENT_CMD) {
     const parts = process.env.AGENT_CMD.split(" ").filter(Boolean);
     return { cmd: parts[0], args: parts.slice(1) };
   }
-  const tsx = path.join(ROOT, "node_modules", ".bin", "tsx");
-  return { cmd: tsx, args: ["agent/cli.ts"] };
+  return nodeBin("tsx", "tsx", ["agent/cli.ts"]);
 }
 
 function startRun(job) {
@@ -578,6 +601,7 @@ function startRun(job) {
   fs.rmSync(SUMMARY, { force: true });
   const proc = spawn(cmd, [...args, job.inputPath], {
     cwd: ROOT,
+    windowsHide: true,
     // A custom auth value is passed to this run only, through the environment. It is never written to disk.
     // HOSTED (when set) is inherited, so the agent applies the hosted safety rules too.
     env: { ...process.env, FORCE_COLOR: "0", NO_COLOR: "1", ...(job.authValue ? { CUSTOM_API_AUTH: job.authValue } : {}), ...(job.selection ? { AGENT_SELECT: job.selection } : {}) },
@@ -591,7 +615,7 @@ function startRun(job) {
     let buf = "";
     stream.on("data", (chunk) => {
       buf += chunk.toString();
-      const parts = buf.split("\n");
+      const parts = buf.split(/\r?\n/);
       buf = parts.pop();
       parts.forEach(pushLine);
     });
@@ -604,7 +628,8 @@ function startRun(job) {
     pushLine(`UI: could not start the agent: ${err.message}`);
   });
   proc.on("close", (code) => {
-    run.exitCode = code ?? 1;
+    // A run killed by a signal has no code: that is a tool error (exit 2), never a clean run.
+    run.exitCode = code ?? 2;
     if (run.dir) {
       try {
         snapshotRun(run);
@@ -927,7 +952,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && p === "/api/stop") {
     if (!isRunning()) return json(res, 409, { error: "No run in progress" });
     if (LOGIN_REQUIRED && run.owner !== session.sid) return json(res, 403, { error: "This run belongs to another login" });
-    run.proc.kill("SIGTERM");
+    killTree(run.proc);
     pushLine("UI: run stopped by user");
     return json(res, 200, { stopped: true });
   }

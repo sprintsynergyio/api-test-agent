@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { nodeBin } from '../node-bin';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { ConfigSchema, configProblems, loadConfig } from '../config';
@@ -63,7 +64,7 @@ function lines(r: ImportResult): string[] {
 }
 
 function runCli(type: string, content: string) {
-  const res = spawnSync('node_modules/.bin/tsx', ['agent/import.ts', type], { input: content, encoding: 'utf8' });
+  const res = spawnSync(...nodeBin('tsx', ['agent/import.ts', type]), { input: content, encoding: 'utf8' });
   return { code: res.status, stdout: res.stdout, stderr: res.stderr };
 }
 
@@ -284,6 +285,14 @@ async function main() {
     const r = importOpenApi(fixture('local-shop.openapi.yaml'));
     assert.equal(r.input.name, 'local-shop-api');
     assertLikeLocalShop(r);
+    // The documented success responses come along (agent/response-schema.ts); DELETE documents none.
+    const byId = Object.fromEntries(r.input.endpoints.map((e) => [e.id, e.responseSchema]));
+    assert.equal(byId['get-products']?.status, 200);
+    assert.equal(byId['get-products']?.schema.type, 'array');
+    assert.deepEqual(byId['get-products']?.schema.items?.required, ['name', 'price', 'category', 'inStock', 'id', 'createdAt']);
+    assert.equal(byId['post-products']?.status, 201);
+    assert.equal(byId['get-products-id']?.schema.properties?.price?.type, 'number');
+    assert.equal(byId['delete-products-id'], undefined);
   });
 
   await check('Swagger 2.0: host + basePath, query api key, body from schema, skipped operations', () => {
@@ -297,6 +306,10 @@ async function main() {
     ]);
     // Required, non-readOnly properties only, with simple typed values.
     assert.deepEqual(r.input.endpoints[1].body, { name: 'string', kind: 'dog', owner: { email: 'user@example.com' }, tags: ['string'] });
+    // Swagger 2.0 response schema (responses.200.schema) with a $ref to definitions.
+    assert.equal(r.input.endpoints[2].responseSchema?.status, 200);
+    assert.equal(r.input.endpoints[2].responseSchema?.schema.type, 'object');
+    assert.ok(r.input.endpoints[2].responseSchema?.schema.required?.includes('name'));
     assert.deepEqual(skippedLines(r), [
       'uploadPhoto: non-JSON body (multipart/form-data)',
       'putStoreConfig: non-JSON body (application/xml)',

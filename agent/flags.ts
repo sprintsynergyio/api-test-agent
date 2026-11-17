@@ -16,7 +16,11 @@ export type AgentFlags = {
   concurrency: number;
   // Test workers (Playwright --workers; Pactum runs one at a time and says so).
   testWorkers: number;
+  // What makes the exit code 1: any finding (default) or nothing (findings are reported, exit 0).
+  failOn: FailOn;
 };
+
+import { FAIL_ON_VALUES, type FailOn } from './exit-codes';
 
 export const DEFAULT_CONCURRENCY = 3;
 export const MAX_CONCURRENCY = 8;
@@ -39,6 +43,7 @@ export function parseAgentFlags(argv: string[], defaultInput = 'input/endpoints.
     budget: null,
     concurrency: DEFAULT_CONCURRENCY,
     testWorkers: 1,
+    failOn: 'finding',
   };
   const positional: string[] = [];
   for (let i = 0; i < argv.length; i++) {
@@ -73,8 +78,14 @@ export function parseAgentFlags(argv: string[], defaultInput = 'input/endpoints.
       case '--test-workers':
         flags.testWorkers = intFlag('--test-workers', value(), 1, MAX_TEST_WORKERS);
         break;
+      case '--fail-on': {
+        const v = value();
+        if (!(FAIL_ON_VALUES as string[]).includes(v)) throw new Error(`--fail-on must be one of ${FAIL_ON_VALUES.join(', ')}, got "${v}"`);
+        flags.failOn = v as FailOn;
+        break;
+      }
       default:
-        if (arg.startsWith('--')) throw new Error(`unknown flag ${arg}. Known flags: --resume, --only-new, --endpoints a,b, --budget N, --concurrency N, --test-workers N, --select k=v`);
+        if (arg.startsWith('--')) throw new Error(`unknown flag ${arg}. Known flags: --resume, --only-new, --endpoints a,b, --budget N, --concurrency N, --test-workers N, --fail-on none|finding, --select k=v`);
         positional.push(arg);
     }
   }

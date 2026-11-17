@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { claudeCommand } from './claude-bin';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -211,27 +212,84 @@ function openaiUrl(): string {
   return base ? `${base}/v1/chat/completions` : OPENAI_URL;
 }
 
+// Retries for the model APIs: a 429 (rate limit) or a 5xx (529 is Anthropic's "overloaded") is tried
+// again with exponential backoff, honouring Retry-After; so is a network error. A timeout is not retried
+// (it already waited TIMEOUT_MS), and neither is any other 4xx. A retry is the same call, so it does not
+// count against MAX_CLAUDE_CALLS. MODEL_RETRIES (default 3) and MODEL_RETRY_BASE_MS (default 2000) tune it.
+export function retryableModelStatus(status: number): boolean {
+  return status === 429 || (status >= 500 && status <= 599);
+}
+const RETRY_MAX_DELAY_MS = 30_000;
+
+export function modelRetries(): number {
+  const n = Number(process.env.MODEL_RETRIES?.trim() || 3);
+  return Number.isInteger(n) && n >= 0 && n <= 10 ? n : 3;
+}
+
+// attempt 1 is the first retry. retryAfter: the Retry-After header (seconds or an HTTP date).
+export function retryDelayMs(attempt: number, retryAfter: string | null, now = Date.now(), random = Math.random): number {
+  const configuredBase = Number(process.env.MODEL_RETRY_BASE_MS?.trim() || 2000);
+  const base = Number.isFinite(configuredBase) && configuredBase >= 0 ? configuredBase : 2000;
+  if (retryAfter) {
+    const secs = Number(retryAfter);
+    const fromHeader = Number.isFinite(secs) ? secs * 1000 : Date.parse(retryAfter) - now;
+    if (Number.isFinite(fromHeader) && fromHeader >= 0) return Math.min(fromHeader, RETRY_MAX_DELAY_MS * 2);
+  }
+  const exp = Math.min(base * 2 ** (attempt - 1), RETRY_MAX_DELAY_MS);
+  return Math.round(exp / 2 + (exp / 2) * random()); // jitter: half to the full delay
+}
+
+async function postWithRetry(
+  url: string,
+  init: Omit<RequestInit, 'signal'>,
+  api: string,
+  fail: (what: string) => Error,
+  log: (line: string) => void,
+): Promise<{ res: Response; text: string }> {
+  const retries = modelRetries();
+  for (let attempt = 0; ; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetchImpl(url, { ...init, signal: controller.signal });
+    } catch (err) {
+      clearTimeout(timer);
+      if (controller.signal.aborted) throw fail(`${api} timed out after ${TIMEOUT_MS / 1000}s`);
+      if (attempt < retries) {
+        const wait = retryDelayMs(attempt + 1, null);
+        log(`${api} request failed (${(err as Error).message}), retry ${attempt + 1}/${retries} in ${(wait / 1000).toFixed(1)}s`);
+        await new Promise((r) => setTimeout(r, wait));
+        continue;
+      }
+      throw fail(`${api} request failed: ${(err as Error).message}`);
+    }
+    const text = await res.text().finally(() => clearTimeout(timer));
+    if (retryableModelStatus(res.status) && attempt < retries) {
+      const wait = retryDelayMs(attempt + 1, res.headers.get('retry-after'));
+      log(`${api} returned HTTP ${res.status}, retry ${attempt + 1}/${retries} in ${(wait / 1000).toFixed(1)}s`);
+      await new Promise((r) => setTimeout(r, wait));
+      continue;
+    }
+    return { res, text };
+  }
+}
+
 async function runClaudeApi(stepName: string, endpointId: string, system: string, user: string, counter: string, model: string): Promise<string> {
   const apiKey = process.env.ANTHROPIC_API_KEY as string;
   const started = Date.now();
   const fail = (what: string) => new Error(redact(`[claude] ${stepName} ${endpointId}: ${what}`));
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-  let res: Response;
-  try {
-    res = await fetchImpl(anthropicUrl(), {
+  const { res, text } = await postWithRetry(
+    anthropicUrl(),
+    {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': ANTHROPIC_VERSION },
       body: JSON.stringify({ model, max_tokens: API_MAX_TOKENS, system, messages: [{ role: 'user', content: user }] }),
-      signal: controller.signal,
-    });
-  } catch (err) {
-    clearTimeout(timer);
-    if (controller.signal.aborted) throw fail(`Messages API timed out after ${TIMEOUT_MS / 1000}s`);
-    throw fail(`Messages API request failed: ${(err as Error).message}`);
-  }
-  clearTimeout(timer);
-  const text = await res.text();
+    },
+    'Messages API',
+    fail,
+    (line) => console.log(redact(`[claude] ${stepName} ${endpointId}: ${line}`)),
+  );
   if (!res.ok) {
     let detail = text.slice(0, 300);
     try {
@@ -271,11 +329,9 @@ async function runOpenAiApi(stepName: string, endpointId: string, system: string
   const apiKey = process.env.OPENAI_API_KEY as string;
   const started = Date.now();
   const fail = (what: string) => new Error(redact(`[claude] ${stepName} ${endpointId}: ${what}`));
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-  let res: Response;
-  try {
-    res = await fetchImpl(openaiUrl(), {
+  const { res, text } = await postWithRetry(
+    openaiUrl(),
+    {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
@@ -286,15 +342,11 @@ async function runOpenAiApi(stepName: string, endpointId: string, system: string
           { role: 'user', content: user },
         ],
       }),
-      signal: controller.signal,
-    });
-  } catch (err) {
-    clearTimeout(timer);
-    if (controller.signal.aborted) throw fail(`Chat Completions API timed out after ${TIMEOUT_MS / 1000}s`);
-    throw fail(`Chat Completions API request failed: ${(err as Error).message}`);
-  }
-  clearTimeout(timer);
-  const text = await res.text();
+    },
+    'Chat Completions API',
+    fail,
+    (line) => console.log(redact(`[claude] ${stepName} ${endpointId}: ${line}`)),
+  );
   if (!res.ok) {
     let detail = text.slice(0, 300);
     try {
@@ -372,10 +424,9 @@ export async function verifyProviderKey(provider: Provider, key: string, model?:
   return result(true, null);
 }
 
-async function runClaudeCli(stepName: string, endpointId: string, system: string, user: string, counter: string): Promise<string> {
-  const cwd = mkdtempSync(join(tmpdir(), 'api-test-agent-'));
-  const env = claudeEnv();
-
+// The Claude Code CLI arguments. The model is the same choice as the API path: LLM_MODEL, else the
+// older CLAUDE_MODEL, else the CLI's own default.
+export function claudeCliArgs(system: string): string[] {
   const args = [
     '-p',
     '--output-format', 'json',
@@ -385,7 +436,16 @@ async function runClaudeCli(stepName: string, endpointId: string, system: string
     '--disable-slash-commands',
     '--no-session-persistence',
   ];
-  if (process.env.CLAUDE_MODEL) args.push('--model', process.env.CLAUDE_MODEL);
+  const model = configuredModel('anthropic');
+  if (model) args.push('--model', model);
+  return args;
+}
+
+async function runClaudeCli(stepName: string, endpointId: string, system: string, user: string, counter: string): Promise<string> {
+  const cwd = mkdtempSync(join(tmpdir(), 'api-test-agent-'));
+  const env = claudeEnv();
+
+  const args = claudeCliArgs(system);
 
   const started = Date.now();
   try {
@@ -395,7 +455,8 @@ async function runClaudeCli(stepName: string, endpointId: string, system: string
       stderr: string;
       timedOut: boolean;
     }>((resolve, reject) => {
-      const child = spawn('claude', args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
+      const claude = claudeCommand();
+      const child = spawn(claude.command, [...claude.prefixArgs, ...args], { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
       let stdout = '';
       let stderr = '';
       let timedOut = false;

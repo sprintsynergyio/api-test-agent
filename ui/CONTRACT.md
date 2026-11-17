@@ -353,3 +353,28 @@ On every run the summary also has:
   "Scope: <mode>[, endpoints a, b][, reused P probes, Q plans, N specs]".
 
 out/checkpoint.json itself (agent/checkpoint.ts) is not read by the UI.
+
+## 13. Exit codes and export result (additive)
+
+The agent's exit code is 0 (completed, nothing fails it), 1 (findings: at least one failed test, with
+`--fail-on finding`, the default) or 2 (tool or setup error: bad input or flags, refused host, no model,
+no tests, budget stop, an endpoint that could not be tested, a failed framework export, or a crash). The
+"done" event carries it; the page shows 0 and 1 as a completed run.
+
+`out/summary.json` also has `exitCode` (the same number), `failOn` ("finding" or "none") and
+`frameworkError` (null, or why the export failed; `framework` is then null). The summary is written
+before the framework export and rewritten after it, so a failed export never loses the run's results.
+The console's summary block ends with `Exit code: <n>`.
+
+## 14. Schema version, response schemas (additive)
+
+`out/summary.json` starts with `schemaVersion: 1`. It is raised only when a field changes meaning or is
+removed; new fields do not raise it, so a reader can accept any summary whose `schemaVersion` it knows.
+
+An endpoint in the input may carry `responseSchema: { status, schema }`: the documented success response
+(the OpenAPI importer fills it in; `schema` is a JSON Schema subset with `type`, `nullable`, `properties`,
+`required`, `items` and `enum`). Each summary endpoint then has `responseSchemaIssues`: `null` without a
+schema or when the probe status is not the documented one, else a list (at most 20) of
+`"<path>: <what>"` lines where the probe response breaks the schema (`[]` when it matches). The console
+prints one line per endpoint with issues.
+
