@@ -57,6 +57,9 @@ jobs:
       - run: npm run test:settings
       - run: npm run test:ui
       - run: npm run test:ui-smoke
+      # The page layout in headless Chromium at several widths and zoom levels (columns never overlap).
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:ui-layout
       - run: npm run test:checkpoint
       - run: npm run test:test-cases
       - run: npm run test:atlassian

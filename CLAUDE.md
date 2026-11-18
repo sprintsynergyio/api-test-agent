@@ -35,6 +35,7 @@ An agent that takes a base URL and a list of API endpoints, probes the real API,
 | `npm run test:eval` | eval harness tests, offline: the scorer, and every planted bug against a real local API (must stay all passed) |
 | `npm run test:claude-api` | Messages API and Chat Completions paths of `agent/claude.ts` with a fake fetch, plus `verifyProviderKey`: request shapes, error handling, keys never leak (must stay all passed) |
 | `npm run test:settings` | the UI's model settings routes against a fake provider server: verify, save to `.env`, restart reads it, read-only with a login (must stay all passed) |
+| `npm run test:ui-layout` | the UI layout in headless Chromium at 1920, 1440, 1280, 1101, 1100, 1024, 900, 768 and 390 px and at 1280 with 125% and 150% zoom: the input column and the pipeline/runs column never overlap, nothing sticks out of its card, no sideways scroll (must stay all passed) |
 | `npm run test:ui` | the UI's input validation, run history and evidence routes, offline, plus the page ids they rely on: every auth type and a profile through `/api/validate-input`, field paths for a bad input, `/api/runs` shape, `/api/evidence` path safety and per-login isolation (must stay all passed) |
 | `npm run check:contract` | checks `out/summary.json` against `ui/CONTRACT.md`, lists every problem, exit 1 on any |
 
