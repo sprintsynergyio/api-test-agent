@@ -204,6 +204,30 @@ Also done in the Phase 9 hardening PR: 429 handling in the shared HTTP layer (Re
 
 For a team that clones the repo and runs it on their own machines. Model provider adapter (Claude via API key or Claude Code login, OpenAI via Chat Completions), a first-launch settings card in the UI that verifies a key and writes it to `.env` (local machines only; shared servers refuse it), `docs/TEAM-SETUP.md`, `npm run eval -- --provider` to compare providers. Not yet: Grok or other providers, per-login keys on a shared server, a Docker image.
 
+## Test case sheets (built) and live Jira / Confluence (planned)
+
+Built: the team's manual test case sheet (CSV, TSV or XLSX upload, paste, `--test-cases`, or `testCases` in
+the input) becomes one test per row named `[ID] [type] Title`, with a traceability back-map
+(`out/traceability.csv` and `.xlsx`, the summary, Allure labels, the export). Jira and Confluence work
+through their CSV exports.
+
+Planned: reading cases straight from a Jira or Confluence link. What it needs:
+- **Auth.** An Atlassian API token (Cloud: email plus token, Basic auth; Data Center: a personal access
+  token) read from `.env` like every other credential (`JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`),
+  never typed into the page or stored in an input file, and redacted from logs.
+- **Jira import.** A JQL query or a filter id (`project = QA AND issuetype = Test`) through the REST search
+  API (`/rest/api/3/search/jql`, paged), mapping key, summary, description and custom fields to the sheet
+  columns. Xray and Zephyr Scale keep steps in their own APIs (Xray GraphQL, Zephyr Scale `testcases`),
+  so each needs its own small adapter and its own token.
+- **Confluence import.** A page id through `/wiki/api/v2/pages/{id}?body-format=storage`, then the first
+  table with recognised headers parsed from the storage format (the same column aliases as the sheet).
+- **Limits.** Atlassian rate limits (429 with Retry-After, reuse the existing backoff), a page and case cap
+  per run, and the same 1000-case limit as a sheet.
+- **Safety.** Only the configured Atlassian host is called, read-only scopes are enough, and the ticket text
+  is wrapped as untrusted input in every prompt, as the sheet cases are today.
+- **Optional write-back.** Posting results to Xray or Zephyr test executions would need write scopes and an
+  explicit opt-in per run; not planned for the first version.
+
 ## Not in scope (for now)
 
 - Performance and load testing.

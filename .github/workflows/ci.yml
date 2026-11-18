@@ -57,6 +57,7 @@ jobs:
       - run: npm run test:ui
       - run: npm run test:ui-smoke
       - run: npm run test:checkpoint
+      - run: npm run test:test-cases
       - name: Pactum template tests against the local API
         run: |
           mkdir -p reports/pactum
@@ -72,8 +73,8 @@ jobs:
           npm run test:template:pactum || status=$?
           kill "$api_pid" 2>/dev/null || true
           exit $status
-      # The whole agent with FAKE_MODEL=1 (no model key) for both frameworks, then npm install and
-      # npm test in each exported project, outside the repo.
+      # The whole agent with FAKE_MODEL=1 (no model key) for both frameworks and for the sample test case
+      # sheet, then npm install and npm test in each exported project, outside the repo.
       - name: End-to-end run, framework export, npm test in the export
         run: npm run test:e2e
       - name: npm audit
@@ -135,4 +136,5 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
           Run 'test:ui-smoke'
           Run 'test:ui'
+          Run 'test:test-cases'
           Run 'test:e2e'

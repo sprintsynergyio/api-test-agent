@@ -1,6 +1,7 @@
 // End-to-end check with no model key, on any OS (CI runs it on Linux, macOS and Windows):
 //   1. start the local demo API with its planted bugs
-//   2. run the whole agent (FAKE_MODEL=1) for the Playwright and the Pactum input; expect exit 1 (findings)
+//   2. run the whole agent (FAKE_MODEL=1) for the Playwright and the Pactum input, and for the sample test
+//      case sheet (Playwright with agent suggestions, Pactum with only the sheet); expect exit 1 (findings)
 //   3. restart the API with the bugs fixed
 //   4. copy each exported framework to a temp folder outside this repo, npm install, npm test; expect a pass
 // Usage: npm run test:e2e   (needs npm to start it: the exported projects are installed with the same npm)
@@ -18,10 +19,39 @@ if (!NPM) {
   console.error("Run this through npm (npm run test:e2e), so the exported projects use the same npm.");
   process.exit(2);
 }
+// The sample sheet (input/local-shop-test-cases.csv) against the planted bugs: TC-008 hits delete-no-auth,
+// TC-009 and the row without an ID name no endpoint of this API, TC-010 is too vague to automate.
+const SHEET_STATUS = {
+  "TC-001": "passed", "TC-002": "passed", "TC-003": "passed", "TC-004": "passed", "TC-005": "passed", "TC-006": "passed", "TC-007": "passed",
+  "TC-008": "failed", "TC-009": "not automated", "ROW-11": "not automated", "TC-010": "needs review",
+};
 const INPUTS = [
   { input: "input/local-shop.json", framework: "playwright" },
   { input: "input/local-shop-pactum.json", framework: "pactum" },
+  { input: "input/local-shop-sheet.json", framework: "playwright", sheet: "sheet-plus-agent" },
+  { input: "input/local-shop-pactum.json", framework: "pactum", sheet: "sheet-only", args: ["--test-cases", path.join("input", "local-shop-test-cases.csv"), "--test-cases-mode", "sheet-only"] },
 ];
+
+function checkSheetRun(label, summary, mode) {
+  const t = summary.testCases;
+  check(Boolean(t) && t.mode === mode && t.rows === 11, `${label}: summary.testCases has the 11 sheet rows in ${mode} mode`);
+  if (!t) return;
+  const got = Object.fromEntries((t.cases || []).map((c) => [c.id, c.status]));
+  for (const [id, status] of Object.entries(SHEET_STATUS)) check(got[id] === status, `${label}: ${id} is ${status} (got ${got[id]})`);
+  check(mode === "sheet-only" ? t.agentSuggestions === 0 : t.agentSuggestions > 0, `${label}: agent suggestions ${mode === "sheet-only" ? "off" : "on"} (${t.agentSuggestions})`);
+  const csv = fs.readFileSync(path.join(ROOT, "out", "traceability.csv"), "utf8");
+  check(csv.startsWith("ID,Title,Endpoint,Test file,Status,Reason\r\n") && csv.includes("TC-008,"), `${label}: out/traceability.csv written`);
+  const xlsx = fs.readFileSync(path.join(ROOT, "out", "traceability.xlsx"));
+  check(xlsx.readUInt32LE(0) === 0x04034b50, `${label}: out/traceability.xlsx written`);
+  const spec = fs.readFileSync(path.join(ROOT, "generated", "get-product.spec.ts"), "utf8");
+  check(spec.includes("[TC-005] [") && spec.includes("[TC-010] [needs-review]"), `${label}: generated test names carry the case IDs and the needs-review case`);
+  if (summary.framework?.dir) check(fs.existsSync(path.resolve(ROOT, summary.framework.dir, "traceability.csv")), `${label}: the exported framework has traceability.csv`);
+  if (summary.testFramework === "playwright") {
+    const dir = path.join(ROOT, "reports", "allure-results");
+    const labels = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith("-result.json")).flatMap((f) => JSON.parse(fs.readFileSync(path.join(dir, f), "utf8")).labels || []) : [];
+    check(labels.some((l) => l.name === "caseId" && l.value === "TC-001"), `${label}: Allure results carry the caseId label`);
+  }
+}
 
 function tsxEntry() {
   const dir = path.join(ROOT, "node_modules", "tsx");
@@ -71,9 +101,9 @@ let api = null;
 const exported = [];
 try {
   api = await startApi(false);
-  for (const { input, framework } of INPUTS) {
+  for (const { input, framework, sheet, args = [] } of INPUTS) {
     const env = { ...process.env, FAKE_MODEL: "1", LOCAL_API_AUTH_VALUE: TOKEN };
-    const code = run(process.execPath, [tsxEntry(), "agent/cli.ts", input], { cwd: ROOT, env });
+    const code = run(process.execPath, [tsxEntry(), "agent/cli.ts", input, ...args], { cwd: ROOT, env });
     check(code === 1, `${input}: agent exits 1 (findings against the planted bugs), got ${code}`);
     const summary = JSON.parse(fs.readFileSync(path.join(ROOT, "out", "summary.json"), "utf8"));
     check(summary.schemaVersion === 1, `${input}: summary.json schemaVersion is 1`);
@@ -85,8 +115,10 @@ try {
     check((summary.findings || []).length > 0, `${input}: summary.json lists findings (${(summary.findings || []).length})`);
     check(summary.testFramework === framework && Boolean(summary.framework?.dir), `${input}: ${framework} project exported (${summary.framework?.dir})`);
     check(Boolean(summary.framework?.zip) && fs.existsSync(path.resolve(ROOT, summary.framework.zip)), `${input}: framework zip written`);
+    if (sheet) checkSheetRun(`${input} (${sheet})`, summary, sheet);
+    else check(summary.testCases === null, `${input}: no test case sheet, summary.testCases is null`);
     if (summary.framework?.dir) {
-      const copy = fs.mkdtempSync(path.join(os.tmpdir(), `ata-e2e-${framework}-`));
+      const copy = fs.mkdtempSync(path.join(os.tmpdir(), `ata-e2e-${framework}${sheet ? "-sheet" : ""}-`));
       fs.cpSync(path.resolve(ROOT, summary.framework.dir), copy, { recursive: true });
       exported.push({ input, framework, dir: copy });
     }

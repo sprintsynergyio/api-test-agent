@@ -16,7 +16,8 @@ export function modelSource(): string {
 // export serves every environment, brand and region (AGENT_SELECT picks one at run time).
 // The safety flags are always written, so a team can see and change them.
 export function exportedConfig(name: string, config: Config): Record<string, unknown> {
-  const { name: _inputName, framework: _framework, allowProduction, allowWrites, selection: _selection, baseUrl, ...rest } = config;
+  // testCases names a sheet on the agent's machine; the export ships traceability.csv instead.
+  const { name: _inputName, framework: _framework, allowProduction, allowWrites, selection: _selection, baseUrl, testCases: _testCases, ...rest } = config;
   return {
     name,
     ...(config.profile ? {} : { baseUrl }),

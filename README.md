@@ -76,7 +76,7 @@ npm run ui            # then open http://localhost:3000
 - **Saved** tab: pick an input file from `input/` (or edit its JSON) and click **Generate tests**. Inputs with a profile get one dropdown per dimension; the page shows which `.env` variables the auth section reads. The log streams live, then the page shows the findings with their request and response evidence (**Copy as Jira ticket**, **Copy as Markdown**), the generated code, **Open Playwright report**, and **Download framework (.zip)**. **Recent runs** keeps the last 20.
 - **Build** tab: enter a name, base URL, auth (header, query parameter, cookie or a login call, plus optional roles for permission tests) and endpoints in a form. A header, query or cookie value typed here is passed to that one run through an environment variable and is never written to disk; login credentials and role values are read from `.env`. **Save as input file** stores the config (without any auth value) in `input/<name>.json`.
 - **Import** tab: pick a **Source** to import the endpoints (see Importers).
-- **Run options**: the framework (Playwright or Pactum) and redaction (standard or strict, plus extra fields to hide).
+- **Run options**: the framework (Playwright or Pactum), redaction (standard or strict, plus extra fields to hide), and an optional **Test cases** sheet to automate (see Test case sheets).
 
 ### Exit codes
 
@@ -112,6 +112,54 @@ npm run -s import postman < collection.json
 - A missing or relative base URL leaves `baseUrl` empty, and Generate stays disabled until you fill it in.
 - **Big imports.** Every imported endpoint is selected. Each costs about 2 model calls of the 60-call budget; above 50 endpoints the preview shows the estimate. A run that stops at the budget is continued from the terminal with `--resume` (see Run it).
 - Acceptance criteria in a ticket are not turned into tests yet.
+
+## Test case sheets
+
+Already have manual test cases in a spreadsheet? The agent automates exactly those: one test per row,
+named `[TC-ID] [type] Title`, so every result maps back to the sheet.
+
+In the UI: **Run options**, **Test cases**, then **Upload CSV or Excel** (or **Paste instead** and paste
+rows copied from Excel or Google Sheets). The preview shows how the columns were read, the row count and
+a warning per row (missing ID, unknown endpoint). **Download template CSV** gives a starting sheet.
+From the terminal:
+
+```
+npm run agent -- input/local-shop.json --test-cases input/local-shop-test-cases.csv --test-cases-mode sheet-only
+```
+
+or put it in the input file: `"testCases": { "file": "local-shop-test-cases.csv", "mode": "sheet-plus-agent" }`
+(the path is relative to the input file; see `input/local-shop-sheet.json`).
+
+- **Formats.** `.csv`, `.tsv`, `.txt` (comma, semicolon or tab), and `.xlsx` (the first sheet). Old `.xls`
+  files are refused; save as `.xlsx` or `.csv`.
+- **Columns** are matched by name, ignoring case and punctuation: **ID** (`Test Case ID`, `TC ID`, `Key`,
+  `Issue key`, ...), **Title** (`Summary`, `Name`, `Scenario`, ...), **Steps / Request** (`Steps`,
+  `Request`, `Description`, `Action`, ...), **Expected Result** (`Expected`, `Expected Outcome`, ...), and
+  optional **Endpoint**, **Method**, **Priority**, **Preconditions**, **Test Data**. Other columns are
+  ignored and listed. Step-per-row exports (Xray, Zephyr) work: a row with no ID and no title continues the
+  case above.
+- **Endpoint matching.** The Endpoint column first (an endpoint id, `GET /products/{id}`, a path or a URL),
+  then a `METHOD /path` line in the steps, then the model (one call per 25 unmatched cases, counted in the
+  run budget). A case that matches nothing is reported as **not automated** with the reason, never dropped.
+- **Modes.** **My test cases + agent suggestions** (default, `sheet-plus-agent`): your cases, plus the
+  agent's own cases for what the sheet does not cover, titled `[agent] [type] ...`; suggestions that repeat
+  a sheet case are dropped. **Only my test cases** (`sheet-only`): only your cases, and only the endpoints
+  they name are probed.
+- **The rules still apply.** Every test passes the static gate. A case whose steps or expected result are
+  too vague, that expects a 5xx, or that contradicts what the API answered when probed (for example the
+  sheet says 201 and the API returns 200) is not guessed at: it becomes a test marked **needs review**
+  (`test.fixme` in Playwright, a pending test in Pactum) with the reason. It never runs and never passes,
+  and it does not change the exit code.
+- **Traceability.** `out/traceability.csv` and `out/traceability.xlsx` list every row with ID, Title,
+  Endpoint, Test file, Status (passed, failed, needs review, not automated) and Reason, followed by the agent
+  suggestions. The UI shows the same table with download buttons, `out/summary.json` has `testCases`, the
+  Allure report labels each test with its case ID (`caseId` and a tag), and the exported framework and zip
+  include `traceability.csv`.
+- **Limits.** 5 MB, 1000 test cases, 100 columns and 4000 characters per cell. Excel files are read for
+  their stored values only: formulas are never run, links never followed.
+- **Jira and Confluence.** Live links are planned (see `docs/ROADMAP.md`). For now export the issues
+  (Jira: **Export > CSV**) or the Confluence table as CSV and upload or paste it. A pasted link is refused
+  with that hint.
 
 ## What you get
 

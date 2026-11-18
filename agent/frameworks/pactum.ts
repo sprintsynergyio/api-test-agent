@@ -281,7 +281,7 @@ const TSCONFIG = `{
 
 function countByType(spec: string): Record<(typeof TYPES)[number], number> {
   const counts = { happy: 0, schema: 0, 'invalid-input': 0, auth: 0, authz: 0 };
-  for (const m of spec.matchAll(/\bit\(\s*(['"`])\[(happy|schema|invalid-input|auth|authz)\]/g)) counts[m[2] as (typeof TYPES)[number]]++;
+  for (const m of spec.matchAll(/\bit\(\s*(['"`])(?:\[[^\]\n]{1,64}\]\s+)?\[(happy|schema|invalid-input|auth|authz)\]/g)) counts[m[2] as (typeof TYPES)[number]]++;
   return counts;
 }
 
@@ -433,6 +433,7 @@ export function exportPactumFramework(opts: ExportOptions): FrameworkInfo {
     write(join('tests', e.specFile), rewritten);
   }
   write('README.md', readme(name, config, endpoints, specs, findings));
+  for (const f of opts.extraFiles ?? []) if (/^[\w.-]+$/.test(f.path)) write(f.path, f.content);
 
   const files = listFiles(dir);
   const problems = checkSelfContained(dir, files);

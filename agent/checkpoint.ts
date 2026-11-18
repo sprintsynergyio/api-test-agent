@@ -26,6 +26,8 @@ export type EndpointCheckpoint = {
   specFile?: string;
   failureReason?: string;
   skippedReason?: string;
+  // Test case sheet runs: hash of this endpoint's sheet cases and the mode; a change re-plans it.
+  casesHash?: string;
 };
 
 export type Checkpoint = {
@@ -44,8 +46,13 @@ function sha(value: unknown): string {
 
 // The whole resolved input: a different base URL, auth section, framework or endpoint list is a
 // different run, so --resume starts fresh.
-export function inputHash(config: Config): string {
-  return sha(config);
+// extra: anything else that changes the run as a whole (the test case sheet's hash and mode).
+export function inputHash(config: Config, extra?: unknown): string {
+  return sha(extra === undefined ? config : { config, extra });
+}
+
+export function hashOf(value: unknown): string {
+  return sha(value);
 }
 
 // The parts of one endpoint that change what its tests look like.
@@ -62,9 +69,9 @@ export function endpointHash(endpoint: Endpoint): string {
   });
 }
 
-export function newCheckpoint(config: Config, inputFile: string, framework: string): Checkpoint {
+export function newCheckpoint(config: Config, inputFile: string, framework: string, extra?: unknown): Checkpoint {
   const now = new Date().toISOString();
-  return { version: VERSION, inputFile, inputHash: inputHash(config), framework, startedAt: now, updatedAt: now, endpoints: {} };
+  return { version: VERSION, inputFile, inputHash: inputHash(config, extra), framework, startedAt: now, updatedAt: now, endpoints: {} };
 }
 
 export function loadCheckpoint(file = CHECKPOINT_FILE): Checkpoint | null {

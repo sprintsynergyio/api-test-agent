@@ -93,6 +93,31 @@ if (isObj(s.scope)) {
 }
 
 const totals = isObj(s.totals) ? s.totals : {};
+
+// Test case sheet (section 15): null without a sheet; with one, the counts and the traceability rows.
+need(s.testCases === null || isObj(s.testCases), 'summary.testCases must be null or an object');
+if (isObj(s.testCases)) {
+  const tc = s.testCases;
+  field('summary.testCases', tc, 'file', ['string']);
+  field('summary.testCases', tc, 'mode', ['string'], ['sheet-only', 'sheet-plus-agent']);
+  field('summary.testCases', tc, 'format', ['string'], ['csv', 'tsv', 'xlsx']);
+  need(isObj(tc.columns), 'summary.testCases.columns is missing');
+  for (const k of ['rows', 'automated', 'passed', 'failed', 'needsReview', 'notAutomated', 'agentSuggestions']) need(isInt(tc[k]), `summary.testCases.${k} is not a count`);
+  field('summary.testCases', tc, 'warnings', ['array']);
+  need(isObj(tc.traceability), 'summary.testCases.traceability is missing');
+  const cases = Array.isArray(tc.cases) ? (tc.cases as Json[]) : [];
+  need(Array.isArray(tc.cases), 'summary.testCases.cases is not an array');
+  need(cases.length === tc.rows, 'summary.testCases.cases must list every sheet row');
+  for (const c of cases) {
+    if (!isObj(c)) continue;
+    field('summary.testCases.cases[]', c, 'id', ['string']);
+    field('summary.testCases.cases[]', c, 'status', ['string'], ['passed', 'failed', 'needs review', 'not automated']);
+    field('summary.testCases.cases[]', c, 'reason', ['string']);
+  }
+  const by = (st: string) => cases.filter((c) => isObj(c) && c.status === st).length;
+  need(by('passed') === tc.passed && by('failed') === tc.failed && by('needs review') === tc.needsReview && by('not automated') === tc.notAutomated, 'summary.testCases counts must match the case statuses');
+}
+
 need(isObj(s.totals), 'summary.totals is missing');
 for (const k of ['endpoints', 'testsGenerated', 'passed', 'failed']) need(isInt(totals[k]), `summary.totals.${k} is not a count`);
 

@@ -128,6 +128,7 @@ async function main() {
         "inputSel", "savedBase", "savedToken", "jsonBox", "epList", "runBtn", "stopBtn", "term", "epTable", "code", "copyBtn",
         "setupWrap", "setupProvider", "setupKey", "setupModel", "setupVerifyBtn", "setupSaveBtn", "modelStatus", "loginWrap", "mainGrid",
         "cName", "cBase", "cAuthValue", "cEps", "cAdd", "cSave", "cSource", "impText", "impBtn", "impUse",
+        "tcFile", "tcText", "tcMode", "tcPreview", "tcTemplate", "tcCard", "tcTable", "tcCsv", "tcXlsx",
       ]) assert.ok(html.includes(`id="${id}"`), `missing id ${id}`);
       assert.ok(html.includes('data-act="jira"'), "missing the Jira copy button");
       assert.ok(html.includes('data-act="md"'), "missing the Markdown copy button");
@@ -238,6 +239,63 @@ async function main() {
     const r1 = fakeRun(SUMMARY, { ageMs: 60000 });
     const r2 = fakeRun({ ...SUMMARY, testFramework: "pactum", findings: [] });
     made.push(r1.dir, r2.dir);
+    // ---- test case sheet ----
+    await check("POST /api/test-cases/preview maps the columns, counts the rows and warns per row", async () => {
+      const { status, body } = await api("POST", "/api/test-cases/preview", { name: "local-shop-test-cases.csv", content: read("input/local-shop-test-cases.csv"), json: read("input/local-shop.json") });
+      assert.equal(status, 200, JSON.stringify(body));
+      assert.equal(body.format, "csv");
+      assert.equal(body.count, 11);
+      assert.equal(body.matched, 8);
+      assert.equal(body.columns.id.header, "Test Case ID");
+      assert.ok(body.rows.find((r) => r.id === "ROW-11").warnings.some((w) => /missing ID/.test(w)));
+      assert.ok(body.rows.find((r) => r.id === "TC-007").warnings.some((w) => /unknown endpoint/.test(w)));
+    });
+    await check("POST /api/test-cases/preview reads an .xlsx upload and refuses a link and a bad sheet", async () => {
+      const x = await api("POST", "/api/test-cases/preview", { name: "sample.xlsx", base64: fs.readFileSync(path.join(ROOT, "test-fixtures", "test-cases", "sample.xlsx")).toString("base64") });
+      assert.equal(x.status, 200, JSON.stringify(x.body));
+      assert.equal(x.body.format, "xlsx");
+      assert.equal(x.body.count, 4);
+      const link = await api("POST", "/api/test-cases/preview", { content: "https://example.atlassian.net/wiki/spaces/QA/pages/1" });
+      assert.equal(link.status, 400);
+      assert.match(link.body.error, /planned/);
+      const bad = await api("POST", "/api/test-cases/preview", { content: "Foo,Bar\n1,2\n" });
+      assert.equal(bad.status, 400);
+      assert.match(bad.body.error, /no Title or Steps column/);
+    });
+    await check("GET /api/test-cases/template downloads the template CSV", async () => {
+      const res = await fetch(`http://127.0.0.1:${UI_PORT}/api/test-cases/template`);
+      assert.equal(res.status, 200);
+      assert.match(res.headers.get("content-disposition") || "", /test-cases-template\.csv/);
+      assert.ok((await res.text()).startsWith("ID,Title,Endpoint,Method,Steps / Request,Expected Result"));
+    });
+    await check("POST /api/run refuses a bad uploaded sheet and a testCases.file outside input/", async () => {
+      const bad = await api("POST", "/api/run", { json: read("input/local-shop.json"), testCases: { name: "x.csv", content: "Foo,Bar\n1,2\n", mode: "sheet-only" } });
+      assert.equal(bad.status, 400);
+      assert.match(bad.body.error, /test case sheet: no Title or Steps column/);
+      const mode = await api("POST", "/api/run", { json: read("input/local-shop.json"), testCases: { name: "x.csv", content: read("input/local-shop-test-cases.csv"), mode: "everything" } });
+      assert.equal(mode.status, 400);
+      assert.match(mode.body.error, /mode must be one of/);
+      const cfg = localShop();
+      cfg.testCases = { file: "../.env" };
+      const escape = await api("POST", "/api/run", { json: JSON.stringify(cfg) });
+      assert.equal(escape.status, 400);
+      assert.match(escape.body.error, /testCases\.file must name/);
+    });
+    await check("GET /api/traceability?run= serves the run's CSV and XLSX, 404 without one", async () => {
+      const r = fakeRun(SUMMARY);
+      made.push(r.dir);
+      const none = await fetch(`http://127.0.0.1:${UI_PORT}/api/traceability?run=${r.id}&format=csv`);
+      assert.equal(none.status, 404);
+      fs.writeFileSync(path.join(r.dir, "traceability.csv"), "ID,Title,Endpoint,Test file,Status,Reason\r\n");
+      fs.writeFileSync(path.join(r.dir, "traceability.xlsx"), "PK");
+      const csv = await fetch(`http://127.0.0.1:${UI_PORT}/api/traceability?run=${r.id}&format=csv`);
+      assert.equal(csv.status, 200);
+      assert.match(csv.headers.get("content-type") || "", /text\/csv/);
+      const xlsx = await fetch(`http://127.0.0.1:${UI_PORT}/api/traceability?run=${r.id}&format=xlsx`);
+      assert.equal(xlsx.status, 200);
+      assert.match(xlsx.headers.get("content-type") || "", /spreadsheetml/);
+    });
+
     await check("GET /api/runs lists finished runs newest first with the row shape", async () => {
       const { status, body } = await api("GET", "/api/runs");
       assert.equal(status, 200);

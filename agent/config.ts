@@ -30,6 +30,18 @@ const EndpointSchema = z.object({
   responseSchema: ResponseSchemaZ.optional(),
 });
 
+// The team's manual test case sheet (agent/test-cases.ts). file: .csv, .tsv, .txt or .xlsx, relative to
+// the input file's folder or absolute. mode: sheet-only automates only the sheet's cases;
+// sheet-plus-agent (the default) adds the agent's own suggestions, labelled "[agent]".
+export const TEST_CASE_MODES = ['sheet-only', 'sheet-plus-agent'] as const;
+export type TestCaseMode = (typeof TEST_CASE_MODES)[number];
+export const DEFAULT_TEST_CASE_MODE: TestCaseMode = 'sheet-plus-agent';
+export const TestCasesConfigSchema = z.object({
+  file: z.string().min(1),
+  mode: z.enum(TEST_CASE_MODES).optional(),
+});
+export type TestCasesConfig = z.infer<typeof TestCasesConfigSchema>;
+
 const ProfileSchema = z.object({
   dimensions: z.record(z.string().min(1), z.array(z.string().min(1)).min(1)),
   baseUrl: z.string().min(1),
@@ -114,6 +126,8 @@ export const ConfigSchema = z.object({
       mode: z.enum(['standard', 'strict']).optional(),
     })
     .optional(),
+  // Optional test case sheet to automate (see TestCasesConfigSchema). --test-cases overrides it.
+  testCases: TestCasesConfigSchema.optional(),
   endpoints: z.array(EndpointSchema).min(1),
 });
 

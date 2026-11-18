@@ -378,3 +378,54 @@ schema or when the probe status is not the documented one, else a list (at most 
 `"<path>: <what>"` lines where the probe response breaks the schema (`[]` when it matches). The console
 prints one line per endpoint with issues.
 
+## 15. Test case sheets (additive)
+
+A run may automate the team's test case sheet: `--test-cases <file>` (and `--test-cases-mode sheet-only |
+sheet-plus-agent`), or `testCases: { file, mode? }` in the input (file relative to the input file). The
+default mode is `sheet-plus-agent`. A sheet that cannot be read is a setup error: `test case sheet: <why>`
+and exit 2.
+
+Test titles: a sheet case is `[<ID>] [<type>] <Title>`, an agent suggestion next to a sheet is
+`[agent] [<type>] ...`, and a case marked needs review is `[<ID>] [needs-review] <Title>` (Playwright
+`test.fixme` with a `needs-review` annotation holding the reason, Pactum a pending `it`). The type tag
+keeps every gate rule of section 1. Allure results carry `caseId=<ID>` and `tag=<ID>` plus
+`tag=test-case-sheet`, or `tag=agent-suggestion`.
+
+Console, after the PROBING header lines:
+
+```
+test cases: <n> from <file> (<csv|tsv|xlsx>, <mode>): <x> matched (<a> by the Endpoint column, <b> by the steps, <c> by the AI), <y> not matched
+  sheet warning row <r>: <message>          (at most 20)
+  not matched: <ID>: <reason>
+test cases: sheet-only, <k> endpoints with cases in scope: <ids>     (sheet-only only)
+```
+
+The model's matching call prints `[claude] match test-cases ...` like every call. PLANNING lines read
+`<id> OK <n> cases (<s> from the sheet, <a> agent suggestions[, <r> needs review])`. The SUMMARY ends with
+`Test cases: <rows> in the sheet: <p> passed, <f> failed, <r> need review, <u> not automated; <a> agent
+suggestion(s); traceability in out/traceability.csv and out/traceability.xlsx`, then one line per case that
+did not pass.
+
+`out/summary.json` gets `testCases`: `null` without a sheet, else
+
+```
+{ file, mode, format, columns: { <field>: <header> }, rows, automated, passed, failed, needsReview,
+  notAutomated, agentSuggestions, warnings: [string], traceability: { csv, xlsx },
+  cases: [{ id, title, endpoint|null, testFile|null, status, reason }] }
+```
+
+`status` is `passed`, `failed`, `needs review` or `not automated`; `cases` lists every sheet row in sheet
+order. `out/traceability.csv` (CRLF, cells starting with `= + - @` prefixed with `'`) and
+`out/traceability.xlsx` have the columns ID, Title, Endpoint, Test file, Status, Reason, with agent
+suggestions after the sheet rows (ID `agent`). The exported framework holds `traceability.csv`.
+
+UI server routes:
+- `POST /api/test-cases/preview` `{ name, content | base64, json? }`: the parsed sheet,
+  `{ format, columns: { <field>: { label, header } }, ignored, count, matched, rows: [{ id, row, title,
+  endpoint, matchedBy, expected, warnings }], warnings, rowWarnings }`, or 400 with `error`.
+- `GET /api/test-cases/template`: `input/test-cases-template.csv` as a download.
+- `POST /api/run` accepts `testCases: { name, content | base64, mode }`. The server checks the sheet with
+  the agent's parser, saves it as `runs/<id>/test-cases.<ext>` and passes `--test-cases`. Without an upload,
+  an input's `testCases.file` must be a sheet inside `input/`; anything else is a 400.
+- `GET /api/traceability?format=csv|xlsx[&run=<id>]`: the run's traceability file (404 without one).
+  Run snapshots keep `traceability.csv` and `traceability.xlsx`.

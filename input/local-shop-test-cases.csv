@@ -1,0 +1,12 @@
+Test Case ID,Title,Endpoint,Method,Steps / Request,Expected Result,Priority
+TC-001,List all products,list-products,GET,Send GET /products,"200 with an array; each product has id, name, price, category, inStock and createdAt",High
+TC-002,Create a product with valid data,,POST,"POST /products with name, price, category and inStock",201 and the new product with its id,High
+TC-003,Create product rejects a text price,create-product,,"POST /products with price ""abc"" instead of a number",400 Bad Request,High
+TC-004,Create product without a token is rejected,create-product,,POST /products without the Authorization header,401 Unauthorized,High
+TC-005,View one product,get-product,,GET /products/{id} for a product created first,200 with the product fields and their types,Medium
+TC-006,Get a product that does not exist,,GET,Send GET /products/999999,404 Not Found,Medium
+TC-007,Update a product's price,Update product,,Send PUT with a new price for an existing product,200 with the updated product,Medium
+TC-008,Delete a product without a token,delete-product,,DELETE /products/{id} without the Authorization header,401 Unauthorized,High
+TC-009,Export the monthly sales report,,,Download the monthly sales report as a PDF file,The file downloads,Low
+,Bulk import products,,POST,POST /products/import with a CSV file of products,202 Accepted,Low
+TC-010,Product looks fine,get-product,,Check it,OK,Low

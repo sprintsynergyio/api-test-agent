@@ -323,6 +323,8 @@ const SNAPSHOT = [
   ["reports/results.json", "results.json"],
   ["reports/pactum", "pactum"],
   ["generated", "generated"],
+  ["out/traceability.csv", "traceability.csv"],
+  ["out/traceability.xlsx", "traceability.xlsx"],
 ];
 const LOCAL_RUNS_KEPT = 20;
 
@@ -589,6 +591,52 @@ function killTree(child, signal = "SIGTERM") {
   child.kill(signal);
 }
 
+// The team's test case sheet for a run. An upload ({ name, content | base64, mode }) is checked with the
+// agent's own parser and saved in the run folder as it is; else the input's testCases.file, which must
+// be a sheet inside input/ (never any other file on the server). Returns the agent flags or an error.
+async function sheetForRun(body, cfg, dir) {
+  const tcMod = await agentModule("test-cases");
+  const upload = body.testCases && typeof body.testCases === "object" ? body.testCases : null;
+  const mode = (upload && upload.mode) || (cfg.testCases && cfg.testCases.mode) || null;
+  if (mode !== null && !tcMod.TEST_CASE_MODES.includes(mode)) return { error: `test cases mode must be one of ${tcMod.TEST_CASE_MODES.join(", ")}` };
+  const modeArgs = mode ? ["--test-cases-mode", mode] : [];
+  if (upload && (typeof upload.content === "string" || typeof upload.base64 === "string")) {
+    let sheet;
+    const name = typeof upload.name === "string" ? upload.name.slice(0, 200) : "pasted.csv";
+    const data = typeof upload.base64 === "string" ? Buffer.from(upload.base64, "base64") : upload.content;
+    try {
+      sheet = await tcMod.parseSheet(data, name);
+    } catch (err) {
+      return { error: `test case sheet: ${err && err.message ? err.message : String(err)}` };
+    }
+    if (!sheet.cases.length) return { error: "test case sheet: no test cases found" };
+    const ext = sheet.format === "xlsx" ? ".xlsx" : sheet.format === "tsv" ? ".tsv" : ".csv";
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `test-cases${ext}`);
+    fs.writeFileSync(file, data);
+    return { args: ["--test-cases", path.relative(ROOT, file), ...modeArgs] };
+  }
+  if (cfg.testCases && typeof cfg.testCases.file === "string") {
+    const file = path.resolve(INPUT_DIR, cfg.testCases.file);
+    const rel = path.relative(INPUT_DIR, file);
+    if (!rel || rel.startsWith("..") || path.isAbsolute(rel) || !tcMod.SHEET_EXTENSIONS.includes(path.extname(file).toLowerCase()) || !fs.existsSync(file)) {
+      return { error: "testCases.file must name a .csv, .tsv, .txt or .xlsx sheet in the input folder, or upload the sheet in Test cases" };
+    }
+    return { args: ["--test-cases", path.relative(ROOT, file), ...modeArgs] };
+  }
+  return { args: [] };
+}
+
+function endpointRefs(jsonText) {
+  try {
+    const cfg = JSON.parse(jsonText);
+    if (!cfg || !Array.isArray(cfg.endpoints)) return null;
+    return cfg.endpoints.filter((e) => e && typeof e.id === "string").map((e) => ({ id: e.id, method: String(e.method || "GET"), path: String(e.path || "") }));
+  } catch {
+    return null;
+  }
+}
+
 function agentCommand() {
   if (process.env.AGENT_CMD) {
     const parts = process.env.AGENT_CMD.split(" ").filter(Boolean);
@@ -602,7 +650,7 @@ function startRun(job) {
   // The agent only clears out/ after it has loaded the input, so a run that fails earlier would leave the
   // previous summary behind. Remove it here so a run can never be shown the old run's results.
   fs.rmSync(SUMMARY, { force: true });
-  const proc = spawn(cmd, [...args, job.inputPath], {
+  const proc = spawn(cmd, [...args, job.inputPath, ...(job.extraArgs || [])], {
     cwd: ROOT,
     windowsHide: true,
     // A custom auth value is passed to this run only, through the environment. It is never written to disk.
@@ -781,11 +829,53 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, await validateInput(body.json, selection));
   }
 
+  if (req.method === "POST" && p === "/api/test-cases/preview") {
+    const raw = await readBodyCapped(req, 3 * MAX_IMPORT_BYTES);
+    if (raw === null) return json(res, 413, { error: "The sheet is larger than 5 MB." });
+    let body;
+    try {
+      body = JSON.parse(raw);
+    } catch {
+      return json(res, 400, { error: "Request body must be JSON" });
+    }
+    if (typeof body.content !== "string" && typeof body.base64 !== "string") return json(res, 400, { error: "content or base64 is required" });
+    const tcMod = await agentModule("test-cases");
+    const name = typeof body.name === "string" ? body.name.slice(0, 200) : "pasted.csv";
+    try {
+      const sheet = await tcMod.parseSheet(typeof body.base64 === "string" ? Buffer.from(body.base64, "base64") : body.content, name);
+      return json(res, 200, tcMod.previewSheet(sheet, typeof body.json === "string" ? endpointRefs(body.json) : null));
+    } catch (err) {
+      return json(res, 400, { error: err && err.message ? err.message : String(err) });
+    }
+  }
+
+  if (req.method === "GET" && p === "/api/test-cases/template") {
+    const file = path.join(INPUT_DIR, "test-cases-template.csv");
+    if (!fs.existsSync(file)) return json(res, 404, { error: "template not found" });
+    res.writeHead(200, { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": 'attachment; filename="test-cases-template.csv"', "Cache-Control": "no-store" });
+    return res.end(fs.readFileSync(file));
+  }
+
+  if (req.method === "GET" && p === "/api/traceability") {
+    const format = url.searchParams.get("format") === "xlsx" ? "xlsx" : "csv";
+    const file = artifact(runDirFor(session, url), `traceability.${format}`);
+    if (!file || !fs.existsSync(file)) return json(res, 404, { error: "No traceability file. Run the agent with a test case sheet first." });
+    res.writeHead(200, {
+      "Content-Type": format === "xlsx" ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" : "text/csv; charset=utf-8",
+      "Content-Disposition": `attachment; filename="traceability.${format}"`,
+      "Cache-Control": "no-store",
+    });
+    return res.end(fs.readFileSync(file));
+  }
+
   if (req.method === "POST" && p === "/api/run") {
     if (isRunning() && !LOGIN_REQUIRED) return json(res, 409, { error: "A run is already in progress" });
     let body;
+    // An uploaded test case sheet rides in the body, so allow up to the import limit (with JSON room).
+    const raw = await readBodyCapped(req, 3 * MAX_IMPORT_BYTES);
+    if (raw === null) return json(res, 413, { error: "The request is larger than the 5 MB limit." });
     try {
-      body = JSON.parse(await readBody(req));
+      body = JSON.parse(raw);
     } catch {
       return json(res, 400, { error: "Request body must be JSON" });
     }
@@ -810,8 +900,15 @@ const server = http.createServer(async (req, res) => {
     if (checked.auth && checked.auth.oneRunValue && !body.authValue) {
       return json(res, 400, { error: "This API needs an auth value for this run. Enter it in the auth field." });
     }
+    if (body.testCases !== undefined && body.testCases !== null && typeof body.testCases !== "object") return json(res, 400, { error: "testCases must be an object" });
     const id = newId();
     const dir = path.join(RUNS_DIR, id);
+    const sheet = await sheetForRun(body, cfg, dir);
+    if (sheet.error) {
+      fs.rmSync(dir, { recursive: true, force: true });
+      return json(res, 400, { error: sheet.error });
+    }
+    const extraArgs = sheet.args;
     if (LOGIN_REQUIRED) {
       if (queue.some((j) => j.owner === session.sid) || (isRunning() && run.owner === session.sid)) {
         return json(res, 409, { error: "You already have a run in progress or queued" });
@@ -825,7 +922,7 @@ const server = http.createServer(async (req, res) => {
       const s = sessions.get(session.sid);
       s.runIds.push(id);
       if (HOSTED) runStarts.set(session.user, [...(runStarts.get(session.user) || []), Date.now()]);
-      const job = { id, owner: session.sid, user: session.user, dir, inputPath: path.relative(ROOT, path.join(dir, "input.json")), authValue: body.authValue || "", selection };
+      const job = { id, owner: session.sid, user: session.user, dir, inputPath: path.relative(ROOT, path.join(dir, "input.json")), authValue: body.authValue || "", selection, extraArgs };
       if (isRunning()) {
         queue.push(job);
         console.log(`UI: run ${id} queued for ${session.user} (position ${queue.length})`);
@@ -842,7 +939,7 @@ const server = http.createServer(async (req, res) => {
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, "input.json"), body.json);
     cleanupRuns();
-    startRun({ id, owner: null, user: null, dir, inputPath: saved ? `input/${saved}` : RUN_FILE, authValue: body.authValue || "", selection });
+    startRun({ id, owner: null, user: null, dir, inputPath: saved ? `input/${saved}` : RUN_FILE, authValue: body.authValue || "", selection, extraArgs });
     return json(res, 202, { started: true, runId: id });
   }
 
