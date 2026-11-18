@@ -13,9 +13,9 @@ You give it the base URL and the endpoints of an API. It calls each endpoint onc
 3. One of these, to pay for the model calls:
    - a Claude API key from https://console.anthropic.com (API Keys, Create Key), or
    - an OpenAI API key from https://platform.openai.com/api-keys, or
-   - Claude Code installed and logged in on your machine (`claude --version` prints a version). Then no key is needed.
+   - Claude Code installed and logged in on your machine (`claude --version` prints a version). Then no key is needed. The steps are under [Use Claude Code instead of an API key](#use-claude-code-instead-of-an-api-key).
 
-   Ask your lead which one the team uses. The key is billed per run: about 10 model calls for an API with 5 endpoints, a few cents.
+   Ask your lead which one the team uses. A key is billed per run: about 10 model calls for an API with 5 endpoints, a few cents. A Claude Code login counts those calls against your plan instead.
 
 ## Install
 
@@ -28,6 +28,54 @@ npm ci
 ```
 
 Expected at the end of `npm ci`: a line like `added 210 packages`. Warnings about audits are fine.
+
+If you are using Claude Code, follow the next subsection before you start the UI. If you are using an API key, skip to [Or paste an API key](#or-paste-an-api-key).
+
+### Use Claude Code instead of an API key
+
+You can run the agent with your Claude Code login. No API key is needed.
+
+You need a paid Claude plan (Pro, Max, Ultra, Team or Enterprise) or a Claude Console account. The free Claude plan does not include Claude Code. Each person uses their own login; do not share an account. Usage counts against that person's plan.
+
+1. Install the official Claude Code CLI (Node 22 or newer; do not use `sudo`):
+
+```
+npm install -g @anthropic-ai/claude-code@latest
+```
+
+2. Check the install:
+
+```
+claude --version
+```
+
+Expected: a version number followed by `(Claude Code)`, for example `2.1.211 (Claude Code)`.
+
+If you see `command not found` or `'claude' is not recognized`, close the terminal completely, open a new one, and try again. On Windows, add npm's global folder to your PATH (usually `%AppData%\npm`) and open a new terminal. See [Anthropic's setup guide](https://code.claude.com/docs/en/setup) if it still fails (that page also has a native installer).
+
+3. Sign in once:
+
+```
+claude
+```
+
+On first use, Claude Code opens a browser window. Sign in with your Claude account. If the browser does not open, press `c` to copy the login URL and paste it into a browser. If the browser shows a login code instead of returning to the terminal, paste that code at the prompt. Expected: the terminal says `Login successful`. Press Enter, then type `/exit` to leave. (Later, `/login` inside a Claude Code session signs you in or switches accounts.)
+
+4. In this repo's `.env`, make sure `ANTHROPIC_API_KEY` has no value. A key in `.env` wins over the login, and `LLM_PROVIDER=openai` always uses OpenAI instead. (An empty `ANTHROPIC_API_KEY=` line, as in `.env.example`, is fine.)
+
+5. Start the UI:
+
+```
+npm run ui
+```
+
+Expected: `API Test Agent UI running on http://localhost:3000 (local demo, no login); model: anthropic default (Claude Code login)`. Leave this terminal open; it is the server.
+
+Open http://localhost:3000 in your browser. The "Set up your model" card should not appear, and the header should say `Claude via Claude Code login`. If you started the UI before installing or signing in, stop it (Ctrl+C) and run `npm run ui` again: the CLI is checked once at startup.
+
+To switch back to an API key, click **Change** next to the model name at the top of the page, paste the key, and save. The header should then say `via API key`.
+
+### Or paste an API key
 
 ```
 npm run ui
@@ -42,7 +90,7 @@ Open http://localhost:3000 in your browser. The first screen is "Set up your mod
 3. Click **Verify**. Expected: `Key works. Model: ...`. If you see an error instead, read it: it names the usual cause (wrong key, no credits, model not found, rate limit, no network).
 4. Click **Save**. Expected: `Saved to .env. The next run uses ...`.
 
-The key goes into a file called `.env` inside the project folder, on your machine only. It is never committed to git and never shown again in the page. If Claude Code is logged in on your machine, the setup card does not appear at all; the header says `Claude via Claude Code login`.
+The key goes into a file called `.env` inside the project folder, on your machine only. It is never committed to git and never shown again in the page.
 
 To change the provider or key later, click **Change** next to the model name at the top of the page.
 
@@ -130,7 +178,7 @@ Point the agent at staging or test environments. That is what it is for.
 
 - To the model provider you chose (Anthropic or OpenAI): the endpoint list, sample request bodies, and the real responses from the probe calls, after redaction. Emails, phone numbers, card numbers, tokens, IP addresses and anything in a field named like a secret are replaced before the prompt is built. Nothing else goes to the model.
 - To the API you are testing: the test requests.
-- Nowhere else. The key stays in `.env`. Reports, the generated tests and the downloaded framework stay in the project folder.
+- Nowhere else. If you saved a key, it stays in `.env`. Reports, the generated tests and the downloaded framework stay in the project folder.
 
 If your client only allows the shape of the data and not the values, add `"redaction": { "mode": "strict" }` to the saved input file: every string and number in responses becomes a placeholder.
 
@@ -161,10 +209,13 @@ APIs behind OAuth2 client credentials use `"auth": { "type": "oauth2_client", "t
 - Windows: `npm run ui` starts, then stops with `ERR_UNSUPPORTED_ESM_URL_SCHEME ... Received protocol 'c:'` (or `'j:'`, your drive letter) as soon as the page opens: your copy is older than Nov 17, 2026. Run `git pull`, then `npm ci`, then `npm run ui` again.
 - `The service was stopped` from `tsx` on macOS: run `npm ci` again (macOS blocked a downloaded binary).
 - The setup card says the provider cannot be reached, and you are on a corporate network with Zscaler or another TLS proxy: export your company's root certificate as a `.pem` file and start the UI with `NODE_EXTRA_CA_CERTS=/path/to/zscaler-root.pem npm run ui`.
+- `claude` not found after you installed it (`command not found` or `'claude' is not recognized`): close the terminal completely, open a new one, and run `claude --version` again. On Windows, add npm's global folder to your PATH (usually `%AppData%\npm`) and open a new terminal. Do not install with `sudo`.
+- The header still says `via API key`, or the setup card still appears, after you logged in to Claude Code: `.env` has an `ANTHROPIC_API_KEY` value, which wins over the login. Remove that value (leave the line empty or delete it), stop the UI (Ctrl+C), and run `npm run ui` again. The header should say `Claude via Claude Code login`.
+- You installed or signed in to Claude Code while the UI was already running: stop it (Ctrl+C) and run `npm run ui` again. The CLI is checked once when the UI starts.
 - The run says `claude CLI not found` and you meant to use a key: open the setup card with **Change** and save the key; the header should then say `via API key`.
 - The run stops with `stopped at budget: run again with --resume to continue`: the default is 60 model calls per run, about 25 endpoints. Run `npm run agent -- input/<name>.json --resume` in the terminal and it continues where it stopped without paying for the finished endpoints again, or raise `MAX_CLAUDE_CALLS` in `.env`.
 - A finding on your API that you think is wrong: open the report, look at the request and response attached to the test, and decide. The agent never changes an expected status to make a test pass; it reports what the API did.
 
 ## Cost
 
-One run of 5 endpoints makes about 10 model calls, roughly 70 thousand input tokens and 10 thousand output tokens. With a Claude key that is a few cents. Bigger APIs scale about linearly: two calls per endpoint.
+One run of 5 endpoints makes about 10 model calls, roughly 70 thousand input tokens and 10 thousand output tokens. With a Claude key that is a few cents. With a Claude Code login, those calls count against your plan. Bigger APIs scale about linearly: two calls per endpoint.

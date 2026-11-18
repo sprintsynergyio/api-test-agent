@@ -4,6 +4,7 @@ All notable changes to this project. Dates are the day the change reached `main`
 
 ## Unreleased
 
+- Docs: step-by-step Claude Code login in the README and `docs/TEAM-SETUP.md` (install, sign in, no API key needed; troubleshooting for PATH and a key in `.env` overriding the login)
 - Test case sheets: upload or paste the team's manual test cases (CSV, TSV or XLSX) in the UI, or `--test-cases <file>` / `testCases` in the input; one test per row named `[TC-ID] [type] Title`, flexible column names, endpoint matching (Endpoint column, steps, then the model), "Only my test cases" or "My test cases + agent suggestions", vague or contradicting cases marked needs review, traceability back-map in `out/traceability.csv` and `.xlsx`, the summary, Allure labels and the export; template CSV in the UI; new `npm run test:test-cases` and e2e runs of the sample sheet. Live Jira and Confluence links are planned, CSV exports work today
 - Scale: checkpoint and resume, incremental generation, `--budget` and concurrency flags (PR 10)
 - UI refresh: every auth type, profiles, evidence and run history (PR 11)
