@@ -18,7 +18,8 @@ export type AgentFlags = {
   testWorkers: number;
   // What makes the exit code 1: any finding (default) or nothing (findings are reported, exit 0).
   failOn: FailOn;
-  // A test case sheet to automate (overrides the input file's testCases.file), and the mode.
+  // A test case sheet, or a Jira / Confluence link or JQL, to automate (overrides the input file's
+  // testCases), and the mode.
   testCases: string | null;
   testCasesMode: TestCaseMode | null;
 };
@@ -92,7 +93,7 @@ export function parseAgentFlags(argv: string[], defaultInput = 'input/endpoints.
       }
       case '--test-cases': {
         const v = value().trim();
-        if (!v) throw new Error('--test-cases needs the path of a .csv, .tsv or .xlsx test case sheet');
+        if (!v) throw new Error('--test-cases needs a .csv, .tsv or .xlsx test case sheet, or a Jira / Confluence link or JQL');
         flags.testCases = v;
         break;
       }
@@ -103,7 +104,7 @@ export function parseAgentFlags(argv: string[], defaultInput = 'input/endpoints.
         break;
       }
       default:
-        if (arg.startsWith('--')) throw new Error(`unknown flag ${arg}. Known flags: --resume, --only-new, --endpoints a,b, --budget N, --concurrency N, --test-workers N, --fail-on none|finding, --test-cases <sheet>, --test-cases-mode sheet-only|sheet-plus-agent, --select k=v`);
+        if (arg.startsWith('--')) throw new Error(`unknown flag ${arg}. Known flags: --resume, --only-new, --endpoints a,b, --budget N, --concurrency N, --test-workers N, --fail-on none|finding, --test-cases <sheet|link>, --test-cases-mode sheet-only|sheet-plus-agent, --select k=v`);
         positional.push(arg);
     }
   }

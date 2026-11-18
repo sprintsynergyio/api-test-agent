@@ -193,9 +193,83 @@ or put it in the input file: `"testCases": { "file": "local-shop-test-cases.csv"
   include `traceability.csv`.
 - **Limits.** 5 MB, 1000 test cases, 100 columns and 4000 characters per cell. Excel files are read for
   their stored values only: formulas are never run, links never followed.
-- **Jira and Confluence.** Live links are planned (see `docs/ROADMAP.md`). For now export the issues
-  (Jira: **Export > CSV**) or the Confluence table as CSV and upload or paste it. A pasted link is refused
-  with that hint.
+- **Jira and Confluence links.** See the next section: paste a link instead of exporting a file.
+
+### Test cases straight from Jira, Confluence, Xray or Zephyr Scale
+
+Instead of exporting a sheet, paste a link. The agent reads the cases live, read-only, with your own
+Atlassian account, and everything above (column matching, preview, modes, needs review, traceability)
+works the same way.
+
+| You paste | What is read |
+|---|---|
+| A Jira issue link (`.../browse/QA-12`) | that issue |
+| A Jira saved filter link (`.../issues/?filter=10001`) or a search link (`...?jql=...`) | every issue it finds |
+| JQL, e.g. `project = QA AND issuetype = Test` (or `jql: ...`) | every issue it finds |
+| A Confluence page link (`.../wiki/spaces/QA/pages/12345/...`) | the test case table(s) on the page |
+| `zephyr: QA-T1, QA-T2`, `zephyr: project = QA`, or a Zephyr Scale test case link | Zephyr Scale test cases with their steps |
+
+**Set up once (per person).** In the UI open **Run options**, **Test cases**, **Jira or Confluence link**,
+then **Connect Jira and Confluence**: your site address (`https://your-team.atlassian.net`), your Atlassian
+email, and an API token from <https://id.atlassian.com/manage-profile/security/api-tokens> (choose
+**Create API token**, the plain one, not "with scopes": scoped tokens only work through Atlassian's API
+gateway). **Check and
+save** signs in once to check them, then writes them to `.env` on your machine; the token is never shown
+again. Or put them in `.env` yourself:
+
+```
+ATLASSIAN_BASE_URL=https://your-team.atlassian.net
+ATLASSIAN_EMAIL=you@company.com
+ATLASSIAN_API_TOKEN=<token>
+# optional: Xray Cloud test steps (Jira > Apps > Xray > API Keys)
+XRAY_CLIENT_ID=
+XRAY_CLIENT_SECRET=
+# optional: Zephyr Scale Cloud (profile picture > Zephyr API keys)
+ZEPHYR_API_TOKEN=
+```
+
+Data Center / Server: `ATLASSIAN_BASE_URL` is your Jira address (with its context path, e.g.
+`https://jira.company.com/jira`), leave `ATLASSIAN_EMAIL` empty and put a personal access token in
+`ATLASSIAN_API_TOKEN` (sent as a bearer token), and set `CONFLUENCE_BASE_URL` when Confluence has its own
+address. `ATLASSIAN_DEPLOYMENT=cloud|datacenter` overrides the automatic choice (`*.atlassian.net` is Cloud).
+
+From the terminal:
+
+```
+npm run agent -- input/local-shop.json --test-cases "https://your-team.atlassian.net/issues/?filter=10001"
+npm run agent -- input/local-shop.json --test-cases "project = QA AND labels = api" --test-cases-mode sheet-only
+```
+
+or in the input file: `"testCases": { "link": "https://your-team.atlassian.net/browse/QA-12" }`.
+
+How each source becomes rows:
+- **Jira** (Cloud: `GET /rest/api/3/search/jql`, paged with `nextPageToken`; Data Center:
+  `/rest/api/2/search`). Key becomes ID, Summary becomes Title, the description (rich text turned into plain
+  text) becomes the steps, and a line or heading starting with "Expected result" splits off the expected
+  result. Custom fields whose names match a column (Expected Result, Endpoint, Method, Test Data,
+  Preconditions, Steps) are used automatically.
+- **Xray.** For issues of type Test: Xray Cloud through its GraphQL API (`XRAY_CLIENT_ID` and
+  `XRAY_CLIENT_SECRET`), Xray Data Center through its REST API with the Jira token. Steps, data and expected
+  results are numbered; Gherkin and generic tests use their definition. Without Xray credentials on Cloud
+  the description is used and the preview says so.
+- **Zephyr Scale.** Cloud through `api.zephyrscale.smartbear.com/v2` with `ZEPHYR_API_TOKEN`; Data Center
+  through `/rest/atm/1.0` with the Jira token. Name, objective, precondition and step-by-step scripts.
+- **Confluence** (Cloud: `GET /wiki/api/v2/pages/{id}?body-format=storage`; Data Center:
+  `/rest/api/content`). Every table on the page whose header row has a Title or Steps column is read; other
+  tables are skipped and listed.
+
+Safety and limits: only the configured Atlassian site (and the Xray and Zephyr Scale API hosts) is ever
+called, so a link to any other host is refused before a request; redirects are not followed; HTTPS only
+(plain http only for `localhost`); read-only requests; 1000 cases, 100 results per page, 10 MB per
+response; HTTP 429 and 503 are retried up to 3 times after `Retry-After` (at most 60 s). 401, 403 and 404
+come back as plain messages that say what to check. Tokens never appear in messages, logs, the summary,
+the generated tests' environment or the export. The ticket and page text is treated as untrusted data in
+every prompt, like a sheet.
+
+Not included yet: Zephyr Squad (the older Zephyr for Jira), Confluence short links (`/x/...`, open the page
+and copy the full link), pages behind SSO-only Data Center sites that reject tokens, and writing results
+back to Xray or Zephyr test executions. Try it offline with `npm run mock:atlassian` (a fake Atlassian
+site with sample cases; it prints the `.env` lines to use).
 
 ## What you get
 

@@ -98,7 +98,7 @@ await check('step-per-row exports: a row without ID and title continues the case
 await check('refuses: no title or steps column, empty, a pasted link, .xls, a header only', async () => {
   await rejects(parseSheet('Foo,Bar\n1,2\n'), /no Title or Steps column/);
   await rejects(parseSheet(''), /empty/);
-  await rejects(parseSheet('https://example.atlassian.net/browse/QA-1'), /Live Jira and Confluence links are planned/);
+  await rejects(parseSheet('https://example.atlassian.net/browse/QA-1'), /a link was pasted where a sheet was expected.*Jira or Confluence link/);
   await rejects(parseSheet(Buffer.from('x'), 'old.xls'), /\.xls files are not supported/);
   await rejects(parseSheet('ID,Title\n'), /no test cases/);
 });

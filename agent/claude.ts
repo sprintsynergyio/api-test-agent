@@ -28,7 +28,8 @@ const OPENAI_URL = 'https://api.openai.com/v1/chat/completions';
 const OPENAI_DEFAULT_MODEL = 'gpt-6.1-sol';
 const API_MAX_TOKENS = 16_000;
 // Variables that must never reach a child process or a log line.
-const SECRET_ENV = /AUTH|ANTHROPIC_API_KEY|OPENAI_API_KEY/i;
+// The Atlassian, Xray and Zephyr Scale tokens (test case links, agent/atlassian.ts) are included.
+const SECRET_ENV = /AUTH|ANTHROPIC_API_KEY|OPENAI_API_KEY|ATLASSIAN_API_TOKEN|XRAY_CLIENT_SECRET|ZEPHYR_API_TOKEN/i;
 
 export type Provider = 'anthropic' | 'openai';
 export const PROVIDERS: Provider[] = ['anthropic', 'openai'];

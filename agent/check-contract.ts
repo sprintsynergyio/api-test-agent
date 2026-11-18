@@ -100,7 +100,8 @@ if (isObj(s.testCases)) {
   const tc = s.testCases;
   field('summary.testCases', tc, 'file', ['string']);
   field('summary.testCases', tc, 'mode', ['string'], ['sheet-only', 'sheet-plus-agent']);
-  field('summary.testCases', tc, 'format', ['string'], ['csv', 'tsv', 'xlsx']);
+  field('summary.testCases', tc, 'format', ['string'], ['csv', 'tsv', 'xlsx', 'jira', 'confluence', 'zephyr']);
+  need(tc.source === undefined || tc.source === null || (isObj(tc.source) && ['jira', 'confluence', 'zephyr'].includes(String(tc.source.kind))), 'summary.testCases.source must be null or { kind, label, steps }');
   need(isObj(tc.columns), 'summary.testCases.columns is missing');
   for (const k of ['rows', 'automated', 'passed', 'failed', 'needsReview', 'notAutomated', 'agentSuggestions']) need(isInt(tc[k]), `summary.testCases.${k} is not a count`);
   field('summary.testCases', tc, 'warnings', ['array']);

@@ -204,27 +204,36 @@ Also done in the Phase 9 hardening PR: 429 handling in the shared HTTP layer (Re
 
 For a team that clones the repo and runs it on their own machines. Model provider adapter (Claude via API key or Claude Code login, OpenAI via Chat Completions), a first-launch settings card in the UI that verifies a key and writes it to `.env` (local machines only; shared servers refuse it), `docs/TEAM-SETUP.md`, `npm run eval -- --provider` to compare providers. Not yet: Grok or other providers, per-login keys on a shared server, a Docker image.
 
-## Test case sheets (built) and live Jira / Confluence (planned)
+## Test case sheets and live Jira / Confluence (built)
 
 Built: the team's manual test case sheet (CSV, TSV or XLSX upload, paste, `--test-cases`, or `testCases` in
 the input) becomes one test per row named `[ID] [type] Title`, with a traceability back-map
-(`out/traceability.csv` and `.xlsx`, the summary, Allure labels, the export). Jira and Confluence work
-through their CSV exports.
+(`out/traceability.csv` and `.xlsx`, the summary, Allure labels, the export).
 
-Planned: reading cases straight from a Jira or Confluence link. What it needs:
-- **Auth.** An Atlassian API token (Cloud: email plus token, Basic auth; Data Center: a personal access
-  token) read from `.env` like every other credential (`JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`),
-  never typed into the page or stored in an input file, and redacted from logs.
-- **Jira import.** A JQL query or a filter id (`project = QA AND issuetype = Test`) through the REST search
-  API (`/rest/api/3/search/jql`, paged), mapping key, summary, description and custom fields to the sheet
-  columns. Xray and Zephyr Scale keep steps in their own APIs (Xray GraphQL, Zephyr Scale `testcases`),
-  so each needs its own small adapter and its own token.
-- **Confluence import.** A page id through `/wiki/api/v2/pages/{id}?body-format=storage`, then the first
-  table with recognised headers parsed from the storage format (the same column aliases as the sheet).
-- **Limits.** Atlassian rate limits (429 with Retry-After, reuse the existing backoff), a page and case cap
-  per run, and the same 1000-case limit as a sheet.
-- **Safety.** Only the configured Atlassian host is called, read-only scopes are enough, and the ticket text
-  is wrapped as untrusted input in every prompt, as the sheet cases are today.
+Built: reading cases straight from a link (`agent/atlassian.ts`, `npm run test:atlassian`,
+`npm run test:ui-atlassian`, and an e2e run of the sample sheet as a Confluence table):
+- **Auth.** `ATLASSIAN_BASE_URL`, `ATLASSIAN_EMAIL`, `ATLASSIAN_API_TOKEN` in `.env` (Cloud: Basic email
+  plus API token; Data Center: a personal access token as a bearer token), written by the UI's
+  **Connect Jira and Confluence** card after one check call, never sent back to the page, redacted from every
+  message and kept out of the test runner and model CLI environments.
+- **Jira.** An issue link, a filter link, a search link or JQL through `/rest/api/3/search/jql` (Cloud,
+  `nextPageToken` paging) or `/rest/api/2/search` (Data Center); key, summary, description (ADF to text,
+  "Expected result" split) and custom fields matched by name.
+- **Xray.** Cloud GraphQL `getTests` with client id and secret; Data Center `rest/raven/1.0/api/test`.
+- **Zephyr Scale.** Cloud `v2/testcases` and `teststeps` with its own token; Data Center `rest/atm/1.0`.
+- **Confluence.** A page link through `/wiki/api/v2/pages/{id}?body-format=storage` (Cloud) or
+  `/rest/api/content` (Data Center), every table with recognised headers.
+- **Limits and safety.** 429 / 503 with Retry-After, 1000 cases, 10 MB per response, only the configured
+  hosts, no redirects, untrusted-data markers in every prompt as for a sheet.
+
+Proven with mocked HTTP only so far; a check against a real Atlassian Cloud site is pending.
+
+Still open:
+- Zephyr Squad (the older Zephyr for Jira) and TestRail live links.
+- Xray Cloud regional hosts are supported through `XRAY_BASE_URL`; Xray Data Center versions that only have
+  the older per-test `.../test/{key}/step` endpoint are not read (the description is used).
+- Confluence short links (`/x/...`) and Data Center sites that only allow SSO sign-in.
+- Scoped Atlassian API tokens (they need the `api.atlassian.com/ex/jira/<cloud id>` gateway).
 - **Optional write-back.** Posting results to Xray or Zephyr test executions would need write scopes and an
   explicit opt-in per run; not planned for the first version.
 

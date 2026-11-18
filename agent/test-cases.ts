@@ -72,8 +72,12 @@ export type SheetCase = {
 
 export type SheetWarning = { row: number | null; caseId: string | null; message: string };
 
+// Where live cases came from (agent/atlassian.ts); absent for a file or pasted sheet.
+export type CaseSource = { kind: 'jira' | 'confluence' | 'zephyr'; link: string; label: string; steps: string | null };
+
 export type ParsedSheet = {
-  format: 'csv' | 'tsv' | 'xlsx';
+  format: 'csv' | 'tsv' | 'xlsx' | 'jira' | 'confluence' | 'zephyr';
+  source?: CaseSource;
   // Field -> the header it was read from.
   columns: Partial<Record<CaseField, string>>;
   // Headers that map to no field (ignored).
@@ -351,7 +355,7 @@ export async function parseSheet(input: Buffer | string, name = ''): Promise<Par
   const text = typeof input === 'string' ? input : input.toString('utf8');
   if (Buffer.byteLength(text, 'utf8') > MAX_SHEET_BYTES) throw new SheetError(`the sheet is larger than ${MAX_SHEET_BYTES / 1024 / 1024} MB`);
   if (/^\s*https?:\/\/\S+\s*$/.test(text)) {
-    throw new SheetError('a link was pasted. Live Jira and Confluence links are planned; for now export the issues or the table as CSV (Jira: Export > CSV; Confluence: export the table or copy it) and upload or paste that');
+    throw new SheetError('a link was pasted where a sheet was expected. Paste Jira and Confluence links in the "Jira or Confluence link" box (or pass the link to --test-cases), or upload a CSV export');
   }
   const { rows, delimiter } = parseDelimited(text);
   return casesFromRows(rows, delimiter === '\t' ? 'tsv' : 'csv');
@@ -462,6 +466,7 @@ export function previewSheet(sheet: ParsedSheet, endpoints: EndpointRef[] | null
   });
   return {
     format: sheet.format,
+    ...(sheet.source ? { source: { kind: sheet.source.kind, label: sheet.source.label, steps: sheet.source.steps } } : {}),
     columns: Object.fromEntries((Object.keys(sheet.columns) as CaseField[]).map((f) => [f, { label: FIELD_LABELS[f], header: sheet.columns[f] }])),
     ignored: sheet.ignored,
     count: sheet.cases.length,

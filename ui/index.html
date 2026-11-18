@@ -335,6 +335,11 @@
   .tc-rows td, .tc-rows th { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
   .tc-rows .w { color: var(--warn); font-size: 12px; margin-top: 2px; }
   .tc-rows td.id { white-space: nowrap; font-family: var(--mono); font-size: 12px; }
+  .atl-setup { margin-top: 10px; padding: 12px; border: 1px dashed var(--accent-line); border-radius: var(--r-sm); background: #fff; }
+  .atl-grid { display: grid; grid-template-columns: 1fr; gap: 10px; }
+  .atl-setup details { margin-top: 10px; font-size: 13px; }
+  .atl-setup summary { cursor: pointer; font-weight: 600; color: var(--ink-2); }
+  .tc-source { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 2px 8px; margin-right: 6px; vertical-align: 1px; }
   .tc-tiles { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 </style>
 </head>
@@ -579,17 +584,46 @@
               <div class="tc-actions">
                 <label class="btn btn-ghost" style="cursor:pointer">Upload CSV or Excel<input id="tcFile" type="file" accept=".csv,.tsv,.txt,.xlsx" class="hidden"></label>
                 <button id="tcPasteBtn" class="link-btn" type="button">Paste instead</button>
+                <button id="tcLinkBtn" class="link-btn" type="button">Jira or Confluence link</button>
                 <a id="tcTemplate" class="link-btn" href="/api/test-cases/template" download="test-cases-template.csv">Download template CSV</a>
                 <button id="tcClear" class="link-btn hidden" type="button">Remove</button>
               </div>
               <textarea id="tcText" class="hidden" spellcheck="false" placeholder="Paste rows from Excel, Google Sheets or a CSV export (with the header row)"></textarea>
+              <div id="tcLinkBox" class="hidden" style="margin-top:8px">
+                <input id="tcLink" class="txt" type="text" autocomplete="off" spellcheck="false" placeholder="Jira issue, filter or search link, Confluence page link, or JQL">
+                <div class="tc-actions"><button id="tcLinkLoad" class="btn btn-ghost" type="button">Load cases</button><span class="hint">e.g. project = QA AND issuetype = Test</span></div>
+                <div id="atlStatus" class="hint" style="margin-top:6px"></div>
+                <div id="atlSetup" class="atl-setup hidden">
+                  <div class="hint" style="margin:0 0 10px">Connect Jira and Confluence once. Atlassian Cloud: create an API token at <a href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank" rel="noopener noreferrer">id.atlassian.com &gt; Security &gt; API tokens</a> and use your Atlassian email. Data Center: leave the email empty and paste a personal access token from your Jira profile. Saved only to <code>.env</code> on this computer; the token is never shown again.</div>
+                  <div class="atl-grid">
+                    <div><label class="lbl" for="atlBase">Site address</label><input id="atlBase" class="txt" type="text" autocomplete="off" spellcheck="false" placeholder="https://your-team.atlassian.net"></div>
+                    <div><label class="lbl" for="atlEmail">Email <span class="hint" style="font-weight:400">(Cloud)</span></label><input id="atlEmail" class="txt" type="email" autocomplete="off" spellcheck="false" placeholder="you@company.com"></div>
+                    <div><label class="lbl" for="atlToken">API token</label><input id="atlToken" class="txt" type="password" autocomplete="off" spellcheck="false" placeholder="Paste the token"></div>
+                    <div><label class="lbl" for="atlConf">Confluence address <span class="hint" style="font-weight:400">(only if different, Data Center)</span></label><input id="atlConf" class="txt" type="text" autocomplete="off" spellcheck="false" placeholder="https://confluence.company.com"></div>
+                  </div>
+                  <details id="atlMore">
+                    <summary>Optional: Xray and Zephyr Scale test steps</summary>
+                    <div class="hint" style="margin:6px 0 8px">Xray Cloud: Jira &gt; Apps &gt; Xray &gt; API Keys. Zephyr Scale Cloud: your profile picture &gt; Zephyr API keys. Data Center Xray and Zephyr Scale use the Jira token above.</div>
+                    <div class="atl-grid">
+                      <div><label class="lbl" for="atlXrayId">Xray client ID</label><input id="atlXrayId" class="txt" type="text" autocomplete="off" spellcheck="false"></div>
+                      <div><label class="lbl" for="atlXraySecret">Xray client secret</label><input id="atlXraySecret" class="txt" type="password" autocomplete="off" spellcheck="false"></div>
+                      <div><label class="lbl" for="atlZephyr">Zephyr Scale API token</label><input id="atlZephyr" class="txt" type="password" autocomplete="off" spellcheck="false"></div>
+                    </div>
+                  </details>
+                  <div class="setup-actions">
+                    <button id="atlSave" class="btn btn-primary" type="button">Check and save</button>
+                    <button id="atlCancel" class="link-btn" type="button">Cancel</button>
+                    <div id="atlMsg" class="hint hidden"></div>
+                  </div>
+                </div>
+              </div>
               <div class="seg" id="tcMode" role="radiogroup" style="margin-top:10px">
                 <button type="button" data-mode="sheet-only">Only my test cases</button>
                 <button type="button" data-mode="sheet-plus-agent" class="on">My test cases + agent suggestions</button>
               </div>
               <div id="tcPreview" class="hidden"></div>
               <div id="tcErr" class="bad-msg hidden"></div>
-              <div class="hint" style="margin-top:8px">Jira and Confluence: live links are planned. For now export the issues (Jira: Export &gt; CSV) or the Confluence table as CSV, and upload or paste it.</div>
+              <div class="hint" style="margin-top:8px">Jira and Confluence: paste an issue, filter or search link (or JQL), or a Confluence page with a test case table. Xray and Zephyr Scale steps are read when connected. CSV exports work too.</div>
             </div>
           </div>
           <div id="prodBox" class="prod-box hidden">
@@ -1602,7 +1636,7 @@
   // ---------- Test case sheet ----------
   // The sheet is read in the browser (text, or base64 for .xlsx) and checked by the server with the
   // agent's own parser. The run sends it again; the server saves it in the run folder.
-  let tcSheet = null; // { name, content } or { name, base64 }
+  let tcSheet = null; // { name, content }, { name, base64 } or { name, link }
   let tcMode = "sheet-plus-agent";
   let tcTimer = null;
   function tcJson() {
@@ -1616,12 +1650,14 @@
     if (!tcSheet) { box.classList.add("hidden"); box.innerHTML = ""; return; }
     const res = await fetch("/api/test-cases/preview", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...tcSheet, json: tcJson() }) }).catch(() => null);
     const body = res ? await res.json().catch(() => ({})) : {};
-    if (!res || !res.ok) { box.classList.add("hidden"); tcShowErr(body.error || "Could not read the sheet."); return; }
+    if (!res || !res.ok) { box.classList.add("hidden"); tcShowErr(body.error || (tcSheet.link ? "Could not read the link." : "Could not read the sheet.")); return; }
     const cols = Object.values(body.columns || {}).map((c) => `<span class="tag ok" title="from the column ${esc(c.header)}">${esc(c.label)} ← ${esc(c.header)}</span>`);
     const ignored = (body.ignored || []).map((h) => `<span class="tag" title="not used">${esc(h)}</span>`);
     const rows = (body.rows || []).map((r) => `<tr><td class="id">${esc(r.id)}</td><td>${esc(r.title)}${(r.warnings || []).map((w) => `<div class="w">${esc(w)}</div>`).join("")}</td><td>${r.endpoint ? esc(r.endpoint) + (r.matchedBy ? ` <span class="hint">(${esc(r.matchedBy === "column" ? "Endpoint column" : r.matchedBy)})</span>` : "") : '<span class="hint">AI will match</span>'}</td></tr>`);
     const sheetWarn = (body.warnings || []).map((w) => `<div class="hint w">${esc(w)}</div>`).join("");
-    box.innerHTML = `<div style="margin-top:10px"><b>${esc(body.count)} test case${body.count === 1 ? "" : "s"}</b> in <b>${esc(tcSheet.name)}</b> (${esc(String(body.format || "").toUpperCase())}), ${esc(body.matched)} matched to an endpoint${body.rowWarnings ? `, <span class="w" style="color:var(--warn)">${esc(body.rowWarnings)} row${body.rowWarnings === 1 ? "" : "s"} with warnings</span>` : ""}</div>`
+    const srcName = { jira: "Jira", confluence: "Confluence", zephyr: "Zephyr Scale" };
+    const where = body.source ? `<span class="tc-source">${esc(srcName[body.source.kind] || body.source.kind)}</span><b>${esc(body.source.label)}</b>${body.source.steps ? ` <span class="hint">(steps from ${esc(body.source.steps)})</span>` : ""}` : `<b>${esc(tcSheet.name)}</b> (${esc(String(body.format || "").toUpperCase())})`;
+    box.innerHTML = `<div style="margin-top:10px"><b>${esc(body.count)} test case${body.count === 1 ? "" : "s"}</b> from ${where}, ${esc(body.matched)} matched to an endpoint${body.rowWarnings ? `, <span class="w" style="color:var(--warn)">${esc(body.rowWarnings)} row${body.rowWarnings === 1 ? "" : "s"} with warnings</span>` : ""}</div>`
       + `<div class="tc-map">${cols.join("")}${ignored.join("")}</div>${sheetWarn}`
       + `<div class="tc-rows"><table><thead><tr><th>ID</th><th>Title and warnings</th><th>Endpoint</th></tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
     box.classList.remove("hidden");
@@ -1643,9 +1679,84 @@
   $("tcPasteBtn").addEventListener("click", () => { $("tcText").classList.toggle("hidden"); $("tcText").focus(); });
   $("tcText").addEventListener("input", () => {
     clearTimeout(tcTimer);
-    tcTimer = setTimeout(() => { const v = $("tcText").value; tcSheet = v.trim() ? { name: "pasted.csv", content: v } : null; tcPreview(); }, 400);
+    tcTimer = setTimeout(() => {
+      const v = $("tcText").value;
+      // A single pasted link goes to the link flow.
+      if (/^\s*https?:\/\/\S+\s*$/.test(v)) { $("tcText").value = ""; $("tcText").classList.add("hidden"); openLinkBox(v.trim()); return; }
+      tcSheet = v.trim() ? { name: "pasted.csv", content: v } : null; tcPreview();
+    }, 400);
   });
-  $("tcClear").addEventListener("click", () => { tcSheet = null; $("tcText").value = ""; tcPreview(); });
+
+  // ---------- Jira and Confluence links ----------
+  // The server reads the link with the credentials in .env (never sent back to the page) and returns
+  // the same preview as a sheet. The run sends the link; the agent reads it again with --test-cases.
+  let atl = null;
+  async function atlLoad() {
+    const res = await fetch("/api/atlassian").catch(() => null);
+    atl = res && res.ok ? await res.json().catch(() => null) : null;
+    atlRender();
+  }
+  function atlRender() {
+    const st = $("atlStatus");
+    if (!atl) { st.textContent = ""; return; }
+    let host = atl.baseUrl;
+    try { host = new URL(atl.baseUrl).host; } catch {}
+    const change = atl.editable ? ` <button id="atlEdit" class="link-btn" type="button">${atl.configured ? "Change" : "Connect Jira and Confluence"}</button>` : "";
+    if (atl.configured) st.innerHTML = `<span class="tag ok">Connected</span> ${esc(host)}${atl.email ? ` as ${esc(atl.email)}` : ""} (${atl.deployment === "cloud" ? "Cloud" : "Data Center"})${atl.xray ? " · Xray" : ""}${atl.zephyr ? " · Zephyr Scale" : ""}.${change}`;
+    else if (atl.error && atl.baseUrl) st.innerHTML = `<span class="tag bad">Not working</span> ${esc(atl.error)}${change}`;
+    else st.innerHTML = atl.editable ? `Jira and Confluence are not connected yet.${change}` : "Not connected: the server's .env needs ATLASSIAN_BASE_URL, ATLASSIAN_EMAIL and ATLASSIAN_API_TOKEN.";
+    const btn = $("atlEdit");
+    if (btn) btn.addEventListener("click", () => atlOpenSetup());
+  }
+  function atlOpenSetup() {
+    $("atlBase").value = (atl && atl.baseUrl) || "";
+    $("atlEmail").value = (atl && atl.email) || "";
+    $("atlConf").value = (atl && atl.confluenceUrl) || "";
+    $("atlToken").value = "";
+    $("atlToken").placeholder = atl && atl.hasToken ? "Saved. Leave empty to keep it" : "Paste the token";
+    $("atlXraySecret").placeholder = atl && atl.xray ? "Saved. Leave empty to keep it" : "";
+    $("atlZephyr").placeholder = atl && atl.zephyr ? "Saved. Leave empty to keep it" : "";
+    $("atlMsg").classList.add("hidden");
+    $("atlSetup").classList.remove("hidden");
+    $("atlBase").focus();
+  }
+  function atlMsg(text, cls) { const m = $("atlMsg"); m.className = cls; m.textContent = text; m.classList.toggle("hidden", !text); }
+  $("atlSave").addEventListener("click", async () => {
+    const body = { baseUrl: $("atlBase").value, email: $("atlEmail").value, token: $("atlToken").value, confluenceUrl: $("atlConf").value, xrayClientId: $("atlXrayId").value || undefined, xrayClientSecret: $("atlXraySecret").value, zephyrToken: $("atlZephyr").value };
+    atlMsg("Checking with Atlassian...", "hint");
+    $("atlSave").disabled = true;
+    const res = await fetch("/api/atlassian", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).catch(() => null);
+    $("atlSave").disabled = false;
+    const out = res ? await res.json().catch(() => ({})) : {};
+    $("atlToken").value = ""; $("atlXraySecret").value = ""; $("atlZephyr").value = "";
+    if (!res || !res.ok) { atlMsg(out.error || "Could not save.", "bad-msg"); return; }
+    atl = out;
+    $("atlSetup").classList.add("hidden");
+    atlRender();
+    $("atlStatus").insertAdjacentHTML("beforeend", ` <span class="ok-msg" style="margin:0">Signed in as ${esc(out.user || "you")}. Saved to .env.</span>`);
+    if ($("tcLink").value.trim()) tcLoadLink();
+  });
+  $("atlCancel").addEventListener("click", () => $("atlSetup").classList.add("hidden"));
+  function openLinkBox(value) {
+    $("tcLinkBox").classList.remove("hidden");
+    if (value) { $("tcLink").value = value; tcLoadLink(); }
+    else $("tcLink").focus();
+    if (!atl) atlLoad();
+  }
+  async function tcLoadLink() {
+    const v = $("tcLink").value.trim();
+    if (!v) return;
+    tcSheet = { name: v, link: v };
+    $("tcLinkLoad").disabled = true;
+    $("tcLinkLoad").textContent = "Loading...";
+    await tcPreview();
+    $("tcLinkLoad").disabled = false;
+    $("tcLinkLoad").textContent = "Load cases";
+  }
+  $("tcLinkBtn").addEventListener("click", () => { $("tcLinkBox").classList.toggle("hidden"); if (!$("tcLinkBox").classList.contains("hidden")) openLinkBox(""); });
+  $("tcLinkLoad").addEventListener("click", tcLoadLink);
+  $("tcLink").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); tcLoadLink(); } });
+  $("tcClear").addEventListener("click", () => { tcSheet = null; $("tcText").value = ""; $("tcLink").value = ""; tcPreview(); });
   document.querySelectorAll("#tcMode button").forEach((b) => b.addEventListener("click", () => {
     tcMode = b.dataset.mode;
     document.querySelectorAll("#tcMode button").forEach((x) => x.classList.toggle("on", x === b));
@@ -1654,7 +1765,7 @@
     const card = $("tcCard");
     if (!t) { card.classList.add("hidden"); return; }
     card.classList.remove("hidden");
-    $("tcFileName").textContent = `${String(t.file || "").split(/[\\/]/).pop()} · ${t.mode === "sheet-only" ? "only my test cases" : "my test cases + agent suggestions"}`;
+    $("tcFileName").textContent = `${t.source ? t.source.label : String(t.file || "").split(/[\\/]/).pop()} · ${t.mode === "sheet-only" ? "only my test cases" : "my test cases + agent suggestions"}`;
     const tile = (label, n, cls) => `<span class="tag ${cls}">${esc(label)} ${esc(n ?? 0)}</span>`;
     $("tcTiles").innerHTML = tile("Rows", t.rows, "") + tile("Passed", t.passed, "ok") + tile("Failed", t.failed, "bad") + tile("Needs review", t.needsReview, "warn") + tile("Not automated", t.notAutomated, "warn") + tile("Agent suggestions", t.agentSuggestions, "");
     const cls = { passed: "ok", failed: "bad", "needs review": "warn", "not automated": "warn" };

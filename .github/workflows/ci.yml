@@ -58,6 +58,8 @@ jobs:
       - run: npm run test:ui-smoke
       - run: npm run test:checkpoint
       - run: npm run test:test-cases
+      - run: npm run test:atlassian
+      - run: npm run test:ui-atlassian
       - name: Pactum template tests against the local API
         run: |
           mkdir -p reports/pactum
@@ -137,4 +139,6 @@ jobs:
           Run 'test:ui-smoke'
           Run 'test:ui'
           Run 'test:test-cases'
+          Run 'test:atlassian'
+          Run 'test:ui-atlassian'
           Run 'test:e2e'

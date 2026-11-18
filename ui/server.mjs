@@ -114,7 +114,7 @@ function detectClaudeCli() {
 function childEnvWithoutSecrets() {
   const env = { ...process.env };
   delete env.CLAUDECODE;
-  for (const k of Object.keys(env)) if (/AUTH|ANTHROPIC_API_KEY|OPENAI_API_KEY/i.test(k)) delete env[k];
+  for (const k of Object.keys(env)) if (/AUTH|ANTHROPIC_API_KEY|OPENAI_API_KEY|ATLASSIAN_API_TOKEN|XRAY_CLIENT_SECRET|ZEPHYR_API_TOKEN/i.test(k)) delete env[k];
   return env;
 }
 function settingsState() {
@@ -600,6 +600,19 @@ async function sheetForRun(body, cfg, dir) {
   const mode = (upload && upload.mode) || (cfg.testCases && cfg.testCases.mode) || null;
   if (mode !== null && !tcMod.TEST_CASE_MODES.includes(mode)) return { error: `test cases mode must be one of ${tcMod.TEST_CASE_MODES.join(", ")}` };
   const modeArgs = mode ? ["--test-cases-mode", mode] : [];
+  // A Jira / Confluence / Zephyr Scale link or JQL: checked here without any request (the Atlassian site
+  // in .env, and the link on that site), then read live by the agent with --test-cases <link>.
+  const link = upload && typeof upload.link === "string" ? upload.link : !upload && cfg.testCases && typeof cfg.testCases.link === "string" ? cfg.testCases.link : null;
+  if (link !== null) {
+    const atl = await agentModule("atlassian");
+    if (!atl.isLinkSource(link)) return { error: "test case link: paste one Jira or Confluence link, or a JQL query" };
+    try {
+      atl.parseLink(link, atl.atlassianSettings(process.env));
+    } catch (err) {
+      return { error: `test case link: ${err && err.message ? err.message : String(err)}` };
+    }
+    return { args: ["--test-cases", link.trim(), ...modeArgs] };
+  }
   if (upload && (typeof upload.content === "string" || typeof upload.base64 === "string")) {
     let sheet;
     const name = typeof upload.name === "string" ? upload.name.slice(0, 200) : "pasted.csv";
@@ -787,6 +800,71 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, settingsState());
   }
 
+  // Jira and Confluence credentials for test case links (agent/atlassian.ts). GET never returns a token.
+  if (req.method === "GET" && p === "/api/atlassian") {
+    const atl = await agentModule("atlassian");
+    return json(res, 200, { ...atl.atlassianStatus(process.env), editable: SETTINGS_EDITABLE });
+  }
+
+  if (req.method === "POST" && p === "/api/atlassian") {
+    if (!SETTINGS_EDITABLE) return json(res, 403, { error: "Jira and Confluence settings can only be changed on a personal machine (no login, not hosted). Set them in .env on the server." });
+    let body;
+    try {
+      body = JSON.parse(await readBody(req));
+    } catch {
+      return json(res, 400, { error: "Request body must be JSON" });
+    }
+    const atl = await agentModule("atlassian");
+    const str = (v) => (typeof v === "string" ? v.trim() : "");
+    const candidate = { ...process.env };
+    const pairs = {};
+    // Blank secret fields keep the saved value, so the token never has to come back to the page.
+    const fields = [
+      ["baseUrl", "ATLASSIAN_BASE_URL", false],
+      ["email", "ATLASSIAN_EMAIL", false],
+      ["token", "ATLASSIAN_API_TOKEN", true],
+      ["confluenceUrl", "CONFLUENCE_BASE_URL", false],
+      ["xrayClientId", "XRAY_CLIENT_ID", false],
+      ["xrayClientSecret", "XRAY_CLIENT_SECRET", true],
+      ["zephyrToken", "ZEPHYR_API_TOKEN", true],
+    ];
+    const typed = [];
+    for (const [field, envName, secret] of fields) {
+      if (body[field] === undefined) continue;
+      const v = str(body[field]);
+      if (v.length > 2000 || /[\r\n]/.test(v)) return json(res, 400, { error: `${field} is too long or has line breaks` });
+      if (secret) {
+        if (!v) continue;
+        if (/\s/.test(v)) return json(res, 400, { error: "Paste the token exactly as it was shown, with no spaces." });
+        typed.push(v);
+      }
+      candidate[envName] = v;
+      pairs[envName] = v;
+    }
+    if (!str(candidate.ATLASSIAN_BASE_URL)) return json(res, 400, { error: "Enter your Atlassian site address, like https://your-team.atlassian.net" });
+    if (pairs.ATLASSIAN_BASE_URL) {
+      try {
+        const u = new URL(pairs.ATLASSIAN_BASE_URL);
+        // Cloud: the site root (a pasted /wiki/... or /jira/... page address is trimmed). Data Center may
+        // have a context path (https://host/jira), which is kept.
+        pairs.ATLASSIAN_BASE_URL = candidate.ATLASSIAN_BASE_URL = /\.(atlassian\.net|jira\.com)$/i.test(u.hostname) ? u.origin : `${u.origin}${u.pathname.replace(/\/+$/, "")}`;
+      } catch {
+        return json(res, 400, { error: "The site address is not a URL. Copy it from the browser, like https://your-team.atlassian.net" });
+      }
+    }
+    if (str(candidate.ATLASSIAN_EMAIL) && !/^[^\s@]+@[^\s@]+$/.test(str(candidate.ATLASSIAN_EMAIL)) && /atlassian\.net/i.test(str(candidate.ATLASSIAN_BASE_URL))) return json(res, 400, { error: "Enter the email address of your Atlassian account." });
+    const secrets = [...atl.atlassianSecrets(candidate), ...typed];
+    const check = await atl.verifyAtlassian({ env: candidate });
+    if (!check.ok) return json(res, 400, { error: atl.redactSecrets(check.error, secrets) });
+    try {
+      writeEnvLines(pairs);
+    } catch (err) {
+      return json(res, 500, { error: `Could not write .env: ${atl.redactSecrets(String(err && err.message ? err.message : err), secrets)}` });
+    }
+    console.log(`UI: Jira and Confluence settings saved (${new URL(candidate.ATLASSIAN_BASE_URL).host}, ${check.deployment}) to ${path.basename(ENV_FILE)}`);
+    return json(res, 200, { ...atl.atlassianStatus(process.env), editable: SETTINGS_EDITABLE, user: check.user });
+  }
+
   if (req.method === "POST" && p === "/api/logout") {
     if (session) sessions.delete(session.sid);
     res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", "Set-Cookie": sessionCookie(req, "", 0) });
@@ -838,8 +916,20 @@ const server = http.createServer(async (req, res) => {
     } catch {
       return json(res, 400, { error: "Request body must be JSON" });
     }
-    if (typeof body.content !== "string" && typeof body.base64 !== "string") return json(res, 400, { error: "content or base64 is required" });
+    if (typeof body.content !== "string" && typeof body.base64 !== "string" && typeof body.link !== "string") return json(res, 400, { error: "content, base64 or link is required" });
     const tcMod = await agentModule("test-cases");
+    const atl = await agentModule("atlassian");
+    // A Jira / Confluence / Zephyr Scale link (or JQL), read live with the Atlassian credentials in .env.
+    const link = typeof body.link === "string" ? body.link : typeof body.content === "string" && /^\s*https?:\/\/\S+\s*$/.test(body.content) ? body.content : null;
+    if (link !== null) {
+      if (!atl.isLinkSource(link)) return json(res, 400, { error: "Paste one Jira or Confluence link, or a JQL query." });
+      try {
+        const sheet = await atl.loadLinkCases(link);
+        return json(res, 200, tcMod.previewSheet(sheet, typeof body.json === "string" ? endpointRefs(body.json) : null));
+      } catch (err) {
+        return json(res, 400, { error: atl.redactSecrets(err && err.message ? err.message : String(err), atl.atlassianSecrets(process.env)) });
+      }
+    }
     const name = typeof body.name === "string" ? body.name.slice(0, 200) : "pasted.csv";
     try {
       const sheet = await tcMod.parseSheet(typeof body.base64 === "string" ? Buffer.from(body.base64, "base64") : body.content, name);
