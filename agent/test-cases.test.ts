@@ -317,7 +317,7 @@ await check('traceability rows: passed, failed, needs review, not automated, age
   assert.deepEqual(rows.map((r) => [r.id, r.status]), [['TC-1', 'passed'], ['TC-2', 'failed'], ['TC-3', 'needs review'], ['TC-4', 'not automated'], ['agent', 'passed']]);
   assert.match(rows[1].reason, /^suspected API finding: expected 401\|403, got 200; endpoint matched by the AI/);
   assert.equal(rows[0].testFile, 'generated/get-product.spec.ts');
-  assert.deepEqual(traceTotals(rows), { rows: 4, automated: 2, passed: 1, failed: 1, needsReview: 1, notAutomated: 1, agentSuggestions: 1 });
+  assert.deepEqual(traceTotals(rows), { rows: 4, automated: 2, passed: 1, failed: 1, partiallyCovered: 0, needsReview: 1, notAutomated: 1, agentSuggestions: 1 });
 });
 
 const ROWS: TraceRow[] = [{ id: 'TC-1', title: '=HYPERLINK("x")', endpoint: 'a', testFile: 'a.spec.ts', status: 'passed', reason: 'has, comma', source: 'sheet' }];

@@ -28,6 +28,7 @@ export type RawRequest = {
   requiresAuth?: boolean; // stated by the source (OpenAPI security, text)
   unresolved?: string; // an unresolved variable the importer found in the URL, e.g. a shell $VAR
   responseSchema?: ResponseSchema; // the documented success response (OpenAPI)
+  errorStatuses?: number[]; // the documented 4xx responses other than 401 and 403 (OpenAPI)
 };
 
 export type BuildOptions = {
@@ -361,6 +362,7 @@ type Kept = {
   credentials: Credential[];
   extraHeaders: { name: string; value: string }[];
   responseSchema?: ResponseSchema;
+  errorStatuses?: number[];
 };
 
 export function buildInput(requests: RawRequest[], opts: BuildOptions = {}): ImportResult {
@@ -416,6 +418,7 @@ export function buildInput(requests: RawRequest[], opts: BuildOptions = {}): Imp
       credentials,
       extraHeaders,
       ...(r.responseSchema ? { responseSchema: r.responseSchema } : {}),
+      ...(r.errorStatuses?.length ? { errorStatuses: r.errorStatuses } : {}),
     });
   }
 
@@ -451,6 +454,7 @@ export function buildInput(requests: RawRequest[], opts: BuildOptions = {}): Imp
       ...(Object.keys(headers).length ? { headers } : {}),
       ...(k.body ? { body: k.body } : {}),
       ...(k.responseSchema ? { responseSchema: k.responseSchema } : {}),
+      ...(k.errorStatuses?.length ? { errorStatuses: k.errorStatuses } : {}),
     };
   });
 

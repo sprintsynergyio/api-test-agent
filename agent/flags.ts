@@ -21,7 +21,21 @@ export type AgentFlags = {
   // A test case sheet to automate (overrides the input file's testCases.file), and the mode.
   testCases: string | null;
   testCasesMode: TestCaseMode | null;
+  // Test options per endpoint (agent/config.ts allowInvalidInput and stableData): a list of endpoint
+  // ids, 'all', or null to keep what the input file says.
+  allowInvalidInput: EndpointList;
+  stableData: EndpointList;
 };
+
+export type EndpointList = string[] | 'all' | null;
+
+function endpointList(name: string, raw: string): string[] | 'all' {
+  const v = raw.trim();
+  if (v === 'all') return 'all';
+  const ids = v.split(',').map((s) => s.trim()).filter(Boolean);
+  if (!ids.length) throw new Error(`${name} needs "all" or a comma-separated list of endpoint ids`);
+  return ids;
+}
 
 import { FAIL_ON_VALUES, type FailOn } from './exit-codes';
 import { TEST_CASE_MODES, type TestCaseMode } from './config';
@@ -50,6 +64,8 @@ export function parseAgentFlags(argv: string[], defaultInput = 'input/endpoints.
     failOn: 'finding',
     testCases: null,
     testCasesMode: null,
+    allowInvalidInput: null,
+    stableData: null,
   };
   const positional: string[] = [];
   for (let i = 0; i < argv.length; i++) {
@@ -100,6 +116,16 @@ export function parseAgentFlags(argv: string[], defaultInput = 'input/endpoints.
         const v = value();
         if (!(TEST_CASE_MODES as readonly string[]).includes(v)) throw new Error(`--test-cases-mode must be one of ${TEST_CASE_MODES.join(', ')}, got "${v}"`);
         flags.testCasesMode = v as TestCaseMode;
+        break;
+      }
+      // Without ids (the next argument is another flag, a file path or missing): every endpoint.
+      case '--allow-invalid-input':
+      case '--stable-data': {
+        const next = argv[i + 1];
+        const bare = inline === undefined && (next === undefined || next.startsWith('--') || /[\\/]|\.(json|ya?ml|csv|xlsx)$/i.test(next));
+        const list = bare ? 'all' : endpointList(name, value());
+        if (name === '--allow-invalid-input') flags.allowInvalidInput = list;
+        else flags.stableData = list;
         break;
       }
       default:

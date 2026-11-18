@@ -111,11 +111,13 @@ if (isObj(s.testCases)) {
   for (const c of cases) {
     if (!isObj(c)) continue;
     field('summary.testCases.cases[]', c, 'id', ['string']);
-    field('summary.testCases.cases[]', c, 'status', ['string'], ['passed', 'failed', 'needs review', 'not automated']);
+    field('summary.testCases.cases[]', c, 'status', ['string'], ['passed', 'partially covered', 'failed', 'needs review', 'not automated']);
     field('summary.testCases.cases[]', c, 'reason', ['string']);
   }
   const by = (st: string) => cases.filter((c) => isObj(c) && c.status === st).length;
   need(by('passed') === tc.passed && by('failed') === tc.failed && by('needs review') === tc.needsReview && by('not automated') === tc.notAutomated, 'summary.testCases counts must match the case statuses');
+  // partiallyCovered (added later): a test that passed without asserting every clause; never counted as passed.
+  need(tc.partiallyCovered === undefined ? by('partially covered') === 0 : isInt(tc.partiallyCovered) && by('partially covered') === tc.partiallyCovered, 'summary.testCases.partiallyCovered must match the "partially covered" cases');
 }
 
 need(isObj(s.totals), 'summary.totals is missing');

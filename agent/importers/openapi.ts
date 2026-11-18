@@ -292,8 +292,14 @@ export function importOpenApi(content: string): ImportResult {
         }
       }
 
+      // The documented client errors (400, 404, 422, ... and a "4XX" range as 400). 401 and 403 belong
+      // to the auth tests, so they are left out. Any of them turns on [invalid-input] tests.
+      const errorStatuses = [...new Set(Object.keys(responses).flatMap((c) => (/^4\d\d$/.test(c) ? [Number(c)] : /^4xx$/i.test(c) ? [400] : [])))]
+        .filter((c) => c !== 401 && c !== 403)
+        .sort((a, b) => a - b);
+
       const url = `${origin}${prefix}${path}${query.length ? `?${query.join('&')}` : ''}`;
-      requests.push({ item: label, method, url, headers, body, credentials, requiresAuth, ...(responseSchema ? { responseSchema } : {}) });
+      requests.push({ item: label, method, url, headers, body, credentials, requiresAuth, ...(responseSchema ? { responseSchema } : {}), ...(errorStatuses.length ? { errorStatuses } : {}) });
     }
   }
 

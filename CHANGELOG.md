@@ -15,6 +15,7 @@ All notable changes to this project. Dates are the day the change reached `main`
 - Body assertions, OpenAPI response schemas, model retries, `schemaVersion`, docs (PR 16)
 - Presented as a SprintSynergy product; `docs/HACKATHON-HANDOFF.md` replaced by `docs/DEMO.md` (PR 17)
 - Windows: CI starts `npm run ui` from `J:\Api test agent\...` and other folders with spaces or on a non-C: drive (Node 22, 24 and 24.21.0) and loads the agent modules, new `npm run test:ui-smoke`; guards the fix for the UI crash `ERR_UNSUPPORTED_ESM_URL_SCHEME ... Received protocol 'j:'` on first page load (PR 20)
+- Sheet runs against real APIs: image and file responses (headers, size and file signature instead of JSON; the probe reads bytes); the static gate drops only the tests it rejects and gives each case its own reason; invalid-input allowed when the OpenAPI spec documents a 4xx, a sheet case expects one, or `allowInvalidInput` / `--allow-invalid-input` / UI Test options; cross-call checks on stable data (read-only GET or `stableData` / `--stable-data`) run serially; "400 or 404, not 500" read correctly in the parser and prompts; per-clause coverage with the new `partially covered` status and needs review with expected vs actual (traceability, summary, UI, Allure); base URLs with a path keep it in the probe, tests, Pactum and the export; "Only my test cases" explained in the UI and README; local demo API gains a `/media/v1` image, paging and validation API with `npm run test:sheet-feedback` and `npm run test:e2e-media`
 
 ## 1.0.0 (2026-11-14)
 

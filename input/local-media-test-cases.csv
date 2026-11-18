@@ -1,0 +1,10 @@
+Test Case ID,Title,Endpoint,Method,Steps / Request,Expected Result,Priority
+TC-101,List the first page of photos,list-photos,GET,Send GET /photos with page 1 and per_page 3,"Status 200; response has data, page, per_page and total; each photo has id, title and download_url",High
+TC-102,Walk two pages without repeats,list-photos,GET,Send GET /photos for page 1 and page 2 with per_page 3,Status 200 for both pages; no photo id appears on both pages; total is the same on both pages,High
+TC-103,Reject a text page number,list-photos,GET,Send GET /photos with page abc,"Response is 400 JSON error, never 500",High
+TC-104,Reject an unknown thumbnail format,get-thumbnail,GET,Send GET /thumbnail with format bmp,"Response is 400 or 404 JSON error, not 500 or 502",High
+TC-105,Photo links point to the CDN folder,list-photos,GET,Send GET /photos with page 1,Status 200; each photo's download_url contains /cdn/,Medium
+TC-106,Download the PNG thumbnail,get-thumbnail,GET,Send GET /thumbnail with format png,Status 200; Content-Type is image/png; body is not empty; the file signature is PNG; Cache-Control has max-age,High
+TC-107,Resize a photo,resize-photo,POST,"Send POST /resize with a photo id, a width and a height",Status 200; Content-Type is image/png; body is not empty,High
+TC-108,Resize without a photo is rejected,resize-photo,POST,Send POST /resize with an empty JSON body,"Response is 400 or 404, not 5xx",High
+TC-109,Photos are sorted by title,list-photos,GET,Send GET /photos with page 1 and per_page 3,Status 200; photos are sorted by title,Low

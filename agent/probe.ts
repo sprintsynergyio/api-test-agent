@@ -5,11 +5,13 @@ import { pathToFileURL } from 'node:url';
 import { pickAuthEnv } from './auth';
 import { loadConfig, selectionLine, takeSelectFlag, type Config, type Endpoint } from './config';
 import { cleanupLine, cleanupResources, createClients, disposeClients, resolvePath, runSetup, type CleanupTotals, type Clients } from './http';
-import { queryString, setupSteps } from './model';
+import { fileSignature, isBinaryContentType, queryString, setupSteps } from './model';
 import { describeRedaction, redactHeaders, redactText, redactValue, type RedactionCounter } from './redact';
 import { endpointAllowed } from './safety';
 
 const PROBE_DIR = 'out/probes';
+// Response headers the probe keeps for the prompts (all safe to show: no auth, no cookies).
+const PROBE_HEADERS = ['content-type', 'cache-control', 'content-length', 'content-disposition', 'etag', 'last-modified'];
 const REQUEST_TIMEOUT_MS = 30_000;
 
 export type ProbeResult = {
@@ -23,6 +25,11 @@ export type ProbeResult = {
   contentType: string | null;
   body?: unknown;
   bodyText?: string;
+  // A binary body (an image, a PDF, ...): its size and file signature instead of the bytes. Tests of
+  // such an endpoint assert the headers, the size and the signature, never a JSON field.
+  binary?: { bytes: number; signature: string | null; signatureHex: string | null };
+  // A few response headers tests may assert (content type, caching, size, file name). Never auth.
+  responseHeaders?: Record<string, string>;
   durationMs: number;
   usable: boolean;
   error?: string;
@@ -81,10 +88,22 @@ async function probeEndpoint(config: Config, clients: Clients, endpoint: Endpoin
   const started = Date.now();
   try {
     const response = await client.fetch(result.path, { method: endpoint.method, data: endpoint.body, params: endpoint.query, headers: endpoint.headers });
+    const headers = response.headers();
+    result.contentType = headers['content-type'] ?? null;
+    const shownHeaders = Object.fromEntries(PROBE_HEADERS.filter((h) => headers[h] !== undefined).map((h) => [h, headers[h]]));
+    if (Object.keys(shownHeaders).length) result.responseHeaders = shownHeaders;
+    if (isBinaryContentType(result.contentType)) {
+      const bytes = await response.body();
+      result.durationMs = Date.now() - started;
+      result.status = response.status();
+      result.usable = isSuccess(result.status);
+      const sig = fileSignature(bytes);
+      result.binary = { bytes: bytes.length, signature: sig?.kind ?? null, signatureHex: sig?.hex ?? null };
+      return result;
+    }
     const text = await response.text();
     result.durationMs = Date.now() - started;
     result.status = response.status();
-    result.contentType = response.headers()['content-type'] ?? null;
     result.usable = isSuccess(result.status);
     try {
       if (text.trim() === '') throw new Error('empty');
@@ -110,6 +129,7 @@ export function redactProbe(result: ProbeResult, config: Config, counter: Redact
     path: redactText(result.path, counter),
     requestBody: redactValue(result.requestBody, config.redaction, counter, 'request'),
     headers: redactHeaders(result.headers, counter) ?? null,
+    ...(result.responseHeaders ? { responseHeaders: redactHeaders(result.responseHeaders, counter) ?? undefined } : {}),
     ...(result.body !== undefined ? { body: redactValue(result.body, config.redaction, counter) } : {}),
     ...(result.bodyText !== undefined ? { bodyText: redactText(result.bodyText, counter) } : {}),
     ...(result.error !== undefined ? { error: redactText(result.error, counter) } : {}),

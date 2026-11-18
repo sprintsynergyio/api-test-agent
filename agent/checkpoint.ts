@@ -66,6 +66,11 @@ export function endpointHash(endpoint: Endpoint): string {
     query: endpoint.query ?? null,
     headers: endpoint.headers ?? null,
     setup: endpoint.setup ?? null,
+    // The test options change the plan, so turning one on plans the endpoint again (only when set,
+    // so checkpoints written before these options existed stay valid).
+    ...(endpoint.allowInvalidInput ? { allowInvalidInput: true } : {}),
+    ...(endpoint.stableData ? { stableData: true } : {}),
+    ...(endpoint.errorStatuses?.length ? { errorStatuses: endpoint.errorStatuses } : {}),
   });
 }
 

@@ -187,3 +187,54 @@ export function testTypeOf(title: string): string | null {
   const t = parseTestTitle(title).type;
   return t && t !== 'needs-review' ? t : null;
 }
+
+// Joins the base URL and a request path so the base URL's own path is kept:
+// joinUrl of https://host/api/v2 and /items?x=1 is https://host/api/v2/items?x=1. Standard URL
+// resolution would drop /api/v2 because of the leading slash. An absolute http(s)
+// URL is returned as it is; an empty path gives the base URL itself. Pure string work, the same on
+// every OS.
+export function joinUrl(baseUrl: string, path: string): string {
+  if (/^https?:\/\//i.test(path)) return path;
+  const base = baseUrl.replace(/[?#].*$/, '').replace(/\/+$/, '');
+  if (!path) return base;
+  if (/^[?#]/.test(path)) return base + path;
+  return `${base}/${path.replace(/^\/+/, '')}`;
+}
+
+// Methods that only read. An endpoint with one of these changes no data on the API.
+export const READ_ONLY_METHODS = ['GET', 'HEAD', 'OPTIONS'] as const;
+export function isReadOnlyMethod(method: string): boolean {
+  return (READ_ONLY_METHODS as readonly string[]).includes(method.toUpperCase());
+}
+
+// A response body that is not text: images, PDFs, archives, application/octet-stream. JSON, XML,
+// form data, HTML and every text/* type are text. No content type at all counts as text.
+export function isBinaryContentType(contentType: string | null | undefined): boolean {
+  const t = String(contentType ?? '').split(';')[0].trim().toLowerCase();
+  if (!t) return false;
+  if (t.startsWith('text/')) return false;
+  if (/[/+](json|xml|javascript|ecmascript|x-www-form-urlencoded|html|csv|yaml|x-yaml|graphql)$/.test(t)) return false;
+  return true;
+}
+
+// A JSON response: application/json, application/problem+json, application/vnd.x+json.
+export function isJsonContentType(contentType: string | null | undefined): boolean {
+  return /[/+]json\b/i.test(String(contentType ?? '').split(';')[0]);
+}
+
+// The file type a body's first bytes show, or null. Used by the probe (so the prompt can say "a PNG
+// image") and shown to the model as the hex prefix a test can assert.
+export const FILE_SIGNATURES: { kind: string; hex: string; mime: string }[] = [
+  { kind: 'png', hex: '89504e47', mime: 'image/png' },
+  { kind: 'jpeg', hex: 'ffd8ff', mime: 'image/jpeg' },
+  { kind: 'gif', hex: '47494638', mime: 'image/gif' },
+  { kind: 'pdf', hex: '25504446', mime: 'application/pdf' },
+  { kind: 'zip', hex: '504b0304', mime: 'application/zip' },
+];
+export function fileSignature(bytes: Uint8Array): { kind: string; hex: string } | null {
+  const hex = Array.from(bytes.subarray(0, 12), (b) => b.toString(16).padStart(2, '0')).join('');
+  // WebP: "RIFF" .... "WEBP"
+  if (hex.startsWith('52494646') && hex.slice(16, 24) === '57454250') return { kind: 'webp', hex: '52494646' };
+  const found = FILE_SIGNATURES.find((s) => hex.startsWith(s.hex));
+  return found ? { kind: found.kind, hex: found.hex } : null;
+}

@@ -34,7 +34,7 @@ function pinnedVersions(): Record<string, string> {
 function httpSource(): string {
   const src = readFileSync('agent/http.ts', 'utf8');
   const importLine = "import type { Config } from './config';";
-  const modelLine = "import { parseTestTitle, pathParams, queryString, resolvePath, setupSteps, testTypeOf } from './model';";
+  const modelLine = "import { isBinaryContentType, joinUrl, parseTestTitle, pathParams, queryString, resolvePath, setupSteps, testTypeOf } from './model';";
   if (!src.includes(modelLine)) throw new Error('framework export: agent/http.ts no longer imports model helpers as expected');
   if (!src.includes(importLine)) throw new Error('framework export: agent/http.ts no longer imports Config as expected');
   if (!src.includes("} from './auth';")) throw new Error('framework export: agent/http.ts no longer imports ./auth as expected');
@@ -63,7 +63,7 @@ function httpSource(): string {
   }[];
 };`,
     )
-    .replace(modelLine, "import { parseTestTitle, pathParams, queryString, resolvePath, setupSteps, testTypeOf, type Profile, type Query, type Selection, type Setup } from './model';")
+    .replace(modelLine, "import { isBinaryContentType, joinUrl, parseTestTitle, pathParams, queryString, resolvePath, setupSteps, testTypeOf, type Profile, type Query, type Selection, type Setup } from './model';")
     .replace("  type AuthRequest,\n} from './auth';", "  type AuthConfig,\n  type AuthRequest,\n} from './auth';")
     .replace("import { redactHeaders, redactText, redactValue, type RedactionCounter } from './redact';", "import { redactHeaders, redactText, redactValue, type RedactionConfig, type RedactionCounter } from './redact';")
     .replace(/^\/\/ Shared HTTP logic for the ctx fixture and the agent\./m, '// HTTP clients and createResource for the ctx fixture.');

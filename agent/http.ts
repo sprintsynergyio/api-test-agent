@@ -14,7 +14,7 @@ import {
   type AuthRequest,
 } from './auth';
 import type { Config } from './config';
-import { parseTestTitle, pathParams, queryString, resolvePath, setupSteps, testTypeOf } from './model';
+import { isBinaryContentType, joinUrl, parseTestTitle, pathParams, queryString, resolvePath, setupSteps, testTypeOf } from './model';
 import { redactHeaders, redactText, redactValue, type RedactionCounter } from './redact';
 import { assessSafety, ProductionRefused, READ_METHODS, ReadOnlyBlocked, refusalMessage, type Safety } from './safety';
 
@@ -111,6 +111,7 @@ function cleanRequestError(err: unknown, secrets: () => string[]): Error {
 // the role's auth (logging in first when needed) and retries once after a refresh status.
 function guarded(
   context: APIRequestContext,
+  baseUrl: string,
   safety: Safety,
   counter: RequestCounter,
   auth: Authenticator | null,
@@ -136,8 +137,11 @@ function guarded(
             opts = { ...rest, headers: req.headers, ...(req.query ? { params: req.query } : {}) };
           }
           counter.sent++;
+          // The base URL's own path is kept: "https://host/api/v2" + "/items" is ".../api/v2/items".
+          // Playwright's baseURL would resolve "/items" against the host and drop "/api/v2".
+          const url = typeof urlOrRequest === 'string' ? joinUrl(baseUrl, urlOrRequest) : urlOrRequest;
           try {
-            return await value.call(target, urlOrRequest, opts);
+            return await value.call(target, url, opts);
           } catch (err) {
             throw cleanRequestError(err, secrets);
           }
@@ -260,7 +264,7 @@ export async function createClients(config: Config, authEnv: Record<string, stri
   const newContext = () => request.newContext({ baseURL: config.baseUrl, extraHTTPHeaders: { ...config.defaultHeaders }, timeout: opts.timeoutMs });
 
   const rawNoAuth = await newContext();
-  const noAuthApi = guarded(rawNoAuth, safety, counter, null, secrets, retryBaseMs, trackCreated);
+  const noAuthApi = guarded(rawNoAuth, config.baseUrl, safety, counter, null, secrets, retryBaseMs, trackCreated);
   const box = { noAuthApi };
   // The login transport: a guarded, recorded request with no auth of its own. A JSON body goes as
   // data, a form body (OAuth2 token request) as form.
@@ -278,7 +282,7 @@ export async function createClients(config: Config, authEnv: Record<string, stri
       authenticators[role] = createAuthenticator(config.auth, creds, transport);
       const raw = await newContext();
       contexts.push(raw);
-      clientsByRole[role] = guarded(raw, safety, counter, authenticators[role], secrets, retryBaseMs, trackCreated);
+      clientsByRole[role] = guarded(raw, config.baseUrl, safety, counter, authenticators[role], secrets, retryBaseMs, trackCreated);
     }
   }
   const api = config.auth ? clientsByRole[DEFAULT_ROLE] : noAuthApi;
@@ -355,7 +359,9 @@ function recorded(context: APIRequestContext, role: string | null, baseHeaders: 
           throw err;
         }
         exchange.status = response.status();
-        exchange.responseBody = await response.text();
+        // An image or other binary body is described, not dumped as text.
+        const contentType = response.headers()['content-type'];
+        exchange.responseBody = isBinaryContentType(contentType) ? `<binary ${contentType}, ${(await response.body()).length} bytes>` : await response.text();
         await onExchange(exchange);
         return response;
       };

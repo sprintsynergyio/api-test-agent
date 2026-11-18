@@ -5,7 +5,9 @@ import { crc32 } from './zip';
 // and what happened, then one row per agent suggestion. Written as CSV (out/traceability.csv) and XLSX
 // (out/traceability.xlsx), listed in summary.testCases and copied into the exported framework.
 
-export type TraceStatus = 'passed' | 'failed' | 'needs review' | 'not automated';
+// "partially covered": the test passed but some clauses of the case's expected result have no assertion
+// (listed in the reason). It is never counted as passed.
+export type TraceStatus = 'passed' | 'partially covered' | 'failed' | 'needs review' | 'not automated';
 export type TraceRow = { id: string; title: string; endpoint: string; testFile: string; status: TraceStatus; reason: string; source: 'sheet' | 'agent' };
 
 export const TRACE_COLUMNS = ['ID', 'Title', 'Endpoint', 'Test file', 'Status', 'Reason'] as const;
@@ -118,14 +120,15 @@ function zipEntries(entries: [string, Buffer][], now = new Date()): Buffer {
   return Buffer.concat([...locals, ...centrals, end]);
 }
 
-export type TraceTotals = { rows: number; automated: number; passed: number; failed: number; needsReview: number; notAutomated: number; agentSuggestions: number };
+export type TraceTotals = { rows: number; automated: number; passed: number; partiallyCovered: number; failed: number; needsReview: number; notAutomated: number; agentSuggestions: number };
 
 export function traceTotals(rows: TraceRow[]): TraceTotals {
   const sheet = rows.filter((r) => r.source === 'sheet');
   return {
     rows: sheet.length,
-    automated: sheet.filter((r) => r.status === 'passed' || r.status === 'failed').length,
+    automated: sheet.filter((r) => r.status === 'passed' || r.status === 'partially covered' || r.status === 'failed').length,
     passed: sheet.filter((r) => r.status === 'passed').length,
+    partiallyCovered: sheet.filter((r) => r.status === 'partially covered').length,
     failed: sheet.filter((r) => r.status === 'failed').length,
     needsReview: sheet.filter((r) => r.status === 'needs review').length,
     notAutomated: sheet.filter((r) => r.status === 'not automated').length,
@@ -135,9 +138,40 @@ export function traceTotals(rows: TraceRow[]): TraceTotals {
 
 // ---------- Building the rows ----------
 
-type PlanCaseLike = { title: string; caseId?: string; source?: 'sheet' | 'agent'; expectedStatus: string };
-type PlanLike = { cases: PlanCaseLike[]; needsReview?: { caseId: string; reason: string }[] };
-export type TraceEndpoint = { endpointId: string; specFile: string | null; plan?: PlanLike; failureReason: string | null; skippedReason: string | null };
+export type ClauseLike = { n: number; text: string; status: 'asserted' | 'not-asserted' | 'probe-disagrees'; reason?: string; expected?: string; actual?: string };
+type PlanCaseLike = { title: string; caseId?: string; source?: 'sheet' | 'agent'; expectedStatus: string; statusCodes?: number[]; clauses?: ClauseLike[] };
+type PlanLike = { cases: PlanCaseLike[]; needsReview?: { caseId: string; reason: string }[]; notAutomated?: { caseId?: string; title: string; reason: string }[] };
+// caseReasons: when the whole spec was rejected, the gate's reasons for each planned test by title.
+export type TraceEndpoint = { endpointId: string; specFile: string | null; plan?: PlanLike; failureReason: string | null; skippedReason: string | null; caseReasons?: Record<string, string[]> };
+
+// What a passing test does not prove: the clauses of the expected result without an assertion, and
+// the ones the probe response contradicted.
+export function coverageGaps(pc: { clauses?: ClauseLike[] }): { missing: ClauseLike[]; disagrees: ClauseLike[] } {
+  const clauses = pc.clauses ?? [];
+  return { missing: clauses.filter((c) => c.status === 'not-asserted'), disagrees: clauses.filter((c) => c.status === 'probe-disagrees') };
+}
+
+function clip(text: string, max = 80): string {
+  const t = text.replace(/\s+/g, ' ').trim();
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+}
+
+export function missingText(missing: ClauseLike[]): string {
+  return missing.map((c) => `clause ${c.n} "${clip(c.text)}"${c.reason ? ` (${clip(c.reason, 60)})` : ''}`).join('; ');
+}
+
+export function disagreeText(disagrees: ClauseLike[]): string {
+  return disagrees.map((c) => `clause ${c.n} "${clip(c.text)}": expected ${clip(c.expected ?? c.text, 60)}, actual ${clip(c.actual ?? 'different', 60)}`).join('; ');
+}
+
+// The coverage status of a test that passed: needs review when the probe disagreed with the sheet,
+// partially covered when a clause has no assertion, else passed.
+export function passedStatus(pc: { clauses?: ClauseLike[] }): { status: TraceStatus; reason: string } {
+  const { missing, disagrees } = coverageGaps(pc);
+  if (disagrees.length) return { status: 'needs review', reason: `the API response disagrees with the sheet: ${disagreeText(disagrees)}${missing.length ? `; not asserted: ${missingText(missing)}` : ''}` };
+  if (missing.length) return { status: 'partially covered', reason: `passed, but not every expected-result clause is asserted; not asserted: ${missingText(missing)}` };
+  return { status: 'passed', reason: '' };
+}
 export type TraceCase = { id: string; title: string };
 export type TraceMatch = { endpointId: string | null; by: string | null; reason: string };
 export type TraceOutcome = { endpointId: string; title: string; passed: boolean; actualStatus: number | null; error: string };
@@ -194,8 +228,16 @@ export function buildTraceRows(o: {
       rows.push({ ...base, status: 'not automated', reason: e.skippedReason });
       continue;
     }
+    // The gate dropped this case's test and kept the rest of the file.
+    const dropped = e.plan?.notAutomated?.find((n) => n.caseId === c.id);
+    if (dropped && !pc) {
+      rows.push({ ...base, testFile: e.specFile ?? '', status: 'not automated', reason: oneLine(dropped.reason) });
+      continue;
+    }
     if (!pc || !e.specFile) {
-      rows.push({ ...base, status: 'not automated', reason: oneLine(e.failureReason ?? (pc ? 'no spec was written' : 'not planned')) });
+      const own = pc && e.caseReasons?.[pc.title];
+      const reason = own?.length ? `static gate: ${own.map((r) => r.replace(/^\[[a-z-]+\] test "[^"]*": /, '')).join(' | ')}` : (e.failureReason ?? (pc ? 'no spec was written' : 'not planned'));
+      rows.push({ ...base, status: 'not automated', reason: oneLine(reason) });
       continue;
     }
     const outcome = o.outcomes.find((x) => x.endpointId === e.endpointId && x.title === pc.title);
@@ -204,10 +246,13 @@ export function buildTraceRows(o: {
       continue;
     }
     const via = m.by === 'ai' ? 'endpoint matched by the AI; check it' : '';
-    if (outcome.passed) rows.push({ ...base, testFile: e.specFile, status: 'passed', reason: via });
-    else {
+    if (outcome.passed) {
+      const cover = passedStatus(pc);
+      rows.push({ ...base, testFile: e.specFile, status: cover.status, reason: oneLine([cover.reason, via].filter(Boolean).join('; '), 600) });
+    } else {
       const f = o.findings.find((x) => x.endpointId === e.endpointId && x.testTitle === pc.title);
-      rows.push({ ...base, testFile: e.specFile, status: 'failed', reason: oneLine([failReason(outcome, f, pc.expectedStatus), via].filter(Boolean).join('; ')) });
+      const { missing } = coverageGaps(pc);
+      rows.push({ ...base, testFile: e.specFile, status: 'failed', reason: oneLine([failReason(outcome, f, pc.statusCodes?.length ? pc.statusCodes.join('|') : pc.expectedStatus), missing.length ? `not asserted: ${missingText(missing)}` : '', via].filter(Boolean).join('; '), 600) });
     }
   }
   // Agent suggestions (sheet-plus-agent): listed after the sheet so the team can adopt them.

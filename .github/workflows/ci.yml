@@ -51,6 +51,7 @@ jobs:
       - run: npm run test:gate
       - run: npm run test:gate:pactum
       - run: npm run test:response-schema
+      - run: npm run test:sheet-feedback
       - run: npm run test:eval
       - run: npm run test:claude-api
       - run: npm run test:settings
@@ -80,6 +81,10 @@ jobs:
       - name: npm audit
         if: matrix.os == 'ubuntu-latest' && matrix.node == 22
         run: npm audit --audit-level=high
+      # The media demo (base URL with a path, images, paging, 400s, sheet-only coverage) with FAKE_MODEL=1
+      # for both frameworks, then npm test in each exported project.
+      - name: Media demo end-to-end (base path, images, paging, coverage)
+        run: npm run test:e2e-media
 
   # Windows from the kind of folder people actually unpack into: a path with spaces, on a drive letter
   # other than C: (J: is mapped with subst), and Node 24.21.0 as on the machine that first hit the crash.

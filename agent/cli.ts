@@ -12,11 +12,11 @@ import { parseAgentFlags, type AgentFlags } from './flags';
 import { apiName, DEFAULT_TEST_CASE_MODE, loadConfig, selectionLine, takeSelectFlag, type Config, type Endpoint, type TestCaseMode } from './config';
 import { loadSheetFile, type MatchResult, type ParsedSheet, type SheetCase } from './test-cases';
 import { matchCases } from './match-cases';
-import { buildTraceRows, traceCsv, traceTotals, traceXlsx, type TraceRow } from './traceability';
+import { buildTraceRows, coverageGaps, traceCsv, traceTotals, traceXlsx, type TraceRow } from './traceability';
 import { testTypeOf } from './model';
 import { frameworkFor, type FrameworkAdapter, type FrameworkInfo, type TestOutcome } from './frameworks';
 import { generateEndpoint } from './generate';
-import { planEndpoint, type Plan } from './plan';
+import { dataStability, planEndpoint, type Plan, type Stability } from './plan';
 import { addCleanup, cleanupLine, emptyCleanup, type CleanupTotals } from './http';
 import { probeAll, type ProbeResult } from './probe';
 import { resolveHostAddresses } from './resolve-host';
@@ -34,6 +34,8 @@ const CLAUDE_NOT_FOUND = "claude CLI not found on PATH. Run 'which claude' in th
 
 type EndpointState = {
   endpoint: Endpoint;
+  // Whole spec rejected by the gate: the reasons of each planned test, by title (traceability).
+  caseReasons?: Record<string, string[]>;
   // Test case sheet runs: hash of this endpoint's sheet cases and the mode (checkpoint).
   casesHash?: string;
   probe?: ProbeResult;
@@ -97,6 +99,10 @@ function oneLine(text: string): string {
   return text.replace(/\s*\n\s*/g, ' ');
 }
 
+// Whether each endpoint's data stays put during the run (cross-call checks, serial tests): set in main.
+const STABILITY = new Map<string, Stability>();
+const stabilityOf = (id: string): Stability | undefined => STABILITY.get(id);
+
 function casesLine(plan: Plan): string {
   if (!sheetRun) return `${plan.cases.length} cases`;
   const sheet = plan.cases.filter((c) => c.source === 'sheet').length;
@@ -128,7 +134,7 @@ async function planPhase(states: EndpointState[], roles: string[]) {
     }
     try {
       const sheetOptions = sheetRun ? { sheetCases: sheetRun.byEndpoint.get(id) ?? [], testCaseMode: sheetRun.mode } : {};
-      const result = await planEndpoint(s.endpoint, s.probe!, { roles, ...sheetOptions });
+      const result = await planEndpoint(s.endpoint, s.probe!, { roles, ...sheetOptions, stability: stabilityOf(id) });
       if (result.ok) {
         s.plan = result.plan;
         console.log(`${id} OK ${casesLine(result.plan)}`);
@@ -168,12 +174,15 @@ async function generatePhase(fw: FrameworkAdapter, states: EndpointState[]) {
       return;
     }
     try {
-      const result = await generateEndpoint(fw, s.endpoint, s.plan, s.probe!);
+      const result = await generateEndpoint(fw, s.endpoint, s.plan, s.probe!, { stability: stabilityOf(id) });
       if (result.ok) {
         s.specFile = basename(result.specFile);
-        console.log(`${id} OK written ${result.specFile}`);
+        s.plan = result.plan;
+        const dropped = result.plan.notAutomated?.length ?? 0;
+        console.log(`${id} OK written ${result.specFile}${dropped ? ` (${dropped} test${dropped === 1 ? '' : 's'} dropped by the static gate, the rest kept)` : ''}`);
       } else {
         s.failureReason = `static gate: ${result.reasons.join(' | ')}`;
+        if (result.byTitle && Object.keys(result.byTitle).length) s.caseReasons = result.byTitle;
         console.log(`${id} FAILED ${oneLine(s.failureReason)}`);
       }
     } catch (err) {
@@ -394,6 +403,15 @@ async function main() {
   const startedAt = new Date();
   const config = loadConfig(inputFile);
   const fw = frameworkFor(config);
+  // --allow-invalid-input / --stable-data [ids]: the same as the per-endpoint options in the input.
+  for (const [flag, list, key] of [['--allow-invalid-input', flags.allowInvalidInput, 'allowInvalidInput'], ['--stable-data', flags.stableData, 'stableData']] as const) {
+    if (!list) continue;
+    if (list !== 'all') {
+      const unknown = list.filter((id) => !config.endpoints.some((e) => e.id === id));
+      if (unknown.length) throw new Error(`${flag}: not in ${inputFile}: ${unknown.join(', ')}`);
+    }
+    for (const e of config.endpoints) if (list === 'all' || list.includes(e.id)) e[key] = true;
+  }
   if (flags.endpoints) {
     const unknown = flags.endpoints.filter((id) => !config.endpoints.some((e) => e.id === id));
     if (unknown.length) throw new Error(`--endpoints: not in ${inputFile}: ${unknown.join(', ')}`);
@@ -533,6 +551,7 @@ async function main() {
   const casesHashFor = (id: string) => (sheetRun ? hashOf({ mode: sheetRun.mode, cases: sheetRun.byEndpoint.get(id) ?? [] }) : undefined);
 
   // What the checkpoint already holds for the endpoints in scope.
+  for (const e of inScope) STABILITY.set(e.id, dataStability(e, inScope));
   const states: EndpointState[] = inScope.map((endpoint) => {
     const casesHash = casesHashFor(endpoint.id);
     const found = reusable(cp, endpoint, mode);
@@ -606,6 +625,7 @@ async function main() {
       cleanError: (t) => cleanError(t, secrets),
       specFiles: written.map((s) => `generated/${s.specFile!}`),
       workers: flags.testWorkers,
+      extraLabels: coverageLabels(written),
     });
     for (const n of run.notes ?? []) console.log(n);
     outcomes = run.outcomes;
@@ -639,7 +659,7 @@ async function main() {
     traceRows = buildTraceRows({
       cases: sheetRun.sheet.cases,
       matches: sheetRun.matches,
-      endpoints: states.map((s) => ({ endpointId: s.endpoint.id, specFile: s.specFile, plan: s.plan, failureReason: s.failureReason === null ? null : cleanError(oneLine(s.failureReason), secrets), skippedReason: s.skippedReason })),
+      endpoints: states.map((s) => ({ endpointId: s.endpoint.id, specFile: s.specFile, plan: s.plan, failureReason: s.failureReason === null ? null : cleanError(oneLine(s.failureReason), secrets), skippedReason: s.skippedReason, caseReasons: s.caseReasons })),
       outOfScope: new Map([...outOfScope, ...[...sheetRun.byEndpoint.keys()].filter((id) => !states.some((s) => s.endpoint.id === id) && !outOfScope.has(id)).map((id) => [id, `endpoint ${id} is not in this run`] as [string, string])]),
       outcomes,
       findings,
@@ -729,8 +749,27 @@ async function main() {
   console.log(`Exit code: ${exitCode}${flags.failOn === 'none' ? ' (--fail-on none)' : ''}`);
 }
 
+// Allure labels for sheet cases whose test cannot prove the whole expected result: "partially covered"
+// (a clause has no assertion) and "needs review" (the probe disagreed with the sheet).
+function coverageLabels(states: EndpointState[]): Record<string, { name: string; value: string }[]> {
+  const out: Record<string, { name: string; value: string }[]> = {};
+  for (const s of states) {
+    for (const c of s.plan?.cases ?? []) {
+      const { missing, disagrees } = coverageGaps(c);
+      if (!missing.length && !disagrees.length) continue;
+      const status = disagrees.length ? 'needs review' : 'partially covered';
+      out[c.title] = [
+        { name: 'tag', value: status },
+        { name: 'coverage', value: disagrees.length ? 'needs-review' : 'partial' },
+        ...(missing.length ? [{ name: 'notAsserted', value: missing.map((m) => `clause ${m.n}`).join(', ') }] : []),
+      ];
+    }
+  }
+  return out;
+}
+
 function testCasesLine(t: Record<string, unknown>): string {
-  return `Test cases: ${t.rows} in the sheet: ${t.passed} passed, ${t.failed} failed, ${t.needsReview} need review, ${t.notAutomated} not automated; ${t.agentSuggestions} agent suggestion(s); traceability in ${TRACE_CSV} and ${TRACE_XLSX}`;
+  return `Test cases: ${t.rows} in the sheet: ${t.passed} passed, ${t.partiallyCovered ?? 0} partially covered, ${t.failed} failed, ${t.needsReview} need review, ${t.notAutomated} not automated; ${t.agentSuggestions} agent suggestion(s); traceability in ${TRACE_CSV} and ${TRACE_XLSX}`;
 }
 
 main().catch((err) => {

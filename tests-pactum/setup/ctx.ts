@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import pactum from 'pactum';
 import { assessSafety, endpointAllowed, ProductionRefused, READ_METHODS, ReadOnlyBlocked, refusalMessage, type Safety } from '../../agent/safety';
-import { applyProfile, pathParams, queryString, resolvePath, setupSteps, type Profile, type Query, type Selection, type Setup } from '../../agent/model';
+import { applyProfile, isBinaryContentType, joinUrl, pathParams, queryString, resolvePath, setupSteps, type Profile, type Query, type Selection, type Setup } from '../../agent/model';
 import {
   authRoles,
   createAuthenticator,
@@ -122,6 +122,8 @@ export type ApiResponse = {
   headers(): Record<string, string>;
   text(): Promise<string>;
   json(): Promise<unknown>;
+  // The raw body bytes (images and other binary responses: size and file signature).
+  body(): Promise<Buffer>;
 };
 
 // params: query parameters, headers: extra request headers (same option names as Playwright's request API).
@@ -159,7 +161,7 @@ type Current = { file: string; title: string; actualStatus: number | null; sentB
 let current: Current = null;
 let evidenceIndex = 0;
 
-type PactumResponse = { statusCode: number; headers: Record<string, string>; body: unknown; text?: string };
+type PactumResponse = { statusCode: number; headers: Record<string, string>; body: unknown; text?: string; buffer?: Buffer };
 
 function toJsonOrText(text: string): unknown {
   if (text.length > MAX_BODY_CHARS) return `${text.slice(0, MAX_BODY_CHARS)}... [truncated, ${text.length} characters]`;
@@ -206,7 +208,8 @@ function writeEvidence(method: string, path: string, role: string | null, header
 async function transmit(m: string, path: string, headers: Record<string, string>, query: Query | undefined, body: unknown, role: string | null, form?: Record<string, string>): Promise<ApiResponse> {
   const fullPath = path + queryString(query);
   counter.sent++;
-  const url = /^https?:\/\//.test(path) ? fullPath : config.baseUrl + fullPath;
+  // joinUrl keeps the base URL's own path ("https://host/api/v2" + "/items" is ".../api/v2/items").
+  const url = joinUrl(config.baseUrl, fullPath);
   let s = pactum.spec().withMethod(m).withPath(url).withHeaders(headers);
   if (form) s = s.withForm(form);
   else if (body !== undefined) s = s.withJson(body as Record<string, unknown>);
@@ -219,13 +222,17 @@ async function transmit(m: string, path: string, headers: Record<string, string>
     throw new Error(`request ${m} ${redactQuery(config.auth, fullPath)} failed: ${message}`);
   }
   const text = typeof res.text === 'string' ? res.text : res.body === undefined || res.body === '' ? '' : JSON.stringify(res.body);
-  writeEvidence(m, fullPath, role, headers, form ?? body, res.statusCode, text);
+  const bytes = Buffer.isBuffer(res.buffer) ? res.buffer : Buffer.from(text, 'utf8');
+  const contentType = res.headers?.['content-type'];
+  // An image or other binary body is described in the evidence, not dumped as text.
+  writeEvidence(m, fullPath, role, headers, form ?? body, res.statusCode, isBinaryContentType(contentType) ? `<binary ${contentType}, ${bytes.length} bytes>` : text);
   return {
     status: () => res.statusCode,
     ok: () => res.statusCode >= 200 && res.statusCode < 300,
     headers: () => res.headers,
     text: async () => text,
     json: async () => JSON.parse(text),
+    body: async () => bytes,
   };
 }
 

@@ -181,6 +181,14 @@ Shared rules (both frameworks) plus the framework rules in each adapter. Pactum 
 - an `[auth]` test mentions `ctx.api` (or destructures `api` from ctx), or does not use `ctx.noAuthApi`
 - an `[authz]` test does not use `ctx.as('<role>')`, mentions `ctx.api` or `ctx.noAuthApi`, or asserts anything but `expect([403, 404]).toContain(<status>)` (or `toBe(403)` / `toBe(404)`)
 
+Additions (agent/validate.ts, agent/generate.ts):
+- `[invalid-input]` may also assert a list of 4xx codes, `expect([400, 404]).toContain(<status>)` (the sheet's own codes, plan `statusCodes`), on top of the two required range checks; a 5xx in the list is still rejected
+- non-JSON probe (`probeContentType`, an image or file): a header (`response.headers()[...]`), `response.body()` size or file signature assertion counts as the body check; `response.json()` must not be used on it
+- reasons are per test (`byTest`) or for the file (`fileReasons`: imports, framework rules, code outside the tests). After the retry, `pruneFailingTests` removes only the rejected tests and re-validates the rest; each dropped case goes to `plan.notAutomated` with its own reason. Any file reason still rejects the whole spec, and `byTitle` keeps each case's reasons for traceability
+- coverage: a sheet case's clauses (`plan.ts` `clausesFor`, from the model's `coverage`) count as asserted only when the test has `// covers clause N` followed by an `expect`; otherwise `not-asserted`. A passed test with a not-asserted clause is `partially covered`, with a `probe-disagrees` clause `needs review` (agent/traceability.ts). Never report such a case as passed
+- cross-call tests (plan `crossCall`) only when `dataStability` says stable (read-only GET with no writer of the same resource in the run, or `stableData`); the Playwright file then gets `test.describe.configure({ mode: 'serial' })` after the imports (Mocha runs a Pactum file serially already)
+- URLs: every request path is joined to the base URL with `joinUrl` (agent/model.ts), never `new URL(path, base)`, so a base URL path is kept
+
 ## Eval harness
 
 `local-api/bugs.json` is the catalog of planted bugs in the local shop API (id, description, endpointId, detectableBy). `local-api/server.mjs` reads its ids: `BUGS` unset turns on the catalog's `default` set (the two original demo bugs, so every existing verification step is unchanged), `FIXED=1` turns every bug off, `BUGS=id,id` turns on exactly those. Startup prints `bugs ON: <ids>` or `bugs OFF`. An unknown id exits 1.
