@@ -6,7 +6,7 @@ Give the agent a base URL and a list of API endpoints, and it writes an API test
 
 API Test Agent is a SprintSynergy product, built and maintained by [SprintSynergy](https://sprintsynergy.com).
 
-**New to the repo? Team setup: see [docs/TEAM-SETUP.md](docs/TEAM-SETUP.md).** Clone, `npm ci`, `npm run ui`, paste a model API key once, run.
+**New to the repo? Team setup: see [docs/TEAM-SETUP.md](docs/TEAM-SETUP.md).** Clone, `npm ci`, `npm run ui`, then either paste a model API key once or use your Claude Code login, and run.
 
 ## What it does today
 
@@ -33,9 +33,45 @@ API Test Agent is a SprintSynergy product, built and maintained by [SprintSynerg
 
 1. Install Node 22+.
 2. `npm ci` (Playwright browsers are not needed, the tests only use Playwright's API client).
-3. Start the UI (`npm run ui`, http://localhost:3000). The first screen asks for a Claude or OpenAI API key, checks it, and saves it to `.env` on your machine. If Claude Code is installed and logged in, no key is needed and the card does not appear.
+3. Start the UI (`npm run ui`, http://localhost:3000). The first screen asks for a Claude or OpenAI API key, checks it, and saves it to `.env` on your machine. If Claude Code is installed and logged in, no key is needed and the card does not appear (see [Use Claude Code instead of an API key](#use-claude-code-instead-of-an-api-key)).
 4. `cp .env.example .env`. `.env` holds the auth values your input files name; `.env.example` already has the public demo values (`API_AUTH_VALUE` for Restful Booker's documented admin login, `LOCAL_API_AUTH_VALUE` for the local shop API), so the demos work as they are. `MAX_CLAUDE_CALLS` caps model calls per run (default 60, about 2 per endpoint; `--budget N` overrides it for one run). `LLM_MODEL` is optional and applies to the API key and the Claude Code paths. Model calls that get HTTP 429 or a 5xx are retried with backoff (`MODEL_RETRIES`, default 3).
 5. Check it works: `npm run typecheck` and `npm run test:template` (4 tests against Restful Booker).
+
+## Use Claude Code instead of an API key
+
+You can run the agent with your Claude Code login. No API key is needed.
+
+You need a paid Claude plan (Pro, Max, Ultra, Team or Enterprise) or a Claude Console account. The free Claude plan does not include Claude Code. Each person uses their own login; do not share an account. Usage counts against that person's plan.
+
+1. Install the official Claude Code CLI (Node 22 or newer; do not use `sudo`):
+
+```
+npm install -g @anthropic-ai/claude-code@latest
+```
+
+2. Check the install:
+
+```
+claude --version
+```
+
+Expected: a version number followed by `(Claude Code)`, for example `2.1.211 (Claude Code)`. If you see `command not found` or `'claude' is not recognized`, close the terminal completely, open a new one, and try again. On Windows, add npm's global folder to your PATH (usually `%AppData%\npm`) and open a new terminal. See [Anthropic's setup guide](https://code.claude.com/docs/en/setup) if it still fails (that page also has a native installer).
+
+3. Sign in once:
+
+```
+claude
+```
+
+On first use, Claude Code opens a browser window. Sign in with your Claude account. If the browser does not open, press `c` to copy the login URL and paste it into a browser. If the browser shows a login code instead of returning to the terminal, paste that code at the prompt. When the terminal says `Login successful`, press Enter, then type `/exit` to leave. (Later, `/login` inside a Claude Code session signs you in or switches accounts.)
+
+4. In this repo's `.env`, make sure `ANTHROPIC_API_KEY` has no value. A key in `.env` wins over the login, and `LLM_PROVIDER=openai` always uses OpenAI instead.
+
+5. From the repo folder, run `npm ci` (if you have not already) and `npm run ui`, then open http://localhost:3000. The key card should not appear, and the header should say `Claude via Claude Code login`. If you started the UI before installing or signing in, stop it (Ctrl+C) and start it again: the CLI is checked once at startup.
+
+To switch back to an API key, click **Change** next to the model name at the top of the page, paste the key, and save. The header should then say `via API key`.
+
+A shared or hosted server cannot use a personal Claude Code login; it needs an API key. See [docs/HOSTING.md](docs/HOSTING.md).
 
 ## Run it
 
