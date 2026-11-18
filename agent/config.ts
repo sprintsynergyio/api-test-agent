@@ -28,6 +28,18 @@ const EndpointSchema = z.object({
   setup: z.union([SetupSchema, z.array(SetupSchema).min(1)]).optional(),
   // The documented success response (the OpenAPI importer fills it in): agent/response-schema.ts.
   responseSchema: ResponseSchemaZ.optional(),
+  // The documented client error statuses (4xx other than 401 and 403), from the OpenAPI spec's
+  // responses. When there is one, the endpoint gets [invalid-input] tests even without a body or a
+  // path id (agent/plan.ts allowedTypes).
+  errorStatuses: z.array(z.number().int().min(400).max(499)).optional(),
+  // Turns on [invalid-input] tests (any 4xx) for this endpoint, for example a GET whose query values
+  // are validated. Also --allow-invalid-input <ids|all> and the UI's "Invalid-input tests" option.
+  allowInvalidInput: z.boolean().optional(),
+  // The team confirms this endpoint's data does not change while the run is going, so tests may
+  // compare several calls (paging walks, totals across filters). Read-only endpoints (GET with no
+  // write endpoint on the same resource in the run) get this on their own. Such tests run serially.
+  // Also --stable-data <ids|all> and the UI's "Stable data" option.
+  stableData: z.boolean().optional(),
 });
 
 // The team's manual test case sheet (agent/test-cases.ts). file: .csv, .tsv, .txt or .xlsx, relative to

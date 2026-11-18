@@ -6,6 +6,7 @@ import { basename, join } from 'node:path';
 import { exportFramework } from '../export';
 import { addCleanup, emptyCleanup, type CleanupTotals } from '../http';
 import { validateSpec } from '../validate';
+import { addAllureLabels, type ExtraLabels } from './allure-labels';
 import type { FrameworkAdapter, RunResult, TestOutcome } from './types';
 
 // The Playwright adapter: the original pipeline's runner, results parser, Allure step and exporter,
@@ -95,8 +96,9 @@ function filesUnder(dir: string): string[] {
 }
 
 // Builds the Allure HTML report from the raw results. Never fails the run: returns the reason instead.
-function generateAllure(reportName: string, secrets: string[], cleanError: (text: string) => string): { dir: string | null; reason?: string } {
+function generateAllure(reportName: string, secrets: string[], cleanError: (text: string) => string, extraLabels?: ExtraLabels): { dir: string | null; reason?: string } {
   if (!existsSync(ALLURE_RESULTS)) return { dir: null, reason: `${ALLURE_RESULTS} was not written` };
+  addAllureLabels(ALLURE_RESULTS, extraLabels);
   const res = spawnSync(...nodeBin('allure', ['generate', ALLURE_RESULTS, '--output', ALLURE_REPORT, '--report-name', reportName]), { encoding: 'utf8', timeout: 120_000 });
   if (res.error || res.status !== 0) {
     const detail = res.error?.message ?? `${res.stderr}${res.stdout}`.trim().split('\n')[0];
@@ -134,11 +136,11 @@ export const playwrightAdapter: FrameworkAdapter = {
     ];
   },
   validate: validateSpec,
-  async run(inputFile, { secrets, reportName, cleanError, specFiles, workers }): Promise<RunResult> {
+  async run(inputFile, { secrets, reportName, cleanError, specFiles, workers, extraLabels }): Promise<RunResult> {
     await runPlaywright(inputFile, specFiles, Math.max(1, workers ?? 1));
     if (!existsSync(RESULTS_FILE)) throw new Error(`Playwright did not write ${RESULTS_FILE}`);
     const read = readOutcomes(cleanError);
-    const allure = generateAllure(reportName, secrets, cleanError);
+    const allure = generateAllure(reportName, secrets, cleanError, extraLabels);
     return { ...read, htmlReport: HTML_REPORT, allureReport: allure.dir, allureReason: allure.reason };
   },
   exportFramework,

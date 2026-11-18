@@ -17,6 +17,7 @@
 import http from "node:http";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { handleMedia } from "./media.mjs";
 
 const PORT = Number(process.env.PORT || 4000);
 const TOKEN = "Bearer local-shop-demo-token";
@@ -215,6 +216,8 @@ const server = http.createServer(async (req, res) => {
     issuedTokens.set(`Bearer ${token}`, "admin");
     return send(res, 200, { access_token: token, token_type: "Bearer", expires_in: 3600 });
   }
+  // /media/v1/...: images, a paged read-only list and 400 validation errors (local-api/media.mjs).
+  if (parts[0] === "media" && parts[1] === "v1") return handleMedia(req, res, parts.slice(2), url, readBody);
   // /products/:id/reviews and /products/:id/reviews/:reviewId (nested resource, used by
   // input/local-shop-nested.json to prove paths with more than one placeholder).
   if (parts[0] === "products" && parts[2] === "reviews" && (parts.length === 3 || parts.length === 4)) {

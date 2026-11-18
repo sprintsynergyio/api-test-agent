@@ -19,7 +19,8 @@ export type TestOutcome = {
   error: string;
 };
 
-export type RunOptions = { secrets: string[]; reportName: string; cleanError: (text: string) => string; specFiles?: string[]; workers?: number };
+// extraLabels: Allure labels to add by test title (coverage of sheet cases).
+export type RunOptions = { secrets: string[]; reportName: string; cleanError: (text: string) => string; specFiles?: string[]; workers?: number; extraLabels?: Record<string, { name: string; value: string }[]> };
 
 export type RunResult = {
   // One-line notes for the console (for example that a flag was ignored).

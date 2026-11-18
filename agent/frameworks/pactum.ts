@@ -12,6 +12,7 @@ import { authSource } from '../export';
 import { validateWithRules, type GateRules } from '../validate';
 import { addCleanup, emptyCleanup, reportLabels, type CleanupTotals } from '../http';
 import { ciFiles, ciReadmeSection, exportedConfig, modelSource, redactSource } from './shared-export';
+import { addAllureLabels, type ExtraLabels } from './allure-labels';
 import type { ExportEndpoint, ExportFinding, ExportOptions, FrameworkAdapter, FrameworkInfo, RunResult, TestOutcome } from './types';
 
 // The Pactum adapter: Mocha + Pactum tests that import only from tests-pactum/setup/ctx.ts.
@@ -182,7 +183,7 @@ export function writeAllureResults(reportName: string): { tests: number } {
 }
 
 // Builds the Allure HTML report from the written results. Never fails the run: returns the reason instead.
-function generateAllure(reportName: string, secrets: string[], cleanError: (text: string) => string): { dir: string | null; reason?: string } {
+function generateAllure(reportName: string, secrets: string[], cleanError: (text: string) => string, extraLabels?: ExtraLabels): { dir: string | null; reason?: string } {
   if (!existsSync(RESULTS_FILE)) return { dir: null, reason: `${RESULTS_FILE} was not written` };
   let written: { tests: number };
   try {
@@ -191,6 +192,7 @@ function generateAllure(reportName: string, secrets: string[], cleanError: (text
     return { dir: null, reason: cleanError(`could not write Allure results: ${String((err as Error)?.message ?? err).split('\n')[0]}`) };
   }
   if (written.tests === 0) return { dir: null, reason: 'no tests to report' };
+  addAllureLabels(ALLURE_RESULTS, extraLabels);
   rmSync(ALLURE_REPORT, { recursive: true, force: true });
   const res = spawnSync(...nodeBin('allure', ['generate', ALLURE_RESULTS, '--output', ALLURE_REPORT, '--report-name', reportName]), { encoding: 'utf8', timeout: 120_000 });
   if (res.error || res.status !== 0) {
@@ -468,7 +470,7 @@ export const pactumAdapter: FrameworkAdapter = {
   generatorRules(endpoint, plan, probe) {
     return [
       "Copy the template's structure: Mocha describe and it (both are globals, do not import them), every test title starts with its type tag ([happy], [schema], [invalid-input], [auth], [authz]), and every test calls recordStatus(response.status()) before its first expect.",
-      'Requests: ctx.api.get(path, options?), ctx.api.post(path, body, options?), ctx.api.put(path, body, options?), ctx.api.patch(path, body, options?), ctx.api.delete(path, options?). options is { params?: query parameters, headers?: extra headers }. Each returns a response with status(), ok(), headers(), text() and json(). Never import pactum, node:assert or chai; expect comes from the setup file.',
+      'Requests: ctx.api.get(path, options?), ctx.api.post(path, body, options?), ctx.api.put(path, body, options?), ctx.api.patch(path, body, options?), ctx.api.delete(path, options?). options is { params?: query parameters, headers?: extra headers }. Each returns a response with status(), ok(), headers(), text(), json() and body() (the raw bytes as a Buffer, for images and other files). Never import pactum, node:assert or chai; expect comes from the setup file.',
       `Status assertions, exactly in the template's style and no other form (the static gate rejects anything else): happy and schema expect(response.status()).toBe(${probe.status}); invalid-input expect(response.status()).toBeGreaterThanOrEqual(400) and expect(response.status()).toBeLessThanOrEqual(499); auth expect([401, 403]).toContain(response.status()); authz expect([403, 404]).toContain(response.status()). Never use .not on a status, and never assert a status from a different request than the one under test.`,
       'Auth tests send the request under test with ctx.noAuthApi and never mention ctx.api (resources they need come from ctx.createResource).',
       "Authz tests send the request under test with ctx.as('<role>') (the role named in the plan case; same methods as ctx.api) and never mention ctx.api or ctx.noAuthApi; resources they need come from ctx.createResource, which uses the default role.",
@@ -478,7 +480,7 @@ export const pactumAdapter: FrameworkAdapter = {
     ];
   },
   validate: (code, opts) => validateWithRules(code, opts, PACTUM_RULES),
-  async run(inputFile, { secrets, reportName, cleanError, specFiles, workers }): Promise<RunResult> {
+  async run(inputFile, { secrets, reportName, cleanError, specFiles, workers, extraLabels }): Promise<RunResult> {
     rmSync(REPORT_DIR, { recursive: true, force: true });
     const notes: string[] = [];
     // Mocha's parallel mode runs files in worker processes; status.json is appended per test from one
@@ -487,7 +489,7 @@ export const pactumAdapter: FrameworkAdapter = {
     await runMocha(inputFile, specFiles);
     if (!existsSync(RESULTS_FILE)) throw new Error(`Mocha did not write ${RESULTS_FILE}`);
     const read = readOutcomes(cleanError);
-    const allure = generateAllure(reportName, secrets, cleanError);
+    const allure = generateAllure(reportName, secrets, cleanError, extraLabels);
     return { ...read, notes, htmlReport: null, allureReport: allure.dir, allureReason: allure.reason };
   },
   exportFramework: exportPactumFramework,

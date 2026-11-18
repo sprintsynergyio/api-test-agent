@@ -378,6 +378,35 @@ schema or when the probe status is not the documented one, else a list (at most 
 `"<path>: <what>"` lines where the probe response breaks the schema (`[]` when it matches). The console
 prints one line per endpoint with issues.
 
+## 14a. Coverage, images and test options (additive, extends section 15)
+
+Sheet cases: a test that passed while some clause of the case's expected result has no assertion is
+`partially covered`, never `passed`; a test whose probe contradicted a clause of the sheet is `needs review`
+with `expected ..., actual ...` in the reason. Both are in `summary.testCases.cases[].status`, the
+traceability files and the UI card.
+
+- `summary.testCases.partiallyCovered`: count of `partially covered` cases (missing in older summaries;
+  treat as 0). `automated` counts passed, partially covered and failed cases. The case statuses are
+  `passed`, `partially covered`, `failed`, `needs review`, `not automated`.
+- The SUMMARY line reads `Test cases: <rows> in the sheet: <p> passed, <c> partially covered, <f> failed,
+  <r> need review, <u> not automated; ...`.
+- Allure: such tests also carry `tag=partially covered` (or `tag=needs review`), `coverage=partial` (or
+  `needs-review`) and `notAsserted=clause <n>, ...`.
+- GENERATING may read `<id> OK written generated/<id>.spec.ts (<n> test(s) dropped by the static gate, the
+  rest kept)`; each dropped sheet case is `not automated` with `static gate: <its own reasons>`.
+- Plans in the checkpoint and summary may carry, per case, `statusCodes` (the sheet's 4xx list),
+  `crossCall` (compares several calls; serial file), and `clauses: [{ n, text, status: asserted |
+  not-asserted | probe-disagrees, via?, check?, reason?, expected?, actual? }]`, and per plan
+  `notAutomated: [{ caseId?, title, reason }]`.
+- Probe results (`out/probes/<id>.json`) may carry `binary: { bytes, signature, signatureHex }` for a body
+  that is not text (no `body`/`bodyText` then) and `responseHeaders` (content-type, cache-control,
+  content-length, content-disposition, etag, last-modified).
+- Input endpoints may carry `errorStatuses: [400-499]`, `allowInvalidInput: true` and `stableData: true`.
+  The UI's **Test options** set the last two per endpoint in the run's JSON. The CLI flags
+  `--allow-invalid-input [ids]` and `--stable-data [ids]` do the same (no ids: every endpoint; an unknown
+  id is a setup error, exit 2).
+- `baseUrl` may have a path; endpoint paths are joined after it everywhere.
+
 ## 15. Test case sheets (additive)
 
 A run may automate the team's test case sheet: `--test-cases <file>` (and `--test-cases-mode sheet-only |

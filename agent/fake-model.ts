@@ -1,4 +1,5 @@
 import { writeFileSync } from 'node:fs';
+import { parseExpectedStatus } from './expected';
 
 // FAKE_MODEL=1: a deterministic stand-in for the model, for tests of the pipeline itself (checkpoint,
 // resume, budget, concurrency, parallel test runs). It reads the same prompts the real model gets and
@@ -40,9 +41,141 @@ function probeBlock(user: string): Json {
 // Test case sheet prompts. The fake picks each case's type from the words and status codes in the
 // case, the way a reader would, and marks a case needs review when it names no status code and none of
 // the words below: the same contract the real model gets, kept deliberately simple.
-function sheetBlock(user: string): { mode: string; cases: { caseId: string; title: string; steps?: string; expected?: string }[] } | null {
+type FakeSheetCase = { caseId: string; title: string; steps?: string; expected?: string; expectedClauses?: string[] };
+function sheetBlock(user: string): { mode: string; cases: FakeSheetCase[] } | null {
   const b = block(user, 'TEAM TEST CASES (from their test case sheet; each must be planned or marked needsReview):');
-  return b ? (b as unknown as { mode: string; cases: { caseId: string; title: string; steps?: string; expected?: string }[] }) : null;
+  return b ? (b as unknown as { mode: string; cases: FakeSheetCase[] }) : null;
+}
+
+// ---- Clauses of an expected result: what the fake can check, the way a careful reader would ----
+
+type ClauseCheck =
+  | { kind: 'check'; check: string; code: (v: string) => string; crossCall?: boolean }
+  | { kind: 'notAsserted'; why: string }
+  | { kind: 'disagrees'; expected: string; actual: string };
+
+// The JSON object the probe got, and its first list item (a paged { items: [...] } or a plain array).
+function probeShape(probe: Json): { top: Json | null; item: Json | null; listKey: string | null } {
+  const body = probe.body as unknown;
+  if (Array.isArray(body)) return { top: null, item: (body[0] as Json) ?? null, listKey: null };
+  if (!body || typeof body !== 'object') return { top: null, item: null, listKey: null };
+  const top = body as Json;
+  const listKey = Object.keys(top).find((k) => Array.isArray(top[k]) && typeof (top[k] as unknown[])[0] === 'object') ?? null;
+  return { top, item: listKey ? ((top[listKey] as Json[])[0] ?? null) : null, listKey };
+}
+
+const asCode = (v: unknown) => JSON.stringify(v);
+
+export function fakeClause(text: string, probe: Json, opts: { pageParam?: string | null; stable?: boolean } = {}): ClauseCheck {
+  const t = text.toLowerCase();
+  const binary = probe.binary as { signature?: string; signatureHex?: string; bytes?: number } | undefined;
+  const ct = String(probe.contentType ?? '');
+  const headers = (probe.responseHeaders ?? {}) as Record<string, string>;
+  const s = parseExpectedStatus(text);
+  const rest = t.replace(/(?<![\d.])[1-5](?:\d\d|xx)(?![\d.])/g, ' ');
+  // "Status 200 for both pages": the second page's status too.
+  if (s.expects.length === 1 && /\b(both|every|each) pages?\b/.test(t) && opts.stable && opts.pageParam) {
+    return { kind: 'check', crossCall: true, check: `page 2 also answers ${s.expects[0]}`, code: () => `expect(second.status()).toBe(${s.expects[0]});` };
+  }
+  if ((s.expects.length || s.expectsRanges.length || s.forbids.length || s.forbidsRanges.length) && !/[a-z_]{3,}/.test(rest.replace(/\b(response|status|code|is|are|be|with|a|an|the|or|and|not|never|json|error|for|both|pages|ok|http|returns?)\b/g, ''))) {
+    return { kind: 'check', check: 'the status assertion', code: () => '' };
+  }
+  if (/\b(sorted|order(ed)?|ascending|descending|alphabetical)\b/.test(t)) return { kind: 'notAsserted', why: 'the order of items is not checked: other data on a shared API can change it' };
+  if (/content[- ]type/.test(t)) {
+    const want = t.match(/\b(image\/[a-z+.-]+|application\/[a-z+.-]+|text\/[a-z+.-]+)/)?.[1] ?? ct.split(';')[0];
+    if (!want) return { kind: 'notAsserted', why: 'the probe saw no Content-Type' };
+    if (!ct.toLowerCase().includes(want)) return { kind: 'disagrees', expected: `Content-Type ${want}`, actual: `Content-Type ${ct || 'missing'}` };
+    return { kind: 'check', check: `Content-Type contains ${want}`, code: (v) => `expect(String(${v}.headers()['content-type'])).toContain(${asCode(want)});` };
+  }
+  if (/cache[- ]control/.test(t)) {
+    const have = headers['cache-control'];
+    const want = t.match(/max-age|no-cache|no-store|public|private/)?.[0] ?? null;
+    if (!have) return { kind: 'disagrees', expected: 'a Cache-Control header', actual: 'no Cache-Control header' };
+    if (want && !have.toLowerCase().includes(want)) return { kind: 'disagrees', expected: `Cache-Control with ${want}`, actual: `Cache-Control: ${have}` };
+    const token = want ?? have.split(',')[0].trim();
+    return { kind: 'check', check: `Cache-Control contains ${token}`, code: (v) => `expect(String(${v}.headers()['cache-control'])).toContain(${asCode(token)});` };
+  }
+  if (binary && /\b(signature|magic|png|jpe?g|gif|webp|pdf)\b/.test(t)) {
+    const kind = t.match(/\b(png|jpe?g|gif|webp|pdf)\b/)?.[1]?.replace('jpg', 'jpeg');
+    if (kind && binary.signature && kind !== binary.signature) return { kind: 'disagrees', expected: `a ${kind.toUpperCase()} file`, actual: `a ${binary.signature.toUpperCase()} file` };
+    if (!binary.signatureHex) return { kind: 'notAsserted', why: 'the probe saw no known file signature' };
+    const hex = binary.signatureHex;
+    return { kind: 'check', check: `the body starts with ${hex}`, code: (v) => `expect((await ${v}.body()).subarray(0, ${hex.length / 2}).toString('hex')).toBe(${asCode(hex)});` };
+  }
+  if (binary && /\b(not empty|non-empty|size|bytes|length|has a body)\b/.test(t)) {
+    return { kind: 'check', check: 'the body is not empty', code: (v) => `expect((await ${v}.body()).length).toBeGreaterThan(0);` };
+  }
+  const { top, item, listKey } = probeShape(probe);
+  // Comparing pages: only with a page parameter and stable data.
+  if (/\b(both pages|across pages|page 1 and page 2|on both|appears? on both|repeat)/.test(t)) {
+    if (!opts.stable || !opts.pageParam || !listKey) return { kind: 'notAsserted', why: 'comparing pages needs stable data and a page parameter' };
+    const idKey = item ? (Object.keys(item).find((k) => /^(uuid|id)$/.test(k)) ?? Object.keys(item)[0]) : 'id';
+    if (/\btotal\b/.test(t)) return { kind: 'check', crossCall: true, check: 'total is equal on page 1 and page 2', code: () => `expect(page2.total).toBe(page1.total);` };
+    return { kind: 'check', crossCall: true, check: `no ${idKey} is on both pages`, code: () => `const seen = new Set((page1[${asCode(listKey)}] as Record<string, unknown>[]).map((x) => x[${asCode(idKey)}]));\n    for (const x of page2[${asCode(listKey)}] as Record<string, unknown>[]) expect(seen.has(x[${asCode(idKey)}])).toBe(false);` };
+  }
+  const contains = text.match(/[`'"]?([A-Za-z_][\w.]*)[`'"]?\s+(?:contains|includes|has)\s+[`'"]?([^`'"\s,;]+)/);
+  if (contains && (top?.[contains[1]] !== undefined || item?.[contains[1]] !== undefined)) {
+    const [, field, want] = contains;
+    const onItem = top?.[field] === undefined;
+    const actual = String(onItem ? item![field] : top![field]);
+    if (!actual.includes(want)) return { kind: 'disagrees', expected: `${field} contains ${want}`, actual: `${field} is ${actual.slice(0, 80)}` };
+    return {
+      kind: 'check',
+      check: `${field} contains ${want}`,
+      code: (v) => (onItem ? `for (const x of ((await ${v}.json()) as Record<string, Record<string, unknown>[]>)[${asCode(listKey)}]) expect(String(x[${asCode(field)}])).toContain(${asCode(want)});` : `expect(String(((await ${v}.json()) as Record<string, unknown>)[${asCode(field)}])).toContain(${asCode(want)});`),
+    };
+  }
+  const words = new Set(t.split(/[^a-z0-9_]+/));
+  const plainArray = Array.isArray(probe.body);
+  let topFields = top ? Object.keys(top).filter((k) => words.has(k.toLowerCase())) : [];
+  let itemFields = item ? Object.keys(item).filter((k) => words.has(k.toLowerCase()) && !topFields.includes(k)) : [];
+  // "200 with an array": the list type.
+  if (plainArray && !itemFields.length && /\b(array|list)\b/.test(t)) {
+    return { kind: 'check', check: 'the body is an array', code: (v) => `expect(Array.isArray(await ${v}.json())).toBe(true);` };
+  }
+  // "the product fields and their types", "the updated product": every field the probe saw.
+  if (!topFields.length && !itemFields.length && /\b(fields?|types?|product|item|record|object|resource|updated|created|new)\b/.test(t)) {
+    if (top && !listKey) topFields = Object.keys(top);
+    else if (item) itemFields = Object.keys(item);
+  }
+  if (topFields.length || itemFields.length) {
+    const typeOf = (v: unknown) => (v === null ? 'object' : Array.isArray(v) ? 'object' : typeof v);
+    if (plainArray) {
+      return {
+        kind: 'check',
+        check: `every item has ${itemFields.join(', ')} with the probe's types`,
+        code: (v) => `for (const x of (await ${v}.json()) as Record<string, unknown>[]) {\n${itemFields.map((f) => `      expect(typeof x[${asCode(f)}]).toBe('${typeOf(item![f])}');`).join('\n')}\n    }`,
+      };
+    }
+    return {
+      kind: 'check',
+      check: `${[...topFields, ...itemFields].join(', ')} are present with the probe's types`,
+      code: (v) => {
+        const lines = [`const body = (await ${v}.json()) as Record<string, unknown>;`];
+        for (const f of topFields) lines.push(`expect(typeof body[${asCode(f)}]).toBe('${typeOf(top![f])}');`);
+        if (itemFields.length && listKey) {
+          lines.push(`for (const x of body[${asCode(listKey)}] as Record<string, unknown>[]) {`);
+          for (const f of itemFields) lines.push(`  expect(typeof x[${asCode(f)}]).toBe('${typeOf(item![f])}');`);
+          lines.push('}');
+        }
+        return `{\n      ${lines.join('\n      ')}\n    }`;
+      },
+    };
+  }
+  return { kind: 'notAsserted', why: 'the fake model cannot check this from the response' };
+}
+
+function clauseTexts(c: { expectedClauses?: string[] }): { n: number; text: string }[] {
+  return (c.expectedClauses ?? []).map((x) => {
+    const m = x.match(/^(\d+):\s*(.*)$/s);
+    return m ? { n: Number(m[1]), text: m[2] } : { n: 0, text: x };
+  });
+}
+
+// The query parameter that picks the page, from the endpoint's sample query.
+function pageParamOf(endpoint: Json): string | null {
+  const q = (endpoint.query ?? {}) as Json;
+  return Object.keys(q).find((k) => /page/i.test(k) && !/size|limit|per/i.test(k)) ?? null;
 }
 
 export function fakeSheetType(c: { title: string; steps?: string; expected?: string }, allowed: string[]): string | null {
@@ -70,6 +203,8 @@ function fakeSheetPlan(user: string, sheet: NonNullable<ReturnType<typeof sheetB
   const cases: Record<string, unknown>[] = [];
   const needsReview: { caseId: string; reason: string }[] = [];
   const covered = new Set<string>();
+  const stable = /This endpoint's data is stable during the run/.test(user);
+  const pageParam = pageParamOf(endpoint);
   for (const c of sheet.cases) {
     const words = `${c.steps ?? ''}`.trim().split(/\s+/).filter(Boolean).length;
     const type = words < 3 && !c.expected ? null : fakeSheetType(c, allowed);
@@ -77,6 +212,18 @@ function fakeSheetPlan(user: string, sheet: NonNullable<ReturnType<typeof sheetB
       needsReview.push({ caseId: c.caseId, reason: !type ? 'the expected result names no status code and nothing to check' : 'the steps do not say what request to send' });
       continue;
     }
+    if (!allowed.includes(type)) {
+      needsReview.push({ caseId: c.caseId, reason: `it is a ${type} case, which this endpoint does not allow` });
+      continue;
+    }
+    const checks = type === 'happy' || type === 'schema' ? clauseTexts(c).map((x) => ({ ...x, r: fakeClause(x.text, probe, { pageParam, stable }) })) : clauseTexts(c).map((x) => ({ ...x, r: fakeClause(x.text, {}, {}) }));
+    const crossCall = checks.some((x) => x.r.kind === 'check' && x.r.crossCall);
+    const wantsCompare = /\b(both pages|across pages|repeat)/i.test(c.expected ?? '');
+    if (wantsCompare && !stable) {
+      needsReview.push({ caseId: c.caseId, reason: `it compares several calls; turn on Stable data for ${id} (stableData: true or --stable-data ${id}) if its data does not change during the run` });
+      continue;
+    }
+    const coverage = checks.map((x) => (x.r.kind === 'check' ? { clause: x.n, check: x.r.check } : x.r.kind === 'disagrees' ? { clause: x.n, disagrees: { expected: x.r.expected, actual: x.r.actual } } : { clause: x.n, notAsserted: x.r.why }));
     const role = type === 'authz' ? roles[0] : undefined;
     cases.push({
       caseId: c.caseId,
@@ -86,6 +233,8 @@ function fakeSheetPlan(user: string, sheet: NonNullable<ReturnType<typeof sheetB
       requestDescription: `${endpoint.method} ${endpoint.path} as the ${type} case${role ? ` using role ${role}` : ''}: ${c.steps ?? ''}`.slice(0, 300),
       expectedStatus: EXPECTED[type](status),
       assertions: [`status is ${EXPECTED[type](status)}`, ...(c.expected ? [`expected: ${c.expected}`] : [])],
+      ...(crossCall ? { crossCall: true } : {}),
+      coverage,
     });
     covered.add(type);
   }
@@ -221,7 +370,10 @@ export function fakeSpec(user: string, pactum: boolean): string {
   const body = endpoint.body as Json | undefined;
   const query = endpoint.query as Json | undefined;
   const headers = endpoint.headers as Json | undefined;
-  const cases = (plan.cases as { type: string; title: string; id: string; requestDescription?: string }[]) ?? [];
+  type PlanClause = { n: number; text: string; status: string; via?: string };
+  const cases = (plan.cases as { type: string; title: string; id: string; requestDescription?: string; statusCodes?: number[]; crossCall?: boolean; clauses?: PlanClause[] }[]) ?? [];
+  const binary = probe.binary as { signatureHex?: string } | undefined;
+  const pageParam = pageParamOf(endpoint);
   const params = [...path.matchAll(/\{([^}]+)\}/g)].map((m) => m[1]);
 
   const pathExpr =
@@ -248,22 +400,30 @@ export function fakeSpec(user: string, pactum: boolean): string {
   const hasBody = body !== undefined && ['post', 'put', 'patch'].includes(method);
   const invalidBody = hasBody ? '{}' : null;
 
-  const call = (client: string, p: string, b: string | null) => {
+  // q: the query to send instead of the sample one (an invalid value, or another page).
+  const call = (client: string, p: string, b: string | null, q: Json | undefined = query) => {
+    const qOpts = [q ? `params: ${JSON.stringify(q)}` : '', headers ? `headers: ${JSON.stringify(headers)}` : ''].filter(Boolean).join(', ');
     if (pactum) {
-      if (hasBody) return `${client}.${method}(${p}, ${b ?? 'validBody'}${opts ? `, ${opts}` : ''})`;
-      return `${client}.${method}(${p}${opts ? `, ${opts}` : ''})`;
+      if (hasBody) return `${client}.${method}(${p}, ${b ?? 'validBody'}${qOpts ? `, { ${qOpts} }` : ''})`;
+      return `${client}.${method}(${p}${qOpts ? `, { ${qOpts} }` : ''})`;
     }
     const parts: string[] = [];
     if (hasBody) parts.push(`data: ${b ?? 'validBody'}`);
-    if (query) parts.push(`params: ${JSON.stringify(query)}`);
-    if (headers) parts.push(`headers: ${JSON.stringify(headers)}`);
+    if (qOpts) parts.push(qOpts);
     return `${client}.${method}(${p}${parts.length ? `, { ${parts.join(', ')} }` : ''})`;
   };
+  // An endpoint with only a query to make invalid (no body, no path id): every query value is invalid.
+  const invalidQuery = !hasBody && !params.length && query ? Object.fromEntries(Object.keys(query).map((k) => [k, 'not-a-valid-value'])) : undefined;
 
   // happy and schema tests also check the body (the gate requires it when the probe got one): the array
   // type for a list, or the type of the first field the probe saw.
   const probeBody = probe.body as Json | undefined;
   const bodyCheck = (() => {
+    // An image or other file: the content type, the size and the file signature, never json().
+    if (binary) {
+      const ctype = String(probe.contentType ?? '').split(';')[0];
+      return `\n    expect(String(response.headers()['content-type'])).toContain(${JSON.stringify(ctype)});\n    const bytes = await response.body();\n    expect(bytes.length).toBeGreaterThan(0);${binary.signatureHex ? `\n    expect(bytes.subarray(0, ${binary.signatureHex.length / 2}).toString('hex')).toBe(${JSON.stringify(binary.signatureHex)});` : ''}`;
+    }
     if ([204, 205, 304].includes(status) || probeBody === undefined || probeBody === null) return '';
     if (Array.isArray(probeBody)) return `\n    const body = (await response.json()) as unknown;\n    expect(Array.isArray(body)).toBe(true);`;
     if (typeof probeBody === 'object') {
@@ -276,7 +436,7 @@ export function fakeSpec(user: string, pactum: boolean): string {
   })();
   // schema tests check every field the probe saw (so every documented required field the API returns).
   const schemaCheck = (() => {
-    if (!bodyCheck) return '';
+    if (!bodyCheck || binary) return bodyCheck;
     const sampleItem = Array.isArray(probeBody) ? probeBody[0] : probeBody;
     if (!sampleItem || typeof sampleItem !== 'object' || Array.isArray(sampleItem)) return bodyCheck;
     const lines = Object.entries(sampleItem as Record<string, unknown>).map(([k, v]) => `expect(typeof item[${JSON.stringify(k)}]).toBe('${v === null ? 'object' : typeof v}');`);
@@ -298,10 +458,24 @@ export function fakeSpec(user: string, pactum: boolean): string {
       const role = c.type === 'authz' ? (c.requestDescription?.match(/using role (\S+?)[:\s]/)?.[1] ?? c.id.replace(/^authz-/, '')) : null;
       const client = c.type === 'auth' ? 'ctx.noAuthApi' : c.type === 'authz' ? `ctx.as('${role}')` : 'ctx.api';
       const invalid = c.type === 'invalid-input';
-      const p = invalid && !hasBody ? invalidPathExpr : pathExpr;
+      // A sheet case that expects 404 (and not 400) asks for a missing resource: a valid-looking id that does not exist.
+      const missing = invalid && c.statusCodes?.includes(404) && !c.statusCodes.includes(400) && params.length > 0;
+      const p = missing ? invalidPathExpr.replace('not-a-valid-id', '999999') : invalid && !hasBody ? invalidPathExpr : pathExpr;
       const b = invalid && hasBody ? invalidBody : null;
       const open = pactum ? `  it('${c.title.replace(/'/g, "\\'")}', async () => {` : `  test('${c.title.replace(/'/g, "\\'")}', async ({ ctx }) => {`;
-      return `${open}\n${resourceLines('    ')}    const response = await ${call(client, p, b)};\n\n    recordStatus(response.status());\n${statusLines(c.type)}\n  });`;
+      const q = invalid && invalidQuery ? invalidQuery : query;
+      // A case that compares calls (stable data only): page 1 is the request under test, page 2 the second call.
+      const cross = c.crossCall && pageParam && query ? `\n    const page1 = (await response.json()) as Record<string, unknown>;\n    const second = await ${call(client, p, b, { ...query, [pageParam]: 2 })};\n    const page2 = (await second.json()) as Record<string, unknown>;` : '';
+      const codes = c.statusCodes?.length ? `\n    expect(${JSON.stringify(c.statusCodes)}).toContain(response.status());` : '';
+      // The clauses the plan marks as asserted, each after its "covers clause" comment.
+      const clauseLines = (c.clauses ?? [])
+        .filter((cl) => cl.status === 'asserted' && cl.via === 'assertion')
+        .map((cl) => {
+          const r = fakeClause(cl.text, invalid ? {} : probe, { pageParam, stable: Boolean(c.crossCall) });
+          return r.kind === 'check' && r.code('response') ? `\n    // covers clause ${cl.n}\n    ${r.code('response')}` : '';
+        })
+        .join('');
+      return `${open}\n${resourceLines('    ')}    const response = await ${call(client, p, b, q)};\n\n    recordStatus(response.status());\n${statusLines(c.type)}${codes}${cross}${clauseLines}\n  });`;
     })
     .join('\n\n');
 

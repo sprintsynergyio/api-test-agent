@@ -126,7 +126,7 @@ Run again: 0 findings.
 Click the **Build** tab.
 
 1. **Name**: anything, for example `orders-staging`.
-2. **Base URL**: the API's root, for example `https://api-staging.example.com`. Do not put a path or query string here. A badge next to it tells you whether the agent sees a local, non-production or production host.
+2. **Base URL**: the API's root, for example `https://api-staging.example.com`, or with a path when every endpoint lives under one, for example `https://api-staging.example.com/media/v1` (endpoint paths such as `/photos` are added after it). Do not put a query string here. A badge next to it tells you whether the agent sees a local, non-production or production host.
 3. **Auth**: pick how the API is protected.
    - **Header**: the header name, usually `Authorization`, and the value, for example `Bearer eyJ...`. The value is used for this one run only; it is never saved to disk, never shown in reports and never sent to the model.
    - **Query parameter** or **Cookie**: the parameter or cookie name, and the value for this run only, the same way.
@@ -137,6 +137,7 @@ Click the **Build** tab.
    Or click the **Import** tab, pick a **Source** and import: an OpenAPI or Swagger file, a Postman collection, cURL commands, a browser HAR capture, or ticket text. Credentials in the import are dropped automatically and the import tells you what it removed.
 
 5. **Run options**: the test framework (**Playwright** or **Pactum**), and redaction. Standard redaction replaces emails, phone numbers, card numbers, tokens and IP addresses before anything reaches the model; **Strict** sends only the shape of the response data. Add field paths such as `customer.name, address.*` to hide more.
+   **Test options** (optional): **Invalid-input tests** adds tests that send bad values to endpoints that only take a query string (bad page numbers, unknown filters); endpoints with a body, an `{id}`, a 4xx in the API spec or a test case expecting a 4xx have them already. **Stable data** tells the agent an endpoint's data does not change during the run, so tests may compare several calls (page 1 against page 2, totals); read-only GET endpoints get this on their own when nothing in the run changes them. Leave the endpoint ids empty for all endpoints, or list some, comma separated.
 6. Click **Generate tests**.
 
 **Save as input file** stores the configuration (without any auth value) under `input/<name>.json`, so next time it is in the Saved list. Put your real auth values in `.env` as the variables the file names, for example `CUSTOM_API_AUTH=Bearer ...`. The Saved tab shows which variables an input reads and highlights the ones your `.env` does not have yet.
@@ -214,6 +215,11 @@ APIs behind OAuth2 client credentials use `"auth": { "type": "oauth2_client", "t
 - You installed or signed in to Claude Code while the UI was already running: stop it (Ctrl+C) and run `npm run ui` again. The CLI is checked once when the UI starts.
 - The run says `claude CLI not found` and you meant to use a key: open the setup card with **Change** and save the key; the header should then say `via API key`.
 - The run stops with `stopped at budget: run again with --resume to continue`: the default is 60 model calls per run, about 25 endpoints. Run `npm run agent -- input/<name>.json --resume` in the terminal and it continues where it stopped without paying for the finished endpoints again, or raise `MAX_CLAUDE_CALLS` in `.env`.
+- A test case is **partially covered**: its test passed, but some part of the expected result has no assertion (the reason names it, for example "clause 2 items are sorted by name"). It is never counted as passed. Make that part checkable from the response, or accept it as a manual check.
+- A test case is **needs review** with "expected ... actual ...": the API answered differently from the sheet when probed. Decide which is right; the agent does not change either.
+- A test case is **not automated** with "invalid-input is off for this endpoint": the endpoint has nothing to make invalid that the agent knows about. Tick **Test options > Invalid-input tests** (or add `"allowInvalidInput": true` to the endpoint, or run with `--allow-invalid-input <id>`).
+- A test case that compares pages is **needs review** with "turn on Stable data": tick **Test options > Stable data** for that endpoint if its data does not change while the tests run (or `"stableData": true`, or `--stable-data <id>`).
+- An image or file endpoint: nothing to do. The agent sees it is not JSON and checks the content type, size and file signature instead.
 - A finding on your API that you think is wrong: open the report, look at the request and response attached to the test, and decide. The agent never changes an expected status to make a test pass; it reports what the API did.
 
 ## Cost

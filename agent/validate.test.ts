@@ -128,7 +128,7 @@ rejects(
     recordStatus(response.status());
     expect(response.status()).toBe(200);
   });`),
-  'must be toBeGreaterThanOrEqual(400) or toBeLessThanOrEqual(499)',
+  'must be toBeGreaterThanOrEqual(400), toBeLessThanOrEqual(499)',
   opts(['invalid-input']),
 );
 

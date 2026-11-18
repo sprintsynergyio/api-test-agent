@@ -1,0 +1,37 @@
+{
+  "name": "local-media",
+  "baseUrl": "http://localhost:4000/media/v1",
+  "defaultHeaders": {
+    "Accept": "application/json, image/*",
+    "Content-Type": "application/json"
+  },
+  "testCases": {
+    "file": "local-media-test-cases.csv",
+    "mode": "sheet-only"
+  },
+  "endpoints": [
+    {
+      "id": "list-photos",
+      "method": "GET",
+      "path": "/photos",
+      "requiresAuth": false,
+      "query": { "page": 1, "per_page": 3 },
+      "errorStatuses": [400]
+    },
+    {
+      "id": "get-thumbnail",
+      "method": "GET",
+      "path": "/thumbnail",
+      "requiresAuth": false,
+      "query": { "format": "png" },
+      "allowInvalidInput": true
+    },
+    {
+      "id": "resize-photo",
+      "method": "POST",
+      "path": "/resize",
+      "requiresAuth": false,
+      "body": { "photo_id": 101, "width": 320, "height": 240 }
+    }
+  ]
+}

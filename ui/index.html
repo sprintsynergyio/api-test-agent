@@ -563,6 +563,17 @@
             </div>
           </div>
           <div class="opt-row">
+            <label class="lbl">Test options</label>
+            <div>
+              <label class="check"><input id="optInvalid" type="checkbox"> Invalid-input tests</label>
+              <input id="optInvalidIds" class="txt" style="margin:4px 0 8px" placeholder="Endpoint ids, comma separated (empty = all endpoints)" autocomplete="off" spellcheck="false">
+              <div class="hint" style="margin:0 0 10px">Already on for endpoints with a request body, a path id, a 4xx response in the API spec, or a test case that expects a 4xx. Tick it for query-only endpoints (bad page or filter values) too.</div>
+              <label class="check"><input id="optStable" type="checkbox"> Stable data</label>
+              <input id="optStableIds" class="txt" style="margin:4px 0 8px" placeholder="Endpoint ids, comma separated (empty = all endpoints)" autocomplete="off" spellcheck="false">
+              <div class="hint" style="margin:0">Lets tests compare several calls (paging, totals, no repeats across pages). Already on for read-only GET endpoints when nothing in the run changes their data. Those tests run one after another.</div>
+            </div>
+          </div>
+          <div class="opt-row">
             <label class="lbl" for="redactMode">Redaction</label>
             <div>
               <select id="redactMode">
@@ -969,8 +980,36 @@
       out.allowProduction = $("prodOk").checked;
       if ($("prodWrites").checked) out.allowWrites = true;
     }
-    return out;
+    return withTestOptions(out);
   }
+  // Test options: per-endpoint "allowInvalidInput" and "stableData" for the listed ids (empty = all).
+  function withTestOptions(cfg) {
+    if (!Array.isArray(cfg.endpoints)) return cfg;
+    const pick = (box, ids) => {
+      if (!$(box).checked) return null;
+      const list = $(ids).value.split(",").map((s) => s.trim()).filter(Boolean);
+      return list.length ? new Set(list) : "all";
+    };
+    const invalid = pick("optInvalid", "optInvalidIds");
+    const stable = pick("optStable", "optStableIds");
+    if (!invalid && !stable) return cfg;
+    const on = (set, id) => set === "all" || (set && set.has(id));
+    return { ...cfg, endpoints: cfg.endpoints.map((e) => ({ ...e, ...(on(invalid, e.id) ? { allowInvalidInput: true } : {}), ...(on(stable, e.id) ? { stableData: true } : {}) })) };
+  }
+  // "Only my test cases": say plainly what each mode does, under the toggle.
+  (function tcModeHint() {
+    const seg = document.getElementById("tcMode");
+    if (!seg) return;
+    const hint = document.createElement("div");
+    hint.id = "tcModeHint";
+    hint.className = "hint";
+    hint.style.marginTop = "6px";
+    const text = { "sheet-only": "Only my test cases: exactly one test per sheet row and nothing else. The agent adds no tests of its own, and endpoints without a row are not tested.", "sheet-plus-agent": "My test cases + agent suggestions: one test per sheet row, plus [agent] tests for case types the sheet does not cover, listed separately." };
+    const update = () => { const on = seg.querySelector("button.on"); hint.textContent = text[on ? on.dataset.mode : "sheet-plus-agent"] || ""; };
+    seg.after(hint);
+    seg.addEventListener("click", () => setTimeout(update, 0));
+    update();
+  })();
 
   // ---------- Pipeline ----------
   function setPhase(i) {
@@ -1656,8 +1695,8 @@
     card.classList.remove("hidden");
     $("tcFileName").textContent = `${String(t.file || "").split(/[\\/]/).pop()} · ${t.mode === "sheet-only" ? "only my test cases" : "my test cases + agent suggestions"}`;
     const tile = (label, n, cls) => `<span class="tag ${cls}">${esc(label)} ${esc(n ?? 0)}</span>`;
-    $("tcTiles").innerHTML = tile("Rows", t.rows, "") + tile("Passed", t.passed, "ok") + tile("Failed", t.failed, "bad") + tile("Needs review", t.needsReview, "warn") + tile("Not automated", t.notAutomated, "warn") + tile("Agent suggestions", t.agentSuggestions, "");
-    const cls = { passed: "ok", failed: "bad", "needs review": "warn", "not automated": "warn" };
+    $("tcTiles").innerHTML = tile("Rows", t.rows, "") + tile("Passed", t.passed, "ok") + tile("Partially covered", t.partiallyCovered, "warn") + tile("Failed", t.failed, "bad") + tile("Needs review", t.needsReview, "warn") + tile("Not automated", t.notAutomated, "warn") + tile("Agent suggestions", t.agentSuggestions, "");
+    const cls = { passed: "ok", "partially covered": "warn", failed: "bad", "needs review": "warn", "not automated": "warn" };
     $("tcTable").innerHTML = (t.cases || []).map((c) => `<tr><td class="id">${esc(c.id)}</td><td>${esc(c.title)}</td><td style="white-space:nowrap">${esc(c.endpoint || "")}</td><td style="white-space:nowrap"><span class="tag ${cls[c.status] || ""}">${esc(c.status)}</span></td><td class="hint">${esc(c.reason || "")}</td></tr>`).join("");
   }
   $("tcCsv").addEventListener("click", () => { window.location.href = "/api/traceability" + (runQuery() ? runQuery() + "&" : "?") + "format=csv"; });

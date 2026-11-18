@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { nodeBin } from './node-bin';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { testTypeOf } from './model';
+import { isJsonContentType, testTypeOf } from './model';
 
 // Static gate for a generated spec. No Claude call. Returns every reason, not just the first.
 
@@ -13,7 +13,10 @@ const TAGS = TYPES.map((t) => `[${t}]`);
 // to the file, so the candidate is typechecked from a sibling folder at the same depth.
 const TSCHECK_DIR = '.tscheck';
 
-export type ValidationResult = { ok: boolean; reasons: string[] };
+// reasons: every reason, as before. byTest: the reasons that belong to one test, by its title (a
+// required title with no test gets one too). fileReasons: the reasons that belong to no single test
+// (imports, code outside the tests): only those make the whole file unusable (see pruneFailingTests).
+export type ValidationResult = { ok: boolean; reasons: string[]; byTest: Record<string, string[]>; fileReasons: string[] };
 
 export type ValidateOptions = {
   name: string;
@@ -28,8 +31,13 @@ export type ValidateOptions = {
   // [schema] test must assert each one.
   requiredFields?: string[];
   // Test case sheet runs: titles the file must contain exactly (each carries a sheet case ID or the
-  // [agent] label, so results map back to the sheet).
+  // [agent] label, so results map back to the sheet). A test with any other title is rejected, so
+  // "Only my test cases" never gets a test the sheet does not have.
   requiredTitles?: string[];
+  // The probe's response content type. A response that is not JSON (an image, a PDF, plain text) lets
+  // [happy] and [schema] tests check the headers, the body size or the file signature instead of a
+  // JSON field.
+  probeContentType?: string | null;
 };
 
 const NO_BODY_STATUSES = [204, 205, 304];
@@ -46,6 +54,22 @@ function isBodyAssertion(call: ExpectCall, bodyVars: string[]): boolean {
   const usesBody = /\.(?:json|text)\(\)/.test(call.arg) || bodyVars.some((v) => new RegExp(`(?<![.\\w$])${v}\\b`).test(call.arg));
   if (!usesBody) return false;
   return !EXISTENCE_ONLY.has(call.matcher);
+}
+
+// Variables assigned from response.headers() or from await response.body() (the raw bytes).
+function headerVariables(code: string): string[] {
+  return [...code.matchAll(/\b(?:const|let|var)\s+(\w+)(?:\s*:\s*[^=]+)?\s*=\s*[\w.]+\.headers\(\)/g)].map((m) => m[1]);
+}
+function bytesVariables(code: string): string[] {
+  return [...code.matchAll(/\b(?:const|let|var)\s+(\w+)(?:\s*:\s*[^=]+)?\s*=\s*\(?\s*await\s+[\w.]+\.body\(\)/g)].map((m) => m[1]);
+}
+
+// For a response that is not JSON: an assertion on a response header (Content-Type, Cache-Control,
+// Content-Length), on the body size or on the file signature (the first bytes) counts as a body check.
+function isNonJsonAssertion(call: ExpectCall, headerVars: string[], bytesVars: string[]): boolean {
+  if (EXISTENCE_ONLY.has(call.matcher)) return false;
+  const uses = (vars: string[]) => vars.some((v) => new RegExp(`(?<![.\\w$])${v}\\b`).test(call.arg));
+  return /\.headers\(\)/.test(call.arg) || /\.body\(\)/.test(call.arg) || uses(headerVars) || uses(bytesVars);
 }
 
 function matchingParen(code: string, open: number): number {
@@ -122,7 +146,7 @@ function statusAssertion(call: ExpectCall, statusVars: string[]): StatusAssertio
 
 // Per test type, the only status assertions allowed and the ones that must be there.
 // A test that checks something weaker, or the wrong thing, would pass against a broken API.
-function checkTypeRules(type: CaseType, title: string, body: string, code: string, probeStatus: number | null, reasons: string[], probeHasBody = true, requiredFields: string[] = []) {
+function checkTypeRules(type: CaseType, title: string, body: string, code: string, probeStatus: number | null, reasons: string[], probeHasBody = true, requiredFields: string[] = [], probeContentType: string | null = null) {
   const statusVars = statusVariables(code);
   const found = expectCalls(body)
     .map((call) => ({ call, a: statusAssertion(call, statusVars) }))
@@ -142,8 +166,18 @@ function checkTypeRules(type: CaseType, title: string, body: string, code: strin
     }
     // A status check alone passes against an API that answers 200 with the wrong body.
     const bodyVars = bodyVariables(body);
-    if (probeHasBody && !NO_BODY_STATUSES.includes(probeStatus) && !expectCalls(body).some((c) => isBodyAssertion(c, bodyVars))) {
-      reasons.push(`[${type}] test "${title}": must assert something about the response body (a field value or type, e.g. expect(typeof body.id).toBe('number')), not only the status`);
+    // A response that is not JSON (an image, a PDF, text): the headers, the size or the file signature
+    // count too, since there is no JSON field to check.
+    const nonJson = probeContentType !== null && !isJsonContentType(probeContentType);
+    const headerVars = headerVariables(body);
+    const bytesVars = bytesVariables(body);
+    const checksBody = expectCalls(body).some((c) => isBodyAssertion(c, bodyVars) || (nonJson && isNonJsonAssertion(c, headerVars, bytesVars)));
+    if (probeHasBody && !NO_BODY_STATUSES.includes(probeStatus) && !checksBody) {
+      reasons.push(
+        nonJson
+          ? `[${type}] test "${title}": must assert something about the response, not only the status: this endpoint answers with ${probeContentType}, not JSON, so assert the Content-Type or Cache-Control header, the body size or the file signature (e.g. const bytes = await response.body(); expect(bytes.length).toBeGreaterThan(0); expect(response.headers()['content-type']).toContain('image/'))`
+          : `[${type}] test "${title}": must assert something about the response body (a field value or type, e.g. expect(typeof body.id).toBe('number')), not only the status`,
+      );
     }
     if (type === 'schema' && probeHasBody && requiredFields.length) {
       const asserted = expectCalls(body).map((c) => c.arg).join('\n');
@@ -159,8 +193,10 @@ function checkTypeRules(type: CaseType, title: string, body: string, code: strin
 
   if (type === 'invalid-input') {
     for (const { call, a } of found) {
-      const ok = (a.kind === 'min' && a.code === 400) || (a.kind === 'max' && a.code === 499);
-      if (!ok) bad(call, 'status assertion must be toBeGreaterThanOrEqual(400) or toBeLessThanOrEqual(499)');
+      // A sheet case that names its 4xx codes ("400 or 404") may also check that list, which is still
+      // a 4xx expectation: expect([400, 404]).toContain(response.status()).
+      const ok = (a.kind === 'min' && a.code === 400) || (a.kind === 'max' && a.code === 499) || (a.kind === 'oneOf' && a.codes.length > 0 && a.codes.every((c) => c >= 400 && c <= 499));
+      if (!ok) bad(call, 'status assertion must be toBeGreaterThanOrEqual(400), toBeLessThanOrEqual(499) or a list of 4xx codes such as expect([400, 404]).toContain(response.status())');
     }
     const hasMin = found.some(({ a }) => a.kind === 'min' && a.code === 400);
     const hasMax = found.some(({ a }) => a.kind === 'max' && a.code === 499);
@@ -393,55 +429,133 @@ export function validateSpec(code: string, opts: ValidateOptions): ValidationRes
 }
 
 // The shared gate: framework rules first, then every rule that is the same for all frameworks.
+// Each reason is attributed to the test it is about when it can be: rules about one test run on that
+// test's own code, the rest on the code outside the tests (imports, helpers) and count for the file.
 export function validateWithRules(code: string, opts: ValidateOptions, rules: GateRules): ValidationResult {
-  const reasons: string[] = [];
+  const fileReasons: string[] = [];
+  const byTest: Record<string, string[]> = {};
+  const addFor = (title: string, why: string) => (byTest[title] ??= []).push(why);
 
-  reasons.push(...rules.frameworkRules(code));
-  if (/process\.env/.test(code)) reasons.push('contains process.env');
-  reasons.push(...unsafeCodeReasons(code, rules.allowedImport));
-  if (/https?:\/\//.test(code)) reasons.push('contains http:// or https://');
-  checkCatches(code, reasons);
+  fileReasons.push(...rules.frameworkRules(code));
+  const tests = testRanges(code, rules.testFn);
+  const outside = blankRanges(code, tests);
+  // Code outside the tests: imports, helpers, top-level statements.
+  fileReasons.push(...codeRules(outside, rules.allowedImport, true));
 
-  const tests = findTests(code, rules.testFn);
   const helpers = [...annotationHelpers(code), ...(rules.statusRecorders ?? [])];
   const testsPerType = new Map<string, number>();
-  tests.forEach((t, i) => {
+  const required = opts.requiredTitles ? new Set(opts.requiredTitles) : null;
+  for (const t of tests) {
+    const body = code.slice(t.start, t.end);
+    const own: string[] = [];
     // "[happy] ..." or, from a test case sheet, "[TC-001] [happy] ..." / "[agent] [happy] ...".
     const type = TYPES.find((ty) => testTypeOf(t.title) === ty);
-    if (!type) reasons.push(`test title does not start with a type tag: "${t.title}"`);
-    const body = code.slice(t.start, i + 1 < tests.length ? tests[i + 1].start : code.length);
+    if (!type) own.push(`test title does not start with a type tag: "${t.title}"`);
     if (type) {
       testsPerType.set(type, (testsPerType.get(type) ?? 0) + 1);
-      checkTypeRules(type, t.title, body, code, opts.probeStatus, reasons, opts.probeHasBody ?? true, opts.requiredFields ?? []);
+      checkTypeRules(type, t.title, body, code, opts.probeStatus, own, opts.probeHasBody ?? true, opts.requiredFields ?? [], opts.probeContentType ?? null);
     }
     const annotationAt = Math.min(
       ...[body.indexOf('actual-status'), ...helpers.map((h) => body.search(new RegExp(`\\b${h}\\s*\\(`)))].filter((n) => n >= 0),
     );
     const firstExpect = body.search(/\bexpect\s*\(/);
-    if (!Number.isFinite(annotationAt)) reasons.push(`test does not record the actual-status annotation: "${t.title}"`);
+    if (!Number.isFinite(annotationAt)) own.push(`test does not record the actual-status annotation: "${t.title}"`);
     else if (firstExpect >= 0 && annotationAt > firstExpect) {
-      reasons.push(`test records actual-status after its first assertion: "${t.title}"`);
+      own.push(`test records actual-status after its first assertion: "${t.title}"`);
     }
-  });
-  checkStatusExpectations(code, reasons);
-  if (tests.length < opts.planTypes.length) {
-    reasons.push(`has ${tests.length} tests but the plan has ${opts.planTypes.length} cases`);
-  }
-  // Each plan case type needs its own tests: four [happy] tests do not replace an [auth] test.
-  for (const type of TYPES) {
-    const planned = opts.planTypes.filter((t) => t === type).length;
-    const written = testsPerType.get(type) ?? 0;
-    if (written < planned) reasons.push(`the plan has ${planned} [${type}] case(s) but the file has ${written} [${type}] test(s)`);
+    for (const why of codeRules(body, rules.allowedImport, false)) own.push(`test "${t.title}": ${why}`);
+    if (required && !required.has(t.title.replace(/\\(.)/g, '$1'))) {
+      own.push(`test "${t.title}" is not one of the plan's cases; write exactly one test per plan case and no others`);
+    }
+    for (const why of own) addFor(t.title, why);
   }
 
-  for (const title of opts.requiredTitles ?? []) {
-    const n = tests.filter((t) => t.title.replace(/\\(.)/g, '$1') === title).length;
-    if (n === 0) reasons.push(`has no test titled exactly "${title}" (copy the plan's title, case ID included)`);
-    else if (n > 1) reasons.push(`has ${n} tests titled "${title}"; each plan case is one test`);
+  if (!required) {
+    if (tests.length < opts.planTypes.length) {
+      fileReasons.push(`has ${tests.length} tests but the plan has ${opts.planTypes.length} cases`);
+    }
+    // Each plan case type needs its own tests: four [happy] tests do not replace an [auth] test.
+    for (const type of TYPES) {
+      const planned = opts.planTypes.filter((t) => t === type).length;
+      const written = testsPerType.get(type) ?? 0;
+      if (written < planned) fileReasons.push(`the plan has ${planned} [${type}] case(s) but the file has ${written} [${type}] test(s)`);
+    }
+  } else {
+    for (const title of opts.requiredTitles ?? []) {
+      const n = tests.filter((t) => t.title.replace(/\\(.)/g, '$1') === title).length;
+      if (n === 0) addFor(title, `has no test titled exactly "${title}" (copy the plan's title, case ID included)`);
+      else if (n > 1) addFor(title, `has ${n} tests titled "${title}"; each plan case is one test`);
+    }
   }
 
   const tsErrors = typecheck(code, opts.name);
-  if (tsErrors) reasons.push(`fails TypeScript typecheck:\n${tsErrors}`);
+  if (tsErrors) {
+    // TypeScript errors are pinned to the test whose lines they are on; the rest count for the file.
+    const lineStarts = tests.map((t) => ({ title: t.title, from: lineOf(code, t.start), to: lineOf(code, t.end) }));
+    const loose: string[] = [];
+    for (const line of tsErrors.split('\n')) {
+      const m = line.match(/\.spec\.ts\((\d+),\d+\)/);
+      const hit = m ? lineStarts.find((r) => Number(m[1]) >= r.from && Number(m[1]) <= r.to) : undefined;
+      if (hit) addFor(hit.title, `fails TypeScript typecheck: ${line.replace(/^.*?\.spec\.ts/, '').trim()}`);
+      else if (line.trim()) loose.push(line);
+    }
+    if (loose.length) fileReasons.push(`fails TypeScript typecheck:\n${loose.join('\n')}`);
+  }
 
-  return { ok: reasons.length === 0, reasons };
+  const reasons = [...fileReasons, ...Object.values(byTest).flat()];
+  return { ok: reasons.length === 0, reasons, byTest, fileReasons };
+}
+
+type TestRange = { title: string; start: number; end: number };
+
+// Every test call with the source range of the whole call: test('<title>', async ({ ctx }) => { ... });
+export function testRanges(code: string, testFn = 'test'): TestRange[] {
+  const tests = findTests(code, testFn);
+  return tests.map((t, i) => {
+    const open = code.indexOf('(', t.start);
+    const close = matchingParen(code, open);
+    const next = i + 1 < tests.length ? tests[i + 1].start : code.length;
+    let end = Math.min(close + 1, next);
+    if (code[end] === ';') end++;
+    return { title: t.title, start: t.start, end };
+  });
+}
+
+function blankRanges(code: string, ranges: { start: number; end: number }[]): string {
+  let out = code;
+  for (const r of ranges) out = out.slice(0, r.start) + out.slice(r.start, r.end).replace(/[^\n]/g, ' ') + out.slice(r.end);
+  return out;
+}
+
+function lineOf(code: string, index: number): number {
+  return code.slice(0, index).split('\n').length;
+}
+
+// The code rules that apply wherever the code is (a test or the rest of the file).
+function codeRules(part: string, allowedImport: RegExp, withImports: boolean): string[] {
+  const reasons: string[] = [];
+  if (/process\.env/.test(part)) reasons.push('contains process.env');
+  const unsafe = unsafeCodeReasons(part, allowedImport);
+  reasons.push(...(withImports ? unsafe : unsafe.filter((r) => !r.startsWith('imports '))));
+  if (/https?:\/\//.test(part)) reasons.push('contains http:// or https://');
+  checkCatches(part, reasons);
+  checkStatusExpectations(part, reasons);
+  return reasons;
+}
+
+// Removes these tests from the file (the whole call, with its line).
+export function removeTests(code: string, titles: string[], testFn = 'test'): string {
+  const drop = new Set(titles);
+  const ranges = testRanges(code, testFn).filter((t) => drop.has(t.title) || drop.has(t.title.replace(/\\(.)/g, '$1')));
+  let out = code;
+  for (const r of [...ranges].reverse()) {
+    const lineStart = out.lastIndexOf('\n', r.start - 1) + 1;
+    const before = out.slice(lineStart, r.start);
+    const from = /^\s*$/.test(before) ? lineStart : r.start;
+    let to = r.end;
+    while (to < out.length && (out[to] === ' ' || out[to] === '\t')) to++;
+    if (out[to] === '\n') to++;
+    out = out.slice(0, from) + out.slice(to);
+  }
+  return out.replace(/\n{3,}/g, '\n\n');
 }

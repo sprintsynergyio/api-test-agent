@@ -179,15 +179,30 @@ or put it in the input file: `"testCases": { "file": "local-shop-test-cases.csv"
   run budget). A case that matches nothing is reported as **not automated** with the reason, never dropped.
 - **Modes.** **My test cases + agent suggestions** (default, `sheet-plus-agent`): your cases, plus the
   agent's own cases for what the sheet does not cover, titled `[agent] [type] ...`; suggestions that repeat
-  a sheet case are dropped. **Only my test cases** (`sheet-only`): only your cases, and only the endpoints
-  they name are probed.
+  a sheet case are dropped. **Only my test cases** (`sheet-only`): exactly one test per row and nothing
+  else. The agent adds no tests of its own (the summary shows `agentSuggestions: 0`), and only the
+  endpoints your rows name are probed and tested. The UI says which mode is on under the toggle; from the
+  terminal use `--test-cases-mode sheet-only` or `"mode": "sheet-only"` in the input.
 - **The rules still apply.** Every test passes the static gate. A case whose steps or expected result are
   too vague, that expects a 5xx, or that contradicts what the API answered when probed (for example the
   sheet says 201 and the API returns 200) is not guessed at: it becomes a test marked **needs review**
   (`test.fixme` in Playwright, a pending test in Pactum) with the reason. It never runs and never passes,
   and it does not change the exit code.
+- **Expected results are read clause by clause.** "Response is 400 or 404 JSON error, not 500 or 502"
+  expects 400 or 404 (the test asserts the status is one of them) and rules out 500 and 502; codes after
+  *not*, *never*, *must not be*, *instead of* or *other than* are never read as expected. Each clause
+  (split on lines, semicolons and sentences) must map to an assertion in the test. When a test passes but
+  some clause has no assertion (for example "items are sorted by name"), the case is **partially
+  covered**, never passed, and the reason lists the missing clauses. When the probe response contradicts
+  a clause (the sheet says `download_url` contains `/cdn/`, the API returns `/files/...`), the case is
+  **needs review** with expected and actual.
+- **Which case types an endpoint gets.** happy and schema always; invalid-input when the endpoint has a
+  request body, a path id, a 4xx response documented in its OpenAPI spec, `"allowInvalidInput": true`, or a
+  sheet case that expects a 4xx (other than 401/403); auth when it requires auth; authz when there is
+  another role. A case of a type the endpoint does not allow is **needs review** with that rule and how to
+  turn the type on. See [Test rules](#test-rules) for images, paging and cross-call checks.
 - **Traceability.** `out/traceability.csv` and `out/traceability.xlsx` list every row with ID, Title,
-  Endpoint, Test file, Status (passed, failed, needs review, not automated) and Reason, followed by the agent
+  Endpoint, Test file, Status (passed, partially covered, failed, needs review, not automated) and Reason, followed by the agent
   suggestions. The UI shows the same table with download buttons, `out/summary.json` has `testCases`, the
   Allure report labels each test with its case ID (`caseId` and a tag), and the exported framework and zip
   include `traceability.csv`.
@@ -239,6 +254,11 @@ Write an input file (or use the Build tab in the UI):
 - `auth` is optional. The file only names the environment variable; put the value in `.env`. Without `auth`, no endpoint may have `requiresAuth: true`.
 - `body` is the sample request body used for the happy path.
 - `setup` means: before calling this endpoint, call `endpointId` with its sample body, read `idField` from the response, and put it into the path placeholder (`{id}`).
+- `baseUrl` may have a path (`https://api.example.com/media/v1`). Endpoint paths are joined to it, so `/photos` calls `https://api.example.com/media/v1/photos`, in the probe, the generated tests and the exported framework, on every OS.
+- `query` is the sample query string (`{ "page": 1, "per_page": 10 }`).
+- `errorStatuses` (optional, 400-499): the 4xx codes the API documents for this endpoint. The OpenAPI importer fills it in. It turns on invalid-input tests.
+- `allowInvalidInput: true` (optional): invalid-input tests for an endpoint with nothing else to make invalid, such as a query-only GET (bad page or filter values). Same as `--allow-invalid-input <ids>` or **Run options > Test options > Invalid-input tests** in the UI.
+- `stableData: true` (optional): the endpoint's data does not change during the run, so tests may compare several calls (paging, totals). Same as `--stable-data <ids>` or **Test options > Stable data** in the UI. Read-only GET endpoints get this automatically when nothing in the run writes the same resource.
 
 Then run `npm run agent path/to/my-api.json`.
 
@@ -258,7 +278,7 @@ The UI's setup card writes these lines for you. The prompts were tuned against C
 
 ## Test rules
 
-Every generated spec must pass the static gate (`agent/validate.ts`) before it is kept. The gate runs inside the GENERATING phase, right after the model returns a spec and before anything is written to `generated/`: it checks the rules below and runs a TypeScript typecheck on the candidate. If it fails, generation is retried once with the reasons. If it fails again, the spec is not written and the console shows `FAILED static gate: <reasons>` for that endpoint. The same name is used in the code, the console output and this document.
+Every generated spec must pass the static gate (`agent/validate.ts`) before it is kept. The gate runs inside the GENERATING phase, right after the model returns a spec and before anything is written to `generated/`: it checks the rules below and runs a TypeScript typecheck on the candidate. If it fails, generation is retried once with the reasons. If it fails again, only the tests the gate rejected are dropped and the rest of the file is kept (`OK written ... (2 tests dropped by the static gate, the rest kept)`); each dropped case is **not automated** with its own reason. Only a problem with the file itself (a forbidden import, code outside the tests) rejects the whole spec, and then the console shows `FAILED static gate: <reasons>` for that endpoint, with each sheet case still getting its own reason. The same name is used in the code, the console output and this document.
 
 - No hardcoded hosts: paths are relative, and the base URL comes from the fixture.
 - No `process.env` in tests: everything comes from the `ctx` fixture.
@@ -267,6 +287,10 @@ Every generated spec must pass the static gate (`agent/validate.ts`) before it i
 - Generated code is untrusted: the only import allowed is the ctx file, and the gate rejects `require`, dynamic `import()`, `eval`, `Function`, `process`, `globalThis`, `fetch`, Node built-in modules (`child_process`, `fs`, `net`, `http`, ...) and any Playwright fixture other than `ctx`. Every request goes through `ctx`, so the safety guard sees it.
 - Never expect a 5xx. A 5xx on bad input fails the test, and that is reported as a suspected API bug. Expectations are never changed to match a bug.
 - Every test title starts with its type (`[happy]`, `[schema]`, `[invalid-input]`, `[auth]`), records the real status before asserting, and the file must typecheck.
+- Responses that are not JSON (images, PDFs, files): a happy or schema test checks headers (`Content-Type`, `Cache-Control`, `Content-Length`), the body size (`(await response.body()).length > 0`) or the file signature (PNG `89504E47`, JPEG `FFD8FF`, GIF, WebP, PDF), never `response.json()`. The probe reads such a body as bytes and records its type, size, signature and headers for the prompts.
+- invalid-input asserts the 4xx range, plus the sheet's own codes when it lists them (`expect([400, 404]).toContain(response.status())`).
+- Tests that compare several calls (a paging walk, totals across pages, no item on two pages) are allowed only when the endpoint's data is stable: a read-only GET with nothing in the run writing the same resource, or `stableData` on. Such a file runs serially (`test.describe.configure({ mode: 'serial' })` in Playwright; Mocha already runs a Pactum file's tests in order, one at a time). On an endpoint that changes data they are refused, and a sheet case that asks for one is **needs review** with how to turn Stable data on.
+- Sheet cases mark each checked clause with `// covers clause N` before its assertion; the agent reads these to report coverage, so a clause with no comment and no `expect` is reported as not asserted.
 
 A failed test is a **suspected API finding** when the API returned a 5xx, or returned 2xx to an invalid-input or auth test. Anything else is marked **needs review**.
 
