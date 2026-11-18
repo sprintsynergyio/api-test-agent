@@ -55,6 +55,7 @@ jobs:
       - run: npm run test:claude-api
       - run: npm run test:settings
       - run: npm run test:ui
+      - run: npm run test:ui-smoke
       - run: npm run test:checkpoint
       - name: Pactum template tests against the local API
         run: |
@@ -78,3 +79,60 @@ jobs:
       - name: npm audit
         if: matrix.os == 'ubuntu-latest' && matrix.node == 22
         run: npm audit --audit-level=high
+
+  # Windows from the kind of folder people actually unpack into: a path with spaces, on a drive letter
+  # other than C: (J: is mapped with subst), and Node 24.21.0 as on the machine that first hit the crash.
+  # npm run ui must start and load the agent modules through tsx, then the UI tests and the whole agent
+  # (FAKE_MODEL=1) run from the same folder. A raw Windows path given to tsImport() or import() fails here
+  # with ERR_UNSUPPORTED_ESM_URL_SCHEME ("Received protocol 'j:'").
+  windows-paths:
+    name: windows-latest / Node ${{ matrix.node }} / ${{ matrix.where }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [24]
+        where: ['J:\Api test agent\api-test-agent', 'J:\apitestagent\api-test-agent', 'D:\a\Api test agent\api-test-agent']
+        include:
+          - node: 22
+            where: 'J:\Api test agent\api-test-agent'
+          - node: 24.21.0
+            where: 'J:\Api test agent\api-test-agent'
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      LOCAL_API_AUTH_VALUE: Bearer local-shop-demo-token
+      WHERE: ${{ matrix.where }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - name: Copy the repo to ${{ matrix.where }}, then npm ci, UI smoke, UI tests and end-to-end run there
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:WHERE.StartsWith('J:')) {
+            $backing = Join-Path $env:RUNNER_TEMP 'jdrive'
+            New-Item -ItemType Directory -Force -Path $backing | Out-Null
+            subst J: $backing
+            if ($LASTEXITCODE -ne 0) { throw 'subst J: failed' }
+          }
+          New-Item -ItemType Directory -Force -Path $env:WHERE | Out-Null
+          robocopy $env:GITHUB_WORKSPACE $env:WHERE /E /XD .git node_modules /NFL /NDL /NJH /NJS /NP | Out-Null
+          if ($LASTEXITCODE -ge 8) { throw "robocopy failed ($LASTEXITCODE)" }
+          Set-Location -LiteralPath $env:WHERE
+          Write-Host "Running from $((Get-Location).Path)"
+          node -p "'node ' + process.version + ', cwd ' + process.cwd()"
+          npm -v
+          function Run([string]$script) {
+            npm run $script
+            if ($LASTEXITCODE -ne 0) { throw "npm run $script failed ($LASTEXITCODE)" }
+          }
+          npm ci
+          if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
+          Run 'test:ui-smoke'
+          Run 'test:ui'
+          Run 'test:e2e'

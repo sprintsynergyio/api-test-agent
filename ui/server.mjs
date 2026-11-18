@@ -150,6 +150,9 @@ function writeEnvLines(pairs) {
 }
 // Agent modules loaded on first use through tsx (already a dev dependency: the server starts the agent
 // with it): claude.ts for verifyProviderKey, config.ts and model.ts for input validation and profiles.
+// tsImport() needs a file:// URL, never a plain path: tsx hands the specifier to Node's ESM loader, which
+// reads a Windows path such as J:\x\agent\config.ts as a URL with the scheme "j:" and fails with
+// ERR_UNSUPPORTED_ESM_URL_SCHEME (macOS and Linux paths happen to work). CI checks this on Windows.
 const agentModules = {};
 async function agentModule(name) {
   if (!agentModules[name]) {

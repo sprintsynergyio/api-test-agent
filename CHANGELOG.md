@@ -12,6 +12,7 @@ All notable changes to this project. Dates are the day the change reached `main`
 - macOS, Windows and Linux support; CI on 3 OSes x Node 22/24; Node 22 or newer required (PR 15)
 - Body assertions, OpenAPI response schemas, model retries, `schemaVersion`, docs (PR 16)
 - Presented as a SprintSynergy product; `docs/HACKATHON-HANDOFF.md` replaced by `docs/DEMO.md` (PR 17)
+- Windows: CI starts `npm run ui` from `J:\Api test agent\...` and other folders with spaces or on a non-C: drive (Node 22, 24 and 24.21.0) and loads the agent modules, new `npm run test:ui-smoke`; guards the fix for the UI crash `ERR_UNSUPPORTED_ESM_URL_SCHEME ... Received protocol 'j:'` on first page load (PR 20)
 
 ## 1.0.0 (2026-11-14)
 
