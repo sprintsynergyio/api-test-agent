@@ -51,6 +51,8 @@ export type ExportOptions = {
   secrets: string[];
   endpoints: ExportEndpoint[];
   findings: ExportFinding[];
+  // Extra text files written into the project root (the test case sheet's traceability.csv).
+  extraFiles?: { path: string; content: string }[];
 };
 
 export type FrameworkAdapter = {

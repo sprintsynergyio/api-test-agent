@@ -37,6 +37,109 @@ function probeBlock(user: string): Json {
   return block(user.slice(lineEnd), '') ?? (() => { throw new Error('FAKE_MODEL: PROBE block is not JSON'); })();
 }
 
+// Test case sheet prompts. The fake picks each case's type from the words and status codes in the
+// case, the way a reader would, and marks a case needs review when it names no status code and none of
+// the words below: the same contract the real model gets, kept deliberately simple.
+function sheetBlock(user: string): { mode: string; cases: { caseId: string; title: string; steps?: string; expected?: string }[] } | null {
+  const b = block(user, 'TEAM TEST CASES (from their test case sheet; each must be planned or marked needsReview):');
+  return b ? (b as unknown as { mode: string; cases: { caseId: string; title: string; steps?: string; expected?: string }[] }) : null;
+}
+
+export function fakeSheetType(c: { title: string; steps?: string; expected?: string }, allowed: string[]): string | null {
+  const text = `${c.title}\n${c.steps ?? ''}\n${c.expected ?? ''}`.toLowerCase();
+  const expected = (c.expected ?? '').toLowerCase();
+  const codes = [...expected.matchAll(/(?<![\d.])([1-5]\d\d)(?![\d.])/g)].map((m) => Number(m[1]));
+  const noAuth = /\b(without|no|missing|invalid|expired)\b[^.\n]{0,30}\b(auth|token|authorization|credentials|api key|login)\b/.test(text);
+  const otherRole = /\b(viewer|another role|other role|other user|different user|lower role|read-only user)\b/.test(text);
+  if (noAuth || (codes.includes(401) && !otherRole)) return allowed.includes('auth') ? 'auth' : 'auth';
+  if (otherRole || codes.includes(403)) return 'authz';
+  if (codes.some((n) => n >= 400 && n < 500) || /\b(invalid|missing|wrong|bad|not found|non-existent|nonexistent|does not exist|reject)/.test(text)) return 'invalid-input';
+  if (codes.some((n) => n >= 200 && n < 300) || /\b(success|returns|created|updated|deleted|list)\b/.test(expected)) {
+    return /\b(fields?|schema|shape|each (item|product|record) has|types?)\b/.test(expected) ? 'schema' : 'happy';
+  }
+  return null;
+}
+
+function fakeSheetPlan(user: string, sheet: NonNullable<ReturnType<typeof sheetBlock>>): string {
+  const endpoint = endpointBlock(user);
+  const probe = probeBlock(user);
+  const id = String(endpoint.id);
+  const status = Number(probe.status);
+  const allowed = allowedTypesLine(user);
+  const roles = [...(user.match(/"authz" expects "403\|404" with one of these roles: ([^.]+)\./)?.[1] ?? '').matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+  const cases: Record<string, unknown>[] = [];
+  const needsReview: { caseId: string; reason: string }[] = [];
+  const covered = new Set<string>();
+  for (const c of sheet.cases) {
+    const words = `${c.steps ?? ''}`.trim().split(/\s+/).filter(Boolean).length;
+    const type = words < 3 && !c.expected ? null : fakeSheetType(c, allowed);
+    if (!type || words < 3) {
+      needsReview.push({ caseId: c.caseId, reason: !type ? 'the expected result names no status code and nothing to check' : 'the steps do not say what request to send' });
+      continue;
+    }
+    const role = type === 'authz' ? roles[0] : undefined;
+    cases.push({
+      caseId: c.caseId,
+      id: type === 'authz' && role ? `authz-${role}` : `${type}-${c.caseId.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
+      type,
+      title: c.title,
+      requestDescription: `${endpoint.method} ${endpoint.path} as the ${type} case${role ? ` using role ${role}` : ''}: ${c.steps ?? ''}`.slice(0, 300),
+      expectedStatus: EXPECTED[type](status),
+      assertions: [`status is ${EXPECTED[type](status)}`, ...(c.expected ? [`expected: ${c.expected}`] : [])],
+    });
+    covered.add(type);
+  }
+  if (sheet.mode === 'sheet-plus-agent') {
+    for (const type of allowed) {
+      if (covered.has(type)) continue;
+      if (type === 'authz' && !roleNames(user).length && !roles.length) continue;
+      const role = type === 'authz' ? (roles[0] ?? roleNames(user)[0]) : '';
+      cases.push({
+        id: type === 'authz' ? `authz-${role}` : type,
+        type,
+        title: `[${type}] ${id} ${titleFor(type, role)}`,
+        requestDescription: `${endpoint.method} ${endpoint.path} as the ${type} case${role ? ` using role ${role}` : ''}`,
+        expectedStatus: EXPECTED[type](status),
+        assertions: [`status is ${EXPECTED[type](status)}`],
+      });
+    }
+  }
+  return JSON.stringify({ endpointId: id, cases, needsReview }, null, 2);
+}
+
+function allowedTypesLine(user: string): string[] {
+  const m = user.match(/Allowed case types for this endpoint: ([^\n]+?)\.(?: Include|\n)/);
+  if (!m) throw new Error('FAKE_MODEL: prompt has no allowed case types line');
+  return [...m[1].matchAll(/"([a-z-]+)"/g)].map((x) => x[1]);
+}
+
+// The match step: an endpoint id from the case's words (id words, verbs for the method), or null.
+export function fakeMatch(user: string): string {
+  const eps = block(user, 'ENDPOINTS:') as { endpoints: { id: string; method: string; path: string }[] } | null;
+  const cs = block(user, 'TEST CASES:') as { cases: { caseId: string; title: string; endpointHint?: string; method?: string; steps?: string; expected?: string }[] } | null;
+  if (!eps || !cs) throw new Error('FAKE_MODEL: match prompt has no ENDPOINTS or TEST CASES block');
+  const verbs: Record<string, string[]> = { GET: ['get', 'view', 'read', 'fetch', 'show', 'list', 'preview', 'find', 'search', 'open'], POST: ['create', 'add', 'new', 'post', 'submit', 'register'], PUT: ['update', 'edit', 'change', 'modify', 'replace', 'put'], PATCH: ['patch', 'update', 'edit'], DELETE: ['delete', 'remove', 'destroy'] };
+  const matches = cs.cases.map((c) => {
+    // A request line the agent could not find in the API stays unmatched: guessing would hide it.
+    if (/\b(GET|POST|PUT|PATCH|DELETE)\s+\//i.test(c.steps ?? '')) return { caseId: c.caseId, endpointId: null, reason: 'fake model: the request in the steps is not one of the endpoints' };
+    const text = `${c.title} ${c.endpointHint ?? ''} ${c.steps ?? ''}`.toLowerCase();
+    const words = new Set(text.split(/[^a-z0-9]+/).filter(Boolean));
+    let best: { id: string; score: number } | null = null;
+    for (const e of eps.endpoints) {
+      const idWords = e.id.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+      const nouns = idWords.filter((w) => !Object.values(verbs).flat().includes(w));
+      const nounHit = nouns.some((n) => words.has(n) || words.has(n.replace(/s$/, '')) || words.has(`${n}s`));
+      if (!nounHit) continue;
+      let score = 1 + idWords.filter((w) => words.has(w)).length;
+      if ((verbs[e.method] ?? []).some((v) => words.has(v))) score += 2;
+      if (c.method && c.method === e.method) score += 2;
+      if (!best || score > best.score) best = { id: e.id, score };
+    }
+    return best && best.score >= 3 ? { caseId: c.caseId, endpointId: best.id, reason: 'fake model: words of the endpoint id and its method' } : { caseId: c.caseId, endpointId: null, reason: 'fake model: no endpoint shares enough words with this case' };
+  });
+  return JSON.stringify({ matches }, null, 2);
+}
+
 function allowedTypes(user: string): string[] {
   const m = user.match(/Allowed case types for this endpoint: ([^\n]+?)\. Include/);
   if (!m) throw new Error('FAKE_MODEL: prompt has no allowed case types line');
@@ -58,6 +161,8 @@ const EXPECTED: Record<string, (probeStatus: number) => string> = {
 };
 
 export function fakePlan(user: string): string {
+  const sheet = sheetBlock(user);
+  if (sheet) return fakeSheetPlan(user, sheet);
   const endpoint = endpointBlock(user);
   const probe = probeBlock(user);
   const id = String(endpoint.id);
@@ -116,7 +221,7 @@ export function fakeSpec(user: string, pactum: boolean): string {
   const body = endpoint.body as Json | undefined;
   const query = endpoint.query as Json | undefined;
   const headers = endpoint.headers as Json | undefined;
-  const cases = (plan.cases as { type: string; title: string; id: string }[]) ?? [];
+  const cases = (plan.cases as { type: string; title: string; id: string; requestDescription?: string }[]) ?? [];
   const params = [...path.matchAll(/\{([^}]+)\}/g)].map((m) => m[1]);
 
   const pathExpr =
@@ -190,7 +295,7 @@ export function fakeSpec(user: string, pactum: boolean): string {
 
   const tests = cases
     .map((c) => {
-      const role = c.type === 'authz' ? c.id.replace(/^authz-/, '') : null;
+      const role = c.type === 'authz' ? (c.requestDescription?.match(/using role (\S+?)[:\s]/)?.[1] ?? c.id.replace(/^authz-/, '')) : null;
       const client = c.type === 'auth' ? 'ctx.noAuthApi' : c.type === 'authz' ? `ctx.as('${role}')` : 'ctx.api';
       const invalid = c.type === 'invalid-input';
       const p = invalid && !hasBody ? invalidPathExpr : pathExpr;
@@ -224,6 +329,7 @@ export async function fakeModelAnswer(stepName: string, system: string, user: st
   try {
     // A short pause so concurrent callers overlap, which is what the concurrency test measures.
     await new Promise((r) => setTimeout(r, Number(process.env.FAKE_MODEL_DELAY_MS ?? 25)));
+    if (stepName.startsWith('match')) return fakeMatch(user);
     if (stepName.startsWith('plan')) return fakePlan(user);
     if (stepName.startsWith('generate')) return '```ts\n' + fakeSpec(user, /Pactum/i.test(system)) + '```\n';
     throw new Error(`FAKE_MODEL: unknown step "${stepName}"`);

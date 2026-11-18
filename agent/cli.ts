@@ -4,12 +4,16 @@ import { redactHomeFolders } from './home-paths';
 import { responseSchemaIssues } from './response-schema';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { basename, join, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { extraRoles, pickAuthEnv, secretValues } from './auth';
 import { BudgetExceeded, claudeBudget, claudeCallsUsed, claudeEnv, describeModelChoice, fakeModelEnabled, hostedWithoutApiKeyProblem, modelChoice, promptRedaction, redact, usingApiKey } from './claude';
-import { CHECKPOINT_FILE, endpointHash, inputHash, loadCheckpoint, newCheckpoint, reusable, saveCheckpoint, type Checkpoint, type ScopeMode } from './checkpoint';
+import { CHECKPOINT_FILE, endpointHash, hashOf, inputHash, loadCheckpoint, newCheckpoint, reusable, saveCheckpoint, type Checkpoint, type ScopeMode } from './checkpoint';
 import { parseAgentFlags, type AgentFlags } from './flags';
-import { apiName, loadConfig, selectionLine, takeSelectFlag, type Config, type Endpoint } from './config';
+import { apiName, DEFAULT_TEST_CASE_MODE, loadConfig, selectionLine, takeSelectFlag, type Config, type Endpoint, type TestCaseMode } from './config';
+import { loadSheetFile, type MatchResult, type ParsedSheet, type SheetCase } from './test-cases';
+import { matchCases } from './match-cases';
+import { buildTraceRows, traceCsv, traceTotals, traceXlsx, type TraceRow } from './traceability';
+import { testTypeOf } from './model';
 import { frameworkFor, type FrameworkAdapter, type FrameworkInfo, type TestOutcome } from './frameworks';
 import { generateEndpoint } from './generate';
 import { planEndpoint, type Plan } from './plan';
@@ -30,6 +34,8 @@ const CLAUDE_NOT_FOUND = "claude CLI not found on PATH. Run 'which claude' in th
 
 type EndpointState = {
   endpoint: Endpoint;
+  // Test case sheet runs: hash of this endpoint's sheet cases and the mode (checkpoint).
+  casesHash?: string;
   probe?: ProbeResult;
   plan?: Plan;
   specFile: string | null;
@@ -53,6 +59,12 @@ type Reused = { probes: number; plans: number; specs: number };
 type Scope = { mode: ScopeMode; endpoints: string[] | null; reused: Reused; concurrency: number; testWorkers: number };
 
 let budgetHit = false;
+
+// Test case sheet run (agent/test-cases.ts): the parsed sheet, the mode, and each case's endpoint.
+type SheetRun = { file: string; mode: TestCaseMode; sheet: ParsedSheet; matches: Map<string, MatchResult>; byEndpoint: Map<string, SheetCase[]> };
+let sheetRun: SheetRun | null = null;
+const TRACE_CSV = 'out/traceability.csv';
+const TRACE_XLSX = 'out/traceability.xlsx';
 export const BUDGET_HINT = 'stopped at budget: run again with --resume to continue';
 
 // Set by main(): every stage change is written to out/checkpoint.json right away.
@@ -68,6 +80,7 @@ function record(s: EndpointState) {
     ...(s.specFile ? { specFile: s.specFile } : {}),
     ...(s.failureReason ? { failureReason: s.failureReason } : {}),
     ...(s.skippedReason ? { skippedReason: s.skippedReason } : {}),
+    ...(s.casesHash ? { casesHash: s.casesHash } : {}),
   };
   saveCheckpoint(checkpoint);
 }
@@ -84,6 +97,14 @@ function oneLine(text: string): string {
   return text.replace(/\s*\n\s*/g, ' ');
 }
 
+function casesLine(plan: Plan): string {
+  if (!sheetRun) return `${plan.cases.length} cases`;
+  const sheet = plan.cases.filter((c) => c.source === 'sheet').length;
+  const agent = plan.cases.filter((c) => c.source === 'agent').length;
+  const review = plan.needsReview?.length ?? 0;
+  return `${plan.cases.length} cases (${sheet} from the sheet, ${agent} agent suggestion${agent === 1 ? '' : 's'}${review ? `, ${review} need${review === 1 ? 's' : ''} review` : ''})`;
+}
+
 async function planPhase(states: EndpointState[], roles: string[]) {
   await forEachLimited(states, CONCURRENCY, async (s) => {
     const id = s.endpoint.id;
@@ -92,7 +113,7 @@ async function planPhase(states: EndpointState[], roles: string[]) {
       return;
     }
     if (s.plan) {
-      console.log(`${id} OK ${s.plan.cases.length} cases (from checkpoint)`);
+      console.log(`${id} OK ${casesLine(s.plan)} (from checkpoint)`);
       return;
     }
     if (s.failureReason) {
@@ -106,10 +127,11 @@ async function planPhase(states: EndpointState[], roles: string[]) {
       return;
     }
     try {
-      const result = await planEndpoint(s.endpoint, s.probe!, { roles });
+      const sheetOptions = sheetRun ? { sheetCases: sheetRun.byEndpoint.get(id) ?? [], testCaseMode: sheetRun.mode } : {};
+      const result = await planEndpoint(s.endpoint, s.probe!, { roles, ...sheetOptions });
       if (result.ok) {
         s.plan = result.plan;
-        console.log(`${id} OK ${result.plan.cases.length} cases`);
+        console.log(`${id} OK ${casesLine(result.plan)}`);
       } else {
         s.failureReason = result.reason;
         console.log(`${id} FAILED ${oneLine(result.reason)}`);
@@ -216,6 +238,7 @@ function writeSummary(o: {
   exitCode: number;
   failOn: FailOn;
   frameworkError?: string | null;
+  testCases?: Record<string, unknown> | null;
 }) {
   const { status, inputFile, config, startedAt, states, outcomes, findings, framework, allureReport, secrets, safety, requestsSent, testFramework, redactionReplaced, cleanup, scope, exitCode, failOn } = o;
   const choice = modelChoice();
@@ -283,6 +306,8 @@ function writeSummary(o: {
     // Why the standalone framework is missing when its export failed; the rest of the summary still holds.
     frameworkError: o.frameworkError ? cleanError(o.frameworkError, secrets) : null,
     allureReport,
+    // Test case sheet runs: what happened to every sheet case (ui/CONTRACT.md section 15); null without a sheet.
+    testCases: o.testCases ?? null,
     // The process exit code (README "Exit codes") and the --fail-on setting that produced it.
     exitCode,
     failOn,
@@ -307,7 +332,7 @@ function classify(type: string, actual: number | null): Finding['classification'
 }
 
 function toFinding(o: TestOutcome, plan: Plan | undefined): Finding {
-  const type = o.title.match(/^\[(happy|schema|invalid-input|auth|authz)\]/)?.[1] ?? 'unknown';
+  const type = testTypeOf(o.title) ?? 'unknown';
   const planCase = plan?.cases.find((c) => c.title === o.title) ?? plan?.cases.find((c) => c.type === type);
   return {
     endpointId: o.endpointId,
@@ -322,7 +347,7 @@ function toFinding(o: TestOutcome, plan: Plan | undefined): Finding {
 
 // Decide what this run covers: a fresh run, a resume of the last checkpoint, or only the changed
 // endpoints. Returns the checkpoint to continue (fresh: a new one) and the mode that was really applied.
-function resolveScope(flags: AgentFlags, config: Config, fw: FrameworkAdapter, inputFile: string): { mode: ScopeMode; cp: Checkpoint; prev: Checkpoint | null } {
+function resolveScope(flags: AgentFlags, config: Config, fw: FrameworkAdapter, inputFile: string, extra?: unknown): { mode: ScopeMode; cp: Checkpoint; prev: Checkpoint | null } {
   let mode: ScopeMode = flags.resume ? 'resume' : flags.onlyNew ? 'only-new' : 'fresh';
   let prev: Checkpoint | null = null;
   if (mode !== 'fresh') {
@@ -334,7 +359,7 @@ function resolveScope(flags: AgentFlags, config: Config, fw: FrameworkAdapter, i
       console.log(`${mode}: ${CHECKPOINT_FILE} belongs to ${prev.inputFile} (${prev.framework}), starting fresh`);
       prev = null;
       mode = 'fresh';
-    } else if (mode === 'resume' && prev.inputHash !== inputHash(config)) {
+    } else if (mode === 'resume' && prev.inputHash !== inputHash(config, extra)) {
       console.log(`resume: ${inputFile} changed since the checkpoint, starting fresh (use --only-new to regenerate only the changed endpoints)`);
       prev = null;
       mode = 'fresh';
@@ -342,12 +367,12 @@ function resolveScope(flags: AgentFlags, config: Config, fw: FrameworkAdapter, i
   }
   if (mode === 'fresh') {
     for (const dir of ['generated', 'out', 'reports', 'test-results']) rmSync(dir, { recursive: true, force: true });
-    return { mode, cp: newCheckpoint(config, inputFile, fw.name), prev: null };
+    return { mode, cp: newCheckpoint(config, inputFile, fw.name, extra), prev: null };
   }
   // Resume or only-new: keep generated/ and out/, start the reports over.
   for (const dir of ['reports', 'test-results', 'generated/.candidate']) rmSync(dir, { recursive: true, force: true });
   const cp = prev!;
-  cp.inputHash = inputHash(config);
+  cp.inputHash = inputHash(config, extra);
   // Specs of endpoints that changed or were removed must not run again.
   const current = new Set(config.endpoints.map((e) => e.id));
   for (const [id, entry] of Object.entries(cp.endpoints)) {
@@ -373,8 +398,20 @@ async function main() {
     const unknown = flags.endpoints.filter((id) => !config.endpoints.some((e) => e.id === id));
     if (unknown.length) throw new Error(`--endpoints: not in ${inputFile}: ${unknown.join(', ')}`);
   }
-  const { mode, cp } = resolveScope(flags, config, fw, inputFile);
-  const inScope = flags.endpoints ? config.endpoints.filter((e) => flags.endpoints!.includes(e.id)) : config.endpoints;
+  // The test case sheet: --test-cases, else the input's testCases.file (relative to the input file).
+  const sheetFile = flags.testCases ?? (config.testCases ? (isAbsolute(config.testCases.file) ? config.testCases.file : join(dirname(inputFile), config.testCases.file)) : null);
+  const sheetMode: TestCaseMode = flags.testCasesMode ?? config.testCases?.mode ?? DEFAULT_TEST_CASE_MODE;
+  let sheet: ParsedSheet | null = null;
+  if (sheetFile) {
+    try {
+      sheet = await loadSheetFile(sheetFile);
+    } catch (err) {
+      throw new Error(`test case sheet: ${(err as Error).message}`);
+    }
+  } else if (flags.testCasesMode) throw new Error('--test-cases-mode needs a test case sheet (--test-cases <file> or testCases.file in the input)');
+  const sheetDisplay = sheetFile ? relativePaths(isAbsolute(sheetFile) ? sheetFile : relative('.', sheetFile)).split(sep).join('/') : null;
+  const { mode, cp } = resolveScope(flags, config, fw, inputFile, sheet ? { sheet: sheet.hash, mode: sheetMode } : undefined);
+  let inScope = flags.endpoints ? config.endpoints.filter((e) => flags.endpoints!.includes(e.id)) : config.endpoints;
   const scope: Scope = { mode, endpoints: flags.endpoints, reused: { probes: 0, plans: 0, specs: 0 }, concurrency: flags.concurrency, testWorkers: flags.testWorkers };
 
   // Safety guard first: a refused run sends no request and needs neither an auth value nor Claude.
@@ -449,9 +486,58 @@ async function main() {
     return;
   }
 
+  console.log('=== PROBING ===');
+  console.log(`safety: ${safety.hostClass} host, ${safety.mode} mode`);
+  if (safety.resolvesToLocal?.length) console.log(`safety note: ${safety.host} resolves to a local or private address (${safety.resolvesToLocal.join(', ')}); it keeps its ${safety.hostClass} rules`);
+  console.log(`framework: ${fw.name}`);
+  console.log(describeModelChoice());
+  if (fakeModelEnabled()) console.log('model: FAKE_MODEL=1 test mode, no model is called');
+  const selected = selectionLine(config);
+  if (selected) console.log(selected);
+  if (flags.endpoints) console.log(`endpoints: ${flags.endpoints.join(', ')}`);
+  if (safety.hostClass === 'production' && safety.mode === 'full') console.log(PRODUCTION_WRITES_WARNING);
+
+  // Test case sheet: match every case to an endpoint (column or steps first, the model for the rest),
+  // then, in sheet-only mode, keep only the endpoints that have cases.
+  const outOfScope = new Map<string, string>();
+  if (sheet && sheetFile) {
+    const refs = config.endpoints.map((e) => ({ id: e.id, method: e.method, path: e.path }));
+    let matched: Awaited<ReturnType<typeof matchCases>>;
+    try {
+      matched = await matchCases(sheet.cases, refs, { useModel: true });
+    } catch (err) {
+      throw new Error(`test case sheet: ${(err as Error).message}`);
+    }
+    if (matched.budgetHit) budgetHit = true;
+    const byEndpoint = new Map<string, SheetCase[]>();
+    for (const c of sheet.cases) {
+      const m = matched.results.get(c.id);
+      if (m?.endpointId) byEndpoint.set(m.endpointId, [...(byEndpoint.get(m.endpointId) ?? []), c]);
+    }
+    sheetRun = { file: sheetDisplay ?? sheetFile, mode: sheetMode, sheet, matches: matched.results, byEndpoint };
+    const results = [...matched.results.values()];
+    const count = (by: string) => results.filter((r) => r.by === by).length;
+    const unmatched = sheet.cases.filter((c) => !matched.results.get(c.id)?.endpointId);
+    console.log(`test cases: ${sheet.cases.length} from ${sheetRun.file} (${sheet.format}, ${sheetMode}): ${sheet.cases.length - unmatched.length} matched (${count('column')} by the Endpoint column, ${count('steps')} by the steps, ${count('ai')} by the AI), ${unmatched.length} not matched`);
+    for (const w of sheet.warnings.slice(0, 20)) console.log(`  sheet warning${w.row ? ` row ${w.row}` : ''}: ${w.message}`);
+    if (sheet.warnings.length > 20) console.log(`  ... ${sheet.warnings.length - 20} more sheet warnings`);
+    for (const c of unmatched) console.log(`  not matched: ${c.id}: ${oneLine(matched.results.get(c.id)?.reason ?? 'unknown')}`);
+    if (flags.endpoints) {
+      for (const id of byEndpoint.keys()) if (!flags.endpoints.includes(id)) outOfScope.set(id, `endpoint ${id} is not in --endpoints for this run`);
+    }
+    if (sheetMode === 'sheet-only') {
+      inScope = inScope.filter((e) => byEndpoint.has(e.id));
+      console.log(`test cases: sheet-only, ${inScope.length} endpoint${inScope.length === 1 ? '' : 's'} with cases in scope${inScope.length ? `: ${inScope.map((e) => e.id).join(', ')}` : ''}`);
+    }
+  }
+  const casesHashFor = (id: string) => (sheetRun ? hashOf({ mode: sheetRun.mode, cases: sheetRun.byEndpoint.get(id) ?? [] }) : undefined);
+
   // What the checkpoint already holds for the endpoints in scope.
   const states: EndpointState[] = inScope.map((endpoint) => {
-    const entry = reusable(cp, endpoint, mode);
+    const casesHash = casesHashFor(endpoint.id);
+    const found = reusable(cp, endpoint, mode);
+    // A changed set of sheet cases for this endpoint keeps the probe and plans again.
+    const entry = found && found.casesHash !== casesHash ? (found.probe ? { ...found, stage: 'probed' as const, plan: undefined, specFile: undefined } : null) : found;
     const skippedReason = endpointAllowed(safety, endpoint) ? null : READ_ONLY_SKIP;
     if (entry && !skippedReason) {
       // A recorded failure is retried from its last good stage: with a plan, generate again; with a
@@ -462,30 +548,20 @@ async function main() {
       if (probe) scope.reused.probes++;
       if (plan) scope.reused.plans++;
       if (specFile) scope.reused.specs++;
-      return { endpoint, probe, plan, specFile, failureReason: null, skippedReason: null };
+      return { endpoint, casesHash, probe, plan, specFile, failureReason: null, skippedReason: null };
     }
-    return { endpoint, specFile: null, failureReason: null, skippedReason };
+    return { endpoint, casesHash, specFile: null, failureReason: null, skippedReason };
   });
   checkpoint = cp;
-
-  console.log('=== PROBING ===');
-  console.log(`safety: ${safety.hostClass} host, ${safety.mode} mode`);
-  if (safety.resolvesToLocal?.length) console.log(`safety note: ${safety.host} resolves to a local or private address (${safety.resolvesToLocal.join(', ')}); it keeps its ${safety.hostClass} rules`);
-  console.log(`framework: ${fw.name}`);
-  console.log(describeModelChoice());
-  if (fakeModelEnabled()) console.log('model: FAKE_MODEL=1 test mode, no model is called');
-  const selected = selectionLine(config);
-  if (selected) console.log(selected);
   if (mode !== 'fresh') console.log(`${mode}: ${scope.reused.specs} of ${inScope.length} endpoints already done (reusing ${scope.reused.probes} probes, ${scope.reused.plans} plans, ${scope.reused.specs} specs)`);
-  if (flags.endpoints) console.log(`endpoints: ${flags.endpoints.join(', ')}`);
-  if (safety.hostClass === 'production' && safety.mode === 'full') console.log(PRODUCTION_WRITES_WARNING);
+
   const toProbe = new Set(states.filter((s) => !s.probe && !s.skippedReason).map((s) => s.endpoint.id));
   for (const s of states) if (s.probe) console.log(`${s.endpoint.id} OK ${s.probe.status} (from checkpoint)`);
   let requestsSent = 0;
   let redactionReplaced = 0;
   const cleanup = emptyCleanup();
   if (toProbe.size > 0 || mode === 'fresh') {
-    const only = mode === 'fresh' && !flags.endpoints ? undefined : toProbe;
+    const only = mode === 'fresh' && !flags.endpoints && sheetRun?.mode !== 'sheet-only' ? undefined : toProbe;
     const probeRun = await probeAll(config, authEnv, { forceProduction, only });
     for (const sec of probeRun.secrets) if (!secrets.includes(sec)) secrets.push(sec);
     requestsSent += probeRun.requestsSent;
@@ -538,6 +614,8 @@ async function main() {
     addCleanup(cleanup, run.cleanup);
     for (const e of run.loadErrors) console.log(`${fw.name} error: ${e}`);
     for (const s of written) {
+      // A spec of needs-review placeholders only has nothing that runs.
+      if (s.plan && s.plan.cases.length === 0) continue;
       if (!outcomes.some((o) => o.endpointId === s.endpoint.id)) {
         s.failureReason = 'spec produced no test results (failed to load)';
       }
@@ -554,7 +632,34 @@ async function main() {
   // The prompt-level pass (agent/claude.ts) counts what the structured redaction did not already hide.
   redactionReplaced += promptRedaction.replaced;
   const untested = states.filter((s) => s.failureReason !== null && !s.skippedReason).length;
-  const summaryInput = { status, inputFile, config, startedAt, states, outcomes, findings, allureReport, secrets, safety, requestsSent, testFramework: fw.name, redactionReplaced, cleanup, scope, failOn: flags.failOn };
+  // Test case sheet: the back-map, one row per sheet case, then the agent's suggestions.
+  let traceRows: TraceRow[] = [];
+  let testCases: Record<string, unknown> | null = null;
+  if (sheetRun) {
+    traceRows = buildTraceRows({
+      cases: sheetRun.sheet.cases,
+      matches: sheetRun.matches,
+      endpoints: states.map((s) => ({ endpointId: s.endpoint.id, specFile: s.specFile, plan: s.plan, failureReason: s.failureReason === null ? null : cleanError(oneLine(s.failureReason), secrets), skippedReason: s.skippedReason })),
+      outOfScope: new Map([...outOfScope, ...[...sheetRun.byEndpoint.keys()].filter((id) => !states.some((s) => s.endpoint.id === id) && !outOfScope.has(id)).map((id) => [id, `endpoint ${id} is not in this run`] as [string, string])]),
+      outcomes,
+      findings,
+      ran: written.length > 0,
+    }).map((r) => ({ ...r, reason: cleanError(r.reason, secrets) }));
+    mkdirSync('out', { recursive: true });
+    writeFileSync(TRACE_CSV, traceCsv(traceRows));
+    writeFileSync(TRACE_XLSX, traceXlsx(traceRows));
+    testCases = {
+      file: sheetRun.file,
+      mode: sheetRun.mode,
+      format: sheetRun.sheet.format,
+      columns: sheetRun.sheet.columns,
+      ...traceTotals(traceRows),
+      warnings: sheetRun.sheet.warnings.map((w) => `${w.row ? `row ${w.row}: ` : ''}${w.message}`),
+      traceability: { csv: TRACE_CSV, xlsx: TRACE_XLSX },
+      cases: traceRows.filter((r) => r.source === 'sheet').map((r) => ({ id: r.id, title: r.title, endpoint: r.endpoint || null, testFile: r.testFile || null, status: r.status, reason: r.reason })),
+    };
+  }
+  const summaryInput = { status, inputFile, config, startedAt, states, outcomes, findings, allureReport, secrets, safety, requestsSent, testFramework: fw.name, redactionReplaced, cleanup, scope, failOn: flags.failOn, testCases };
   let exitCode = runExitCode({ status, findings: findings.length, untestedEndpoints: untested, exportFailed: false, failOn: flags.failOn });
   // The summary is written before the export, so a failed export never loses the run's results.
   let summary = writeSummary({ ...summaryInput, framework: null, exitCode });
@@ -572,6 +677,7 @@ async function main() {
         // The export README lists endpoints without a spec with their reason, read-only skips included.
         endpoints: states.map((s) => ({ ...s, failureReason: s.failureReason ?? s.skippedReason })),
         findings: findings.filter((f) => f.classification === 'suspected API finding'),
+        extraFiles: sheetRun ? [{ path: 'traceability.csv', content: traceCsv(traceRows) }] : [],
       });
     } catch (err) {
       frameworkError = (err as Error).message;
@@ -587,6 +693,7 @@ async function main() {
     console.log('NO TESTS GENERATED');
     for (const s of states) console.log(`  ${s.endpoint.id}: ${oneLine(s.failureReason ?? s.skippedReason ?? 'unknown')}`);
     if (budgetHit) console.log(BUDGET_HINT);
+    if (testCases) console.log(testCasesLine(testCases));
     console.log(`Summary written to ${SUMMARY_FILE}`);
     process.exitCode = EXIT_ERROR;
     return;
@@ -612,10 +719,18 @@ async function main() {
     console.log(`${review.length} need${review.length === 1 ? 's' : ''} review`);
     for (const f of review) console.log(`  - ${f.testTitle}: expected ${f.expectedStatus}, got ${f.actualStatus ?? 'no status'}`);
   }
+  if (testCases) {
+    console.log(testCasesLine(testCases));
+    for (const r of traceRows.filter((x) => x.source === 'sheet' && x.status !== 'passed')) console.log(`  ${r.id} ${r.status}: ${r.reason}`);
+  }
   console.log(`Summary written to ${SUMMARY_FILE}${htmlReport ? `, report in ${htmlReport}` : ''}`);
   if (allureReport) console.log(`allure report written to ${allureReport}`);
   if (framework) console.log(`framework written to ${framework.dir} (${framework.files.length} files)`);
   console.log(`Exit code: ${exitCode}${flags.failOn === 'none' ? ' (--fail-on none)' : ''}`);
+}
+
+function testCasesLine(t: Record<string, unknown>): string {
+  return `Test cases: ${t.rows} in the sheet: ${t.passed} passed, ${t.failed} failed, ${t.needsReview} need review, ${t.notAutomated} not automated; ${t.agentSuggestions} agent suggestion(s); traceability in ${TRACE_CSV} and ${TRACE_XLSX}`;
 }
 
 main().catch((err) => {

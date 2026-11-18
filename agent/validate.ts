@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { nodeBin } from './node-bin';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { testTypeOf } from './model';
 
 // Static gate for a generated spec. No Claude call. Returns every reason, not just the first.
 
@@ -26,6 +27,9 @@ export type ValidateOptions = {
   // Required response fields from the documented response schema (endpoint.responseSchema). Every
   // [schema] test must assert each one.
   requiredFields?: string[];
+  // Test case sheet runs: titles the file must contain exactly (each carries a sheet case ID or the
+  // [agent] label, so results map back to the sheet).
+  requiredTitles?: string[];
 };
 
 const NO_BODY_STATUSES = [204, 205, 304];
@@ -402,7 +406,8 @@ export function validateWithRules(code: string, opts: ValidateOptions, rules: Ga
   const helpers = [...annotationHelpers(code), ...(rules.statusRecorders ?? [])];
   const testsPerType = new Map<string, number>();
   tests.forEach((t, i) => {
-    const type = TYPES.find((ty) => t.title.startsWith(`[${ty}]`));
+    // "[happy] ..." or, from a test case sheet, "[TC-001] [happy] ..." / "[agent] [happy] ...".
+    const type = TYPES.find((ty) => testTypeOf(t.title) === ty);
     if (!type) reasons.push(`test title does not start with a type tag: "${t.title}"`);
     const body = code.slice(t.start, i + 1 < tests.length ? tests[i + 1].start : code.length);
     if (type) {
@@ -427,6 +432,12 @@ export function validateWithRules(code: string, opts: ValidateOptions, rules: Ga
     const planned = opts.planTypes.filter((t) => t === type).length;
     const written = testsPerType.get(type) ?? 0;
     if (written < planned) reasons.push(`the plan has ${planned} [${type}] case(s) but the file has ${written} [${type}] test(s)`);
+  }
+
+  for (const title of opts.requiredTitles ?? []) {
+    const n = tests.filter((t) => t.title.replace(/\\(.)/g, '$1') === title).length;
+    if (n === 0) reasons.push(`has no test titled exactly "${title}" (copy the plan's title, case ID included)`);
+    else if (n > 1) reasons.push(`has ${n} tests titled "${title}"; each plan case is one test`);
   }
 
   const tsErrors = typecheck(code, opts.name);

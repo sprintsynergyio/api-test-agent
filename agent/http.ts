@@ -14,7 +14,7 @@ import {
   type AuthRequest,
 } from './auth';
 import type { Config } from './config';
-import { pathParams, queryString, resolvePath, setupSteps } from './model';
+import { parseTestTitle, pathParams, queryString, resolvePath, setupSteps, testTypeOf } from './model';
 import { redactHeaders, redactText, redactValue, type RedactionCounter } from './redact';
 import { assessSafety, ProductionRefused, READ_METHODS, ReadOnlyBlocked, refusalMessage, type Safety } from './safety';
 
@@ -425,13 +425,18 @@ export function reportLabels(apiName: string, titlePath: string[], file: string)
   const title = titlePath[titlePath.length - 1] ?? '';
   const describe = titlePath.length > 2 ? titlePath[titlePath.length - 2] : undefined;
   const feature = describe?.split(' ')[0] || (file.split(/[\\/]/).pop() ?? file).replace(/\.spec\.ts$/, '');
-  const type = title.match(/^\[(happy|schema|invalid-input|auth|authz)\]/)?.[1];
+  const type = testTypeOf(title);
   const labels = [
     { name: 'epic', value: apiName },
     { name: 'feature', value: feature },
     { name: 'severity', value: type === 'auth' || type === 'authz' || type === 'invalid-input' ? 'critical' : 'normal' },
   ];
   if (type) labels.push({ name: 'story', value: type });
+  // A test from the team's test case sheet carries its case ID: as a tag (filterable in Allure) and as
+  // the "caseId" label, so a result maps back to the sheet row. Agent suggestions get the tag "agent".
+  const { caseId } = parseTestTitle(title);
+  if (caseId) labels.push({ name: 'tag', value: caseId }, { name: 'caseId', value: caseId }, { name: 'tag', value: 'test-case-sheet' });
+  else if (title.startsWith('[agent] ')) labels.push({ name: 'tag', value: 'agent-suggestion' });
   return labels;
 }
 

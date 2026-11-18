@@ -18,9 +18,13 @@ export type AgentFlags = {
   testWorkers: number;
   // What makes the exit code 1: any finding (default) or nothing (findings are reported, exit 0).
   failOn: FailOn;
+  // A test case sheet to automate (overrides the input file's testCases.file), and the mode.
+  testCases: string | null;
+  testCasesMode: TestCaseMode | null;
 };
 
 import { FAIL_ON_VALUES, type FailOn } from './exit-codes';
+import { TEST_CASE_MODES, type TestCaseMode } from './config';
 
 export const DEFAULT_CONCURRENCY = 3;
 export const MAX_CONCURRENCY = 8;
@@ -44,6 +48,8 @@ export function parseAgentFlags(argv: string[], defaultInput = 'input/endpoints.
     concurrency: DEFAULT_CONCURRENCY,
     testWorkers: 1,
     failOn: 'finding',
+    testCases: null,
+    testCasesMode: null,
   };
   const positional: string[] = [];
   for (let i = 0; i < argv.length; i++) {
@@ -84,8 +90,20 @@ export function parseAgentFlags(argv: string[], defaultInput = 'input/endpoints.
         flags.failOn = v as FailOn;
         break;
       }
+      case '--test-cases': {
+        const v = value().trim();
+        if (!v) throw new Error('--test-cases needs the path of a .csv, .tsv or .xlsx test case sheet');
+        flags.testCases = v;
+        break;
+      }
+      case '--test-cases-mode': {
+        const v = value();
+        if (!(TEST_CASE_MODES as readonly string[]).includes(v)) throw new Error(`--test-cases-mode must be one of ${TEST_CASE_MODES.join(', ')}, got "${v}"`);
+        flags.testCasesMode = v as TestCaseMode;
+        break;
+      }
       default:
-        if (arg.startsWith('--')) throw new Error(`unknown flag ${arg}. Known flags: --resume, --only-new, --endpoints a,b, --budget N, --concurrency N, --test-workers N, --fail-on none|finding, --select k=v`);
+        if (arg.startsWith('--')) throw new Error(`unknown flag ${arg}. Known flags: --resume, --only-new, --endpoints a,b, --budget N, --concurrency N, --test-workers N, --fail-on none|finding, --test-cases <sheet>, --test-cases-mode sheet-only|sheet-plus-agent, --select k=v`);
         positional.push(arg);
     }
   }

@@ -48,6 +48,10 @@ export function buildPrompt(fw: FrameworkAdapter, endpoint: Endpoint, plan: Plan
           : `The probe answered ${probe.status}, not the documented ${endpoint.responseSchema.status}, so assert the shape the probe shows.\n`
       }`
     : '';
+  const sheetRun = plan.cases.some((c) => c.source);
+  const sheetRules = sheetRun
+    ? `\n- This plan comes from the team's test case sheet. Use every plan case's title exactly as written, character for character, including the leading [ID] or [agent] part: it maps each result back to the sheet. The type tag after it decides the status rules below.\n- A case with "expectedResult" is the team's agreed expectation: turn it into assertions on the response wherever the response allows (field presence, types, and values the test itself sent), on top of the status rule for its type. Never change the expected status to match the sheet.`
+    : '';
   return `Write the test file generated/${endpoint.id}.spec.ts (${fw.label}) for this endpoint, implementing every case in the plan as one test.
 
 ENDPOINT CONFIG:
@@ -76,7 +80,7 @@ ${setupLine}${queryLine ? `\n${queryLine}` : ''}${headersLine ? `\n${headersLine
 - Use ctx.api for normal requests and ctx.noAuthApi for auth cases (the same valid request without the auth header).
 - Never expect a 5xx. Assert status codes, field presence and field types. Every [happy] and [schema] test must assert at least one field value or type of the response body${probeHasBody(probe) && ![204, 205, 304].includes(probe.status ?? 0) ? '' : ' (this endpoint answered without a body, so here the status is enough)'}. Assert exact values only for values the test itself sent.
 - Tests run against a shared live API while other tests create, update and delete data. Never assert a list length or item count, never compare the results of two calls, and never assume a list is unchanged or contains (or lacks) a specific item you did not create in the same test. For lists, assert the array type and the shape of its items only.
-${fw.generatorRules(endpoint, plan, probe).map((r) => `- ${r}`).join('\n')}
+${fw.generatorRules(endpoint, plan, probe).map((r) => `- ${r}`).join('\n')}${sheetRules}
 
 Answer with exactly one \`\`\`ts code block containing the whole file.`;
 }
@@ -100,10 +104,37 @@ function extractCode(text: string): string | null {
   return m ? m[1].trimEnd() + '\n' : null;
 }
 
+// Sheet cases the agent will not guess at, written by the agent itself (not the model) after the gate:
+// a Playwright test.fixme or a pending Mocha test, titled "[<ID>] [needs-review] <Title>", with the
+// reason. They never run and never count as passed; the traceability file lists them as needs review.
+export function needsReviewBlock(fw: FrameworkAdapter, items: NonNullable<Plan['needsReview']>): string {
+  if (!items.length) return '';
+  const lines = items.map((n) => {
+    const title = JSON.stringify(n.title ?? `[${n.caseId}] [needs-review]`);
+    const reason = JSON.stringify(n.reason.replace(/\s+/g, ' '));
+    return fw.name === 'pactum'
+      ? `  // needs review: ${n.reason.replace(/\s+/g, ' ')}\n  it(${title});`
+      : `  test.fixme(${title}, { annotation: { type: 'needs-review', description: ${reason} } }, async () => {});`;
+  });
+  const open = fw.name === 'pactum' ? `describe('needs review', () => {` : `test.describe('needs review', () => {`;
+  return `\n// From the team's test case sheet: cases too ambiguous to automate without a person (needs review).\n// Written by the agent, never by the model. They never run and never pass.\n${open}\n${lines.join('\n')}\n});\n`;
+}
+
+function emptySpecHeader(fw: FrameworkAdapter): string {
+  return fw.name === 'pactum' ? `import { expect } from '../tests-pactum/setup/ctx';\n\nvoid expect;\n` : `import { test } from '../tests/fixtures/ctx';\n`;
+}
+
 export async function generateEndpoint(fw: FrameworkAdapter, endpoint: Endpoint, plan: Plan, probe: ProbeResult): Promise<GenerateResult> {
   mkdirSync(CANDIDATE_DIR, { recursive: true });
   const candidate = join(CANDIDATE_DIR, `${endpoint.id}.spec.ts`);
   const finalFile = join(GENERATED_DIR, `${endpoint.id}.spec.ts`);
+  const review = needsReviewBlock(fw, plan.needsReview ?? []);
+  // Only needs-review cases: nothing for the model to write.
+  if (!plan.cases.length) {
+    if (!review) return { ok: false, reasons: ['the plan has no cases'] };
+    writeFileSync(finalFile, emptySpecHeader(fw) + review);
+    return { ok: true, specFile: finalFile };
+  }
   const prompt = buildPrompt(fw, endpoint, plan, probe);
 
   let reasons: string[] = [];
@@ -132,9 +163,11 @@ export async function generateEndpoint(fw: FrameworkAdapter, endpoint: Endpoint,
       probeStatus: probe.status,
       probeHasBody: probeHasBody(probe),
       requiredFields: documentedFields(endpoint, probe),
+      requiredTitles: plan.cases.some((c) => c.source) ? plan.cases.map((c) => c.title) : undefined,
     });
     if (result.ok) {
       renameSync(candidate, finalFile);
+      if (review) writeFileSync(finalFile, readFileSync(finalFile, 'utf8') + review);
       return { ok: true, specFile: finalFile };
     }
     reasons = result.reasons;

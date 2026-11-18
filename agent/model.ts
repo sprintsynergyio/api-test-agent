@@ -164,3 +164,26 @@ export function applyProfile<T extends { profile?: Profile; baseUrl?: string; de
   const resolved = resolveProfile(raw, selectionText);
   return { ...raw, ...resolved };
 }
+
+// Test titles. A generated test title starts with its type tag ("[happy] list-products ..."). Tests that
+// come from the team's test case sheet carry the sheet's case ID first ("[TC-001] [happy] List products"),
+// and next to a sheet the agent's own suggestions carry "[agent]" ("[agent] [auth] ..."). A test the
+// sheet describes too vaguely to automate is "[TC-010] [needs-review] ..." and never runs.
+export const TEST_TYPES = ['happy', 'schema', 'invalid-input', 'auth', 'authz'] as const;
+export const AGENT_CASE_PREFIX = 'agent';
+const TITLE_RE = /^(?:\[([^[\]]{1,64})\]\s+)?\[(happy|schema|invalid-input|auth|authz|needs-review)\]/;
+
+export function parseTestTitle(title: string): { caseId: string | null; type: string | null } {
+  const m = title.match(TITLE_RE);
+  if (!m) return { caseId: null, type: null };
+  // A type tag is never a case ID: "[happy] [auth] x" is not a case "happy".
+  if (m[1] !== undefined && (TEST_TYPES as readonly string[]).includes(m[1])) return { caseId: null, type: null };
+  return { caseId: m[1] === undefined || m[1] === AGENT_CASE_PREFIX ? null : m[1], type: m[2] };
+}
+
+// The test type of a title, with or without a case ID prefix; null for a needs-review placeholder or an
+// untagged title.
+export function testTypeOf(title: string): string | null {
+  const t = parseTestTitle(title).type;
+  return t && t !== 'needs-review' ? t : null;
+}

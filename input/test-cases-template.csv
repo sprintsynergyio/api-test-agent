@@ -1,0 +1,6 @@
+ID,Title,Endpoint,Method,Steps / Request,Expected Result,Priority,Preconditions,Test Data
+TC-001,List items returns the list,list-items,GET,Send GET /items,"200 with an array; each item has id and name",High,,
+TC-002,Create an item with valid data,create-item,POST,"POST /items with a name and a price","201 and the new item with its id",High,,"{""name"": ""Pen"", ""price"": 2.5}"
+TC-003,Create item rejects a missing name,create-item,POST,POST /items without the name field,400 Bad Request,Medium,,"{""price"": 2.5}"
+TC-004,Create item without a token is rejected,create-item,POST,POST /items without the Authorization header,401 Unauthorized,High,,
+TC-005,Get an item that does not exist,get-item,GET,GET /items/999999,404 Not Found,Low,,

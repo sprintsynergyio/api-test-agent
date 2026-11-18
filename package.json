@@ -61,6 +61,7 @@
     "ui:hash": "node ui/hash-password.mjs",
     "check:contract": "tsx agent/check-contract.ts",
     "test:checkpoint": "tsx agent/checkpoint.test.ts",
+    "test:test-cases": "tsx agent/test-cases.test.ts",
     "test:e2e": "node scripts/e2e-fake.mjs"
   },
   "devDependencies": {
@@ -75,6 +76,7 @@
     "dotenv": "^18.0.8",
     "mocha": "^12.0.3",
     "pactum": "^3.9.1",
+    "read-excel-file": "^9.3.17",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "yaml": "^2.9.1",

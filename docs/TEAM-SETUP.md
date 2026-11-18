@@ -97,6 +97,26 @@ Click the **Build** tab.
 
 **After a run.** Each finding card has **Show request and response** (what was sent, what came back, already redacted), **Copy as Jira ticket** and **Copy as Markdown**. Click an endpoint row to see its tests. **Recent runs** lists the last 20 runs; **Load** brings one back.
 
+## Automating your team's test case sheet
+
+If your team keeps manual test cases in Excel, Google Sheets, Jira or Confluence, the agent can turn each
+row into an automated test that keeps the case ID in its name.
+
+1. Export the sheet as `.csv` or `.xlsx` (from Jira: **Export > CSV**; from Confluence: export or copy the
+   table). Or download the template from the UI (**Run options**, **Test cases**, **Download template CSV**).
+   The columns that matter are ID, Title, Steps / Request and Expected Result; an Endpoint column (for
+   example `get-product` or `GET /products/{id}`) makes the matching exact.
+2. In **Run options**, **Test cases**, click **Upload CSV or Excel** (or **Paste instead**). Check the
+   preview: how many cases were found, which column became which field, and any warnings per row.
+3. Pick **Only my test cases** or **My test cases + agent suggestions**, then **Generate tests**.
+4. After the run, the **Test case sheet** card lists every case as passed, failed, needs review or not
+   automated, with the reason. Download the traceability CSV or Excel file and attach it to your test cycle.
+   The exported framework includes the same `traceability.csv`.
+
+Cases marked **needs review** were too vague to automate safely, or what they expect contradicts what the
+API actually answered. Fix the row (say what to send and which status to expect) and run again. Live Jira
+and Confluence links are planned; until then, use the exports.
+
 ## The safety guard, in plain words
 
 The agent classifies the host before sending anything:

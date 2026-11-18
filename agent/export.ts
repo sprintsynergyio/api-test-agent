@@ -34,7 +34,7 @@ function pinnedVersions(): Record<string, string> {
 function httpSource(): string {
   const src = readFileSync('agent/http.ts', 'utf8');
   const importLine = "import type { Config } from './config';";
-  const modelLine = "import { pathParams, queryString, resolvePath, setupSteps } from './model';";
+  const modelLine = "import { parseTestTitle, pathParams, queryString, resolvePath, setupSteps, testTypeOf } from './model';";
   if (!src.includes(modelLine)) throw new Error('framework export: agent/http.ts no longer imports model helpers as expected');
   if (!src.includes(importLine)) throw new Error('framework export: agent/http.ts no longer imports Config as expected');
   if (!src.includes("} from './auth';")) throw new Error('framework export: agent/http.ts no longer imports ./auth as expected');
@@ -63,7 +63,7 @@ function httpSource(): string {
   }[];
 };`,
     )
-    .replace(modelLine, "import { pathParams, queryString, resolvePath, setupSteps, type Profile, type Query, type Selection, type Setup } from './model';")
+    .replace(modelLine, "import { parseTestTitle, pathParams, queryString, resolvePath, setupSteps, testTypeOf, type Profile, type Query, type Selection, type Setup } from './model';")
     .replace("  type AuthRequest,\n} from './auth';", "  type AuthConfig,\n  type AuthRequest,\n} from './auth';")
     .replace("import { redactHeaders, redactText, redactValue, type RedactionCounter } from './redact';", "import { redactHeaders, redactText, redactValue, type RedactionConfig, type RedactionCounter } from './redact';")
     .replace(/^\/\/ Shared HTTP logic for the ctx fixture and the agent\./m, '// HTTP clients and createResource for the ctx fixture.');
@@ -221,7 +221,7 @@ const TSCONFIG = `{
 
 function countByType(spec: string): Record<(typeof TYPES)[number], number> {
   const counts = { happy: 0, schema: 0, 'invalid-input': 0, auth: 0, authz: 0 };
-  for (const m of spec.matchAll(/\btest\(\s*(['"`])\[(happy|schema|invalid-input|auth|authz)\]/g)) {
+  for (const m of spec.matchAll(/\btest\(\s*(['"`])(?:\[[^\]\n]{1,64}\]\s+)?\[(happy|schema|invalid-input|auth|authz)\]/g)) {
     counts[m[2] as (typeof TYPES)[number]]++;
   }
   return counts;
@@ -393,6 +393,7 @@ export function exportFramework(opts: ExportOptions): FrameworkInfo {
     write(join('tests', e.specFile), rewritten);
   }
   write('README.md', readme(name, config, endpoints, specs, findings));
+  for (const f of opts.extraFiles ?? []) if (/^[\w.-]+$/.test(f.path)) write(f.path, f.content);
 
   const files = listFiles(dir);
 

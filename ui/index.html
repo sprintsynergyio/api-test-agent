@@ -326,6 +326,16 @@
   /* Run history */
   .runs-table td { font-size: 13px; }
   .runs-table .when { white-space: nowrap; color: var(--muted); }
+  .tc-box { border: 1px solid var(--line-2); border-radius: var(--r-sm); padding: 12px; background: #fbfcfe; }
+  .tc-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 8px; }
+  .tc-box textarea { min-height: 70px; margin-top: 8px; }
+  .tc-map { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .tc-rows { margin-top: 10px; max-height: 220px; overflow: auto; font-size: 12.5px; }
+  .tc-rows table { width: 100%; border-collapse: collapse; }
+  .tc-rows td, .tc-rows th { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+  .tc-rows .w { color: var(--warn); font-size: 12px; margin-top: 2px; }
+  .tc-rows td.id { white-space: nowrap; font-family: var(--mono); font-size: 12px; }
+  .tc-tiles { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 </style>
 </head>
 <body>
@@ -562,6 +572,26 @@
               <input id="redactFields" class="txt" style="margin-top:8px" placeholder="Extra fields to hide, comma separated: customer.name, address.*" autocomplete="off" spellcheck="false">
             </div>
           </div>
+          <div class="opt-row">
+            <label class="lbl">Test cases <span class="hint" style="font-weight:400">(optional)</span></label>
+            <div class="tc-box" id="tcBox">
+              <div class="hint" style="margin:0 0 8px">Automate your team's manual test case sheet: one test per row, named <code>[ID] Title</code>. Columns are matched by name (ID, Title, Steps / Request, Expected Result, and optionally Endpoint, Method, Priority).</div>
+              <div class="tc-actions">
+                <label class="btn btn-ghost" style="cursor:pointer">Upload CSV or Excel<input id="tcFile" type="file" accept=".csv,.tsv,.txt,.xlsx" class="hidden"></label>
+                <button id="tcPasteBtn" class="link-btn" type="button">Paste instead</button>
+                <a id="tcTemplate" class="link-btn" href="/api/test-cases/template" download="test-cases-template.csv">Download template CSV</a>
+                <button id="tcClear" class="link-btn hidden" type="button">Remove</button>
+              </div>
+              <textarea id="tcText" class="hidden" spellcheck="false" placeholder="Paste rows from Excel, Google Sheets or a CSV export (with the header row)"></textarea>
+              <div class="seg" id="tcMode" role="radiogroup" style="margin-top:10px">
+                <button type="button" data-mode="sheet-only">Only my test cases</button>
+                <button type="button" data-mode="sheet-plus-agent" class="on">My test cases + agent suggestions</button>
+              </div>
+              <div id="tcPreview" class="hidden"></div>
+              <div id="tcErr" class="bad-msg hidden"></div>
+              <div class="hint" style="margin-top:8px">Jira and Confluence: live links are planned. For now export the issues (Jira: Export &gt; CSV) or the Confluence table as CSV, and upload or paste it.</div>
+            </div>
+          </div>
           <div id="prodBox" class="prod-box hidden">
             <div>This looks like a production host. POST, PUT, PATCH and DELETE calls would change real data.</div>
             <label class="check"><input id="prodOk" type="checkbox"> I understand this is a production host</label>
@@ -659,6 +689,17 @@
       <div class="card-h"><h2 id="codeTitle">Generated spec</h2><button id="copyBtn" class="link-btn" type="button">Copy</button></div>
       <div style="height:12px"></div>
       <div id="code" class="code"></div>
+    </section>
+    <section id="tcCard" class="card hidden" style="margin-top:16px">
+      <div class="card-h"><h2>Test case sheet</h2><span id="tcFileName" class="timer"></span></div>
+      <div class="card-b">
+        <div id="tcTiles" class="tc-tiles"></div>
+        <div class="tc-rows" style="max-height:480px"><table><thead><tr><th>ID</th><th>Title</th><th>Endpoint</th><th>Status</th><th>Reason</th></tr></thead><tbody id="tcTable"></tbody></table></div>
+        <div class="tc-actions" style="margin-top:12px">
+          <button id="tcCsv" class="btn btn-primary" type="button">Download traceability (.csv)</button>
+          <button id="tcXlsx" class="btn btn-ghost" type="button">Download traceability (.xlsx)</button>
+        </div>
+      </div>
     </section>
     <section id="fwCard" class="card hidden" style="margin-top:16px">
       <div class="card-h"><h2 id="fwTitle">Exported framework</h2><span id="fwPath" class="timer"></span></div>
@@ -1099,6 +1140,7 @@
       const json = unchanged ? $("jsonBox").value : JSON.stringify(options, null, 2);
       payload = { json, authValue: needsToken ? tok : undefined, selection: selectionText() || undefined };
     }
+    if (tcSheet) payload.testCases = { ...tcSheet, mode: tcMode };
     $("results").style.display = "none";
     $("codeCard").style.display = "none";
     resetPipeline();
@@ -1427,6 +1469,7 @@
     }
 
     renderFramework(s.framework, s.testFramework);
+    renderTestCases(s.testCases);
     $("allureBtn").classList.toggle("hidden", !s.allureReport);
     $("reportBtn").classList.toggle("hidden", !((t.testsGenerated ?? 0) > 0) || s.testFramework === "pactum");
     $("results").style.display = "block";
@@ -1555,6 +1598,70 @@
       return l;
     };
   }
+
+  // ---------- Test case sheet ----------
+  // The sheet is read in the browser (text, or base64 for .xlsx) and checked by the server with the
+  // agent's own parser. The run sends it again; the server saves it in the run folder.
+  let tcSheet = null; // { name, content } or { name, base64 }
+  let tcMode = "sheet-plus-agent";
+  let tcTimer = null;
+  function tcJson() {
+    try { return mode === "custom" ? JSON.stringify(buildCustomConfig().config) : $("jsonBox").value; } catch { return ""; }
+  }
+  function tcShowErr(msg) { $("tcErr").textContent = msg; $("tcErr").classList.toggle("hidden", !msg); }
+  async function tcPreview() {
+    tcShowErr("");
+    const box = $("tcPreview");
+    $("tcClear").classList.toggle("hidden", !tcSheet);
+    if (!tcSheet) { box.classList.add("hidden"); box.innerHTML = ""; return; }
+    const res = await fetch("/api/test-cases/preview", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...tcSheet, json: tcJson() }) }).catch(() => null);
+    const body = res ? await res.json().catch(() => ({})) : {};
+    if (!res || !res.ok) { box.classList.add("hidden"); tcShowErr(body.error || "Could not read the sheet."); return; }
+    const cols = Object.values(body.columns || {}).map((c) => `<span class="tag ok" title="from the column ${esc(c.header)}">${esc(c.label)} ← ${esc(c.header)}</span>`);
+    const ignored = (body.ignored || []).map((h) => `<span class="tag" title="not used">${esc(h)}</span>`);
+    const rows = (body.rows || []).map((r) => `<tr><td class="id">${esc(r.id)}</td><td>${esc(r.title)}${(r.warnings || []).map((w) => `<div class="w">${esc(w)}</div>`).join("")}</td><td>${r.endpoint ? esc(r.endpoint) + (r.matchedBy ? ` <span class="hint">(${esc(r.matchedBy === "column" ? "Endpoint column" : r.matchedBy)})</span>` : "") : '<span class="hint">AI will match</span>'}</td></tr>`);
+    const sheetWarn = (body.warnings || []).map((w) => `<div class="hint w">${esc(w)}</div>`).join("");
+    box.innerHTML = `<div style="margin-top:10px"><b>${esc(body.count)} test case${body.count === 1 ? "" : "s"}</b> in <b>${esc(tcSheet.name)}</b> (${esc(String(body.format || "").toUpperCase())}), ${esc(body.matched)} matched to an endpoint${body.rowWarnings ? `, <span class="w" style="color:var(--warn)">${esc(body.rowWarnings)} row${body.rowWarnings === 1 ? "" : "s"} with warnings</span>` : ""}</div>`
+      + `<div class="tc-map">${cols.join("")}${ignored.join("")}</div>${sheetWarn}`
+      + `<div class="tc-rows"><table><thead><tr><th>ID</th><th>Title and warnings</th><th>Endpoint</th></tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
+    box.classList.remove("hidden");
+  }
+  $("tcFile").addEventListener("change", async (e) => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!f) return;
+    if (f.size > 5 * 1024 * 1024) { tcShowErr("The sheet is larger than 5 MB."); return; }
+    if (/\.xlsx$/i.test(f.name)) {
+      const bytes = new Uint8Array(await f.arrayBuffer());
+      let bin = "";
+      for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+      tcSheet = { name: f.name, base64: btoa(bin) };
+    } else tcSheet = { name: f.name, content: await f.text() };
+    $("tcText").classList.add("hidden");
+    tcPreview();
+  });
+  $("tcPasteBtn").addEventListener("click", () => { $("tcText").classList.toggle("hidden"); $("tcText").focus(); });
+  $("tcText").addEventListener("input", () => {
+    clearTimeout(tcTimer);
+    tcTimer = setTimeout(() => { const v = $("tcText").value; tcSheet = v.trim() ? { name: "pasted.csv", content: v } : null; tcPreview(); }, 400);
+  });
+  $("tcClear").addEventListener("click", () => { tcSheet = null; $("tcText").value = ""; tcPreview(); });
+  document.querySelectorAll("#tcMode button").forEach((b) => b.addEventListener("click", () => {
+    tcMode = b.dataset.mode;
+    document.querySelectorAll("#tcMode button").forEach((x) => x.classList.toggle("on", x === b));
+  }));
+  function renderTestCases(t) {
+    const card = $("tcCard");
+    if (!t) { card.classList.add("hidden"); return; }
+    card.classList.remove("hidden");
+    $("tcFileName").textContent = `${String(t.file || "").split(/[\\/]/).pop()} · ${t.mode === "sheet-only" ? "only my test cases" : "my test cases + agent suggestions"}`;
+    const tile = (label, n, cls) => `<span class="tag ${cls}">${esc(label)} ${esc(n ?? 0)}</span>`;
+    $("tcTiles").innerHTML = tile("Rows", t.rows, "") + tile("Passed", t.passed, "ok") + tile("Failed", t.failed, "bad") + tile("Needs review", t.needsReview, "warn") + tile("Not automated", t.notAutomated, "warn") + tile("Agent suggestions", t.agentSuggestions, "");
+    const cls = { passed: "ok", failed: "bad", "needs review": "warn", "not automated": "warn" };
+    $("tcTable").innerHTML = (t.cases || []).map((c) => `<tr><td class="id">${esc(c.id)}</td><td>${esc(c.title)}</td><td style="white-space:nowrap">${esc(c.endpoint || "")}</td><td style="white-space:nowrap"><span class="tag ${cls[c.status] || ""}">${esc(c.status)}</span></td><td class="hint">${esc(c.reason || "")}</td></tr>`).join("");
+  }
+  $("tcCsv").addEventListener("click", () => { window.location.href = "/api/traceability" + (runQuery() ? runQuery() + "&" : "?") + "format=csv"; });
+  $("tcXlsx").addEventListener("click", () => { window.location.href = "/api/traceability" + (runQuery() ? runQuery() + "&" : "?") + "format=xlsx"; });
 
   // ---------- Framework ----------
   function renderFramework(fw, testFramework) {
