@@ -152,7 +152,7 @@ If your team keeps manual test cases in Excel, Google Sheets, Jira or Confluence
 row into an automated test that keeps the case ID in its name.
 
 1. Export the sheet as `.csv` or `.xlsx` (from Jira: **Export > CSV**; from Confluence: export or copy the
-   table). Or download the template from the UI (**Run options**, **Test cases**, **Download template CSV**).
+   table), or skip the export and paste a link (next section). Or download the template from the UI (**Run options**, **Test cases**, **Download template CSV**).
    The columns that matter are ID, Title, Steps / Request and Expected Result; an Endpoint column (for
    example `get-product` or `GET /products/{id}`) makes the matching exact.
 2. In **Run options**, **Test cases**, click **Upload CSV or Excel** (or **Paste instead**). Check the
@@ -163,8 +163,71 @@ row into an automated test that keeps the case ID in its name.
    The exported framework includes the same `traceability.csv`.
 
 Cases marked **needs review** were too vague to automate safely, or what they expect contradicts what the
-API actually answered. Fix the row (say what to send and which status to expect) and run again. Live Jira
-and Confluence links are planned; until then, use the exports.
+API actually answered. Fix the row (say what to send and which status to expect) and run again.
+
+## Test cases from a Jira or Confluence link
+
+No export needed: paste a link and the agent reads the cases itself, with your own Atlassian account. It
+only reads; it never changes anything in Jira or Confluence.
+
+**Once per person: connect your Atlassian account**
+
+1. Open <https://id.atlassian.com/manage-profile/security/api-tokens> and sign in.
+2. Click **Create API token** (the plain one, not "Create API token with scopes"). Give it a name such as
+   `API Test Agent`, pick an expiry date, click **Create**, then **Copy**. Keep the page open until step 5.
+3. Start the UI (`npm run ui`), open **Run options**, **Test cases**, click **Jira or Confluence link**, then
+   **Connect Jira and Confluence**.
+4. Fill in:
+   - **Site address**: the address you see in the browser in Jira, like `https://your-team.atlassian.net`.
+   - **Email**: the email you sign in to Atlassian with.
+   - **API token**: paste the token from step 2.
+   - Optional, under **Xray and Zephyr Scale test steps**: if your team writes steps in Xray, an Xray
+     **client ID** and **client secret** (in Jira: **Apps**, **Xray**, **API Keys**, ask a Jira admin if you
+     cannot see it). If your team uses Zephyr Scale, a **Zephyr Scale API token** (in Jira: your profile
+     picture, **Zephyr API keys**).
+5. Click **Check and save**. The agent signs in once to check, shows **Connected ... as <your name>**, and
+   saves the values to `.env` on your computer only. The token is never shown on the page again; to change
+   it, click **Change** and paste a new one (leave a token field empty to keep the saved one).
+
+Data Center / Server (Jira on your company's own server): the site address is your Jira address
+(including a path such as `/jira` if it has one), leave **Email** empty, and paste a **personal access
+token** (in Jira: your profile picture, **Profile**, **Personal Access Tokens**). If Confluence has a
+different address, fill **Confluence address**. Xray and Zephyr Scale on Data Center use the same token.
+
+**Every time: paste a link**
+
+1. In **Run options**, **Test cases**, click **Jira or Confluence link**.
+2. Paste one of these and press **Load cases** (or Enter):
+   - a Jira issue: `https://your-team.atlassian.net/browse/QA-12`
+   - a saved Jira filter: `https://your-team.atlassian.net/issues/?filter=10001`
+   - a Jira search (open **Filters**, **Advanced issue search**, run it, copy the address), or just the JQL:
+     `project = QA AND issuetype = Test AND labels = api`
+   - a Confluence page that holds a table with columns like ID, Title, Steps, Expected Result:
+     `https://your-team.atlassian.net/wiki/spaces/QA/pages/12345/API+test+cases`
+   - Zephyr Scale: `zephyr: project = QA` or `zephyr: QA-T1, QA-T2`
+3. Check the preview, exactly like a sheet: how many cases, where each field came from (for example
+   **Expected Result ← Description ("Expected result" part)** or **Steps ← Xray Cloud steps**), and any
+   warnings.
+4. Pick the mode and click **Generate tests**. The **Test case sheet** card and the traceability files list
+   every Jira key or Confluence row with its status.
+
+Tips for good results:
+- In Jira descriptions, write the request on one line (`POST /orders with ...`) and put the expected
+  result after a line starting with **Expected result:**. An **Endpoint** custom field makes matching exact.
+- On a Confluence page, use a real table with a header row. Other tables on the page are skipped.
+
+If something goes wrong, the message says what to check:
+- **401 (not signed in)**: the email or token is wrong or the token expired. Make a new token (step 2) and
+  save it again.
+- **403 (no permission)** or **404 (does not exist or you cannot see it)**: open the link in your browser
+  while signed in as the same person; if you cannot see it there, ask for access to the project or space.
+- **the link is on ..., but the Atlassian site in .env is ...**: the agent only talks to the site you
+  connected. Paste a link from that site, or connect the other site.
+- **more than 1000 issues**: narrow the JQL (add `AND labels = api` or a component).
+- **rate limiting (429)**: Atlassian asked to slow down and still did after 3 retries. Wait a minute.
+
+From the terminal the same works with `--test-cases`:
+`npm run agent -- input/my-api.json --test-cases "https://your-team.atlassian.net/issues/?filter=10001"`.
 
 ## The safety guard, in plain words
 

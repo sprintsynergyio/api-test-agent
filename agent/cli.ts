@@ -10,6 +10,7 @@ import { BudgetExceeded, claudeBudget, claudeCallsUsed, claudeEnv, describeModel
 import { CHECKPOINT_FILE, endpointHash, hashOf, inputHash, loadCheckpoint, newCheckpoint, reusable, saveCheckpoint, type Checkpoint, type ScopeMode } from './checkpoint';
 import { parseAgentFlags, type AgentFlags } from './flags';
 import { apiName, DEFAULT_TEST_CASE_MODE, loadConfig, selectionLine, takeSelectFlag, type Config, type Endpoint, type TestCaseMode } from './config';
+import { atlassianSecrets, isLinkSource, loadLinkCases, redactSecrets } from './atlassian';
 import { loadSheetFile, type MatchResult, type ParsedSheet, type SheetCase } from './test-cases';
 import { matchCases } from './match-cases';
 import { buildTraceRows, coverageGaps, traceCsv, traceTotals, traceXlsx, type TraceRow } from './traceability';
@@ -416,18 +417,22 @@ async function main() {
     const unknown = flags.endpoints.filter((id) => !config.endpoints.some((e) => e.id === id));
     if (unknown.length) throw new Error(`--endpoints: not in ${inputFile}: ${unknown.join(', ')}`);
   }
-  // The test case sheet: --test-cases, else the input's testCases.file (relative to the input file).
-  const sheetFile = flags.testCases ?? (config.testCases ? (isAbsolute(config.testCases.file) ? config.testCases.file : join(dirname(inputFile), config.testCases.file)) : null);
+  // The test case sheet: --test-cases (a file, or a Jira / Confluence link or JQL), else the input's
+  // testCases.link, else testCases.file (relative to the input file).
+  const cfgSheet = config.testCases?.file ? (isAbsolute(config.testCases.file) ? config.testCases.file : join(dirname(inputFile), config.testCases.file)) : null;
+  const sheetSource = flags.testCases ?? config.testCases?.link ?? cfgSheet;
+  const sheetIsLink = sheetSource !== null && isLinkSource(sheetSource);
+  const sheetFile = sheetSource;
   const sheetMode: TestCaseMode = flags.testCasesMode ?? config.testCases?.mode ?? DEFAULT_TEST_CASE_MODE;
   let sheet: ParsedSheet | null = null;
-  if (sheetFile) {
+  if (sheetSource) {
     try {
-      sheet = await loadSheetFile(sheetFile);
+      sheet = sheetIsLink ? await loadLinkCases(sheetSource) : await loadSheetFile(sheetSource);
     } catch (err) {
-      throw new Error(`test case sheet: ${(err as Error).message}`);
+      throw new Error(`test case ${sheetIsLink ? 'link' : 'sheet'}: ${redactSecrets((err as Error).message, atlassianSecrets())}`);
     }
-  } else if (flags.testCasesMode) throw new Error('--test-cases-mode needs a test case sheet (--test-cases <file> or testCases.file in the input)');
-  const sheetDisplay = sheetFile ? relativePaths(isAbsolute(sheetFile) ? sheetFile : relative('.', sheetFile)).split(sep).join('/') : null;
+  } else if (flags.testCasesMode) throw new Error('--test-cases-mode needs a test case sheet (--test-cases <file or link> or testCases in the input)');
+  const sheetDisplay = sheetSource ? (sheetIsLink ? sheetSource : relativePaths(isAbsolute(sheetSource) ? sheetSource : relative('.', sheetSource)).split(sep).join('/')) : null;
   const { mode, cp } = resolveScope(flags, config, fw, inputFile, sheet ? { sheet: sheet.hash, mode: sheetMode } : undefined);
   let inScope = flags.endpoints ? config.endpoints.filter((e) => flags.endpoints!.includes(e.id)) : config.endpoints;
   const scope: Scope = { mode, endpoints: flags.endpoints, reused: { probes: 0, plans: 0, specs: 0 }, concurrency: flags.concurrency, testWorkers: flags.testWorkers };
@@ -472,6 +477,8 @@ async function main() {
   // values; not plain usernames), plus the tokens the probe logins produce.
   const authEnv = pickAuthEnv(config.auth, process.env);
   const secrets = secretValues(config.auth, authEnv);
+  // Jira / Confluence tokens never reach a summary, error or log line either.
+  for (const sec of atlassianSecrets()) if (!secrets.includes(sec)) secrets.push(sec);
   const roles = extraRoles(config.auth);
 
   const claudeProblem = claudeCliProblem();
@@ -672,6 +679,8 @@ async function main() {
       file: sheetRun.file,
       mode: sheetRun.mode,
       format: sheetRun.sheet.format,
+      // A Jira, Confluence or Zephyr Scale link: what was read (null for a sheet file).
+      source: sheetRun.sheet.source ? { kind: sheetRun.sheet.source.kind, label: sheetRun.sheet.source.label, steps: sheetRun.sheet.source.steps } : null,
       columns: sheetRun.sheet.columns,
       ...traceTotals(traceRows),
       warnings: sheetRun.sheet.warnings.map((w) => `${w.row ? `row ${w.row}: ` : ''}${w.message}`),

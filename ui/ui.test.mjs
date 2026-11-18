@@ -32,6 +32,7 @@ function startUi(extraEnv) {
     delete env.HOSTED;
     delete env.UI_USERS;
     delete env.AGENT_FORCE_PRODUCTION;
+    for (const k of Object.keys(env)) if (/^(ATLASSIAN|CONFLUENCE|XRAY|ZEPHYR)_/.test(k)) delete env[k];
     Object.assign(env, extraEnv);
     const child = spawn(process.execPath, [path.join(ROOT, "ui", "server.mjs")], { cwd: ROOT, env, stdio: ["ignore", "pipe", "pipe"] });
     let out = "";
@@ -250,14 +251,14 @@ async function main() {
       assert.ok(body.rows.find((r) => r.id === "ROW-11").warnings.some((w) => /missing ID/.test(w)));
       assert.ok(body.rows.find((r) => r.id === "TC-007").warnings.some((w) => /unknown endpoint/.test(w)));
     });
-    await check("POST /api/test-cases/preview reads an .xlsx upload and refuses a link and a bad sheet", async () => {
+    await check("POST /api/test-cases/preview reads an .xlsx upload, asks for Atlassian setup for a link, refuses a bad sheet", async () => {
       const x = await api("POST", "/api/test-cases/preview", { name: "sample.xlsx", base64: fs.readFileSync(path.join(ROOT, "test-fixtures", "test-cases", "sample.xlsx")).toString("base64") });
       assert.equal(x.status, 200, JSON.stringify(x.body));
       assert.equal(x.body.format, "xlsx");
       assert.equal(x.body.count, 4);
       const link = await api("POST", "/api/test-cases/preview", { content: "https://example.atlassian.net/wiki/spaces/QA/pages/1" });
       assert.equal(link.status, 400);
-      assert.match(link.body.error, /planned/);
+      assert.match(link.body.error, /Jira and Confluence are not set up: add ATLASSIAN_BASE_URL/);
       const bad = await api("POST", "/api/test-cases/preview", { content: "Foo,Bar\n1,2\n" });
       assert.equal(bad.status, 400);
       assert.match(bad.body.error, /no Title or Steps column/);

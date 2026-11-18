@@ -423,7 +423,7 @@ keeps every gate rule of section 1. Allure results carry `caseId=<ID>` and `tag=
 Console, after the PROBING header lines:
 
 ```
-test cases: <n> from <file> (<csv|tsv|xlsx>, <mode>): <x> matched (<a> by the Endpoint column, <b> by the steps, <c> by the AI), <y> not matched
+test cases: <n> from <file or link> (<csv|tsv|xlsx|jira|confluence|zephyr>, <mode>): <x> matched (<a> by the Endpoint column, <b> by the steps, <c> by the AI), <y> not matched
   sheet warning row <r>: <message>          (at most 20)
   not matched: <ID>: <reason>
 test cases: sheet-only, <k> endpoints with cases in scope: <ids>     (sheet-only only)
@@ -458,3 +458,38 @@ UI server routes:
   an input's `testCases.file` must be a sheet inside `input/`; anything else is a 400.
 - `GET /api/traceability?format=csv|xlsx[&run=<id>]`: the run's traceability file (404 without one).
   Run snapshots keep `traceability.csv` and `traceability.xlsx`.
+
+### 15a. Test cases from a link (additive)
+
+`--test-cases` also takes a Jira issue, filter or search link, a Confluence page link, a Zephyr Scale test
+case link, `jql: <JQL>`, plain JQL, or `zephyr: <keys | project = KEY>`; the input may hold
+`testCases: { link, mode? }` instead of `file` (one of the two). The agent reads the cases live
+(agent/atlassian.ts) with the credentials in `.env` (`ATLASSIAN_BASE_URL`, `ATLASSIAN_EMAIL`,
+`ATLASSIAN_API_TOKEN`, optional `ATLASSIAN_DEPLOYMENT`, `CONFLUENCE_BASE_URL`, `XRAY_CLIENT_ID`,
+`XRAY_CLIENT_SECRET`, `XRAY_BASE_URL`, `ZEPHYR_API_TOKEN`, `ZEPHYR_BASE_URL`) and then treats them exactly
+as sheet rows. A link that cannot be read is a setup error: `test case link: <why>` and exit 2. The console
+line reads `test cases: <n> from <link> (<jira|confluence|zephyr>, <mode>): ...`.
+
+`summary.testCases` then has `file: <the link as given>`, `format: "jira" | "confluence" | "zephyr"` and
+`source: { kind, label, steps }` (`steps`: `"Xray Cloud"`, `"Xray Data Center"`, `"Zephyr Scale Cloud"`,
+`"Zephyr Scale Data Center"` or null); for a sheet file `source` is null. `columns` names where each field
+came from (`"Jira key"`, `"Description (\"Expected result\" part)"`, a custom field name, ...).
+
+UI server routes:
+- `GET /api/atlassian`: `{ configured, baseUrl, confluenceUrl, deployment, email, hasToken, xray, zephyr,
+  error, editable }`. Never a token or secret.
+- `POST /api/atlassian` `{ baseUrl, email?, token?, confluenceUrl?, xrayClientId?, xrayClientSecret?,
+  zephyrToken? }` (personal machine only, else 403). An empty secret field keeps the saved value. The
+  credentials are checked first with one read (`/rest/api/3/myself` on Cloud, `/rest/api/2/myself` on Data
+  Center); 400 with a plain `error` when that fails, nothing written. On success the values are written to
+  `.env` (mode 600) and the answer is the GET shape plus `user` (the display name).
+- `POST /api/test-cases/preview` also accepts `{ link, json? }` (or `content` that is one URL): the same
+  preview shape plus `source: { kind, label, steps }`, or 400 with `error`.
+- `POST /api/run` accepts `testCases: { link, mode }`. The server checks the link without a request (set up,
+  on the configured site) and passes `--test-cases <link>`; an input's `testCases.link` works the same way.
+
+Safety: only the configured Atlassian site, the Confluence site and the Xray / Zephyr Scale API hosts
+(vendor hosts, or loopback) are called; any other link host is refused before a request; redirects are not
+followed; HTTPS unless loopback; 1000 cases, 100 per page, 10 MB per response, 2500 requests and 30 s per
+request; 429 and 503 retried 3 times after `Retry-After` (at most 60 s). Every message is redacted of the
+tokens, which are also removed from the test runner's and the model CLI's environment.

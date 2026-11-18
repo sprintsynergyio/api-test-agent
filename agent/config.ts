@@ -48,10 +48,15 @@ const EndpointSchema = z.object({
 export const TEST_CASE_MODES = ['sheet-only', 'sheet-plus-agent'] as const;
 export type TestCaseMode = (typeof TEST_CASE_MODES)[number];
 export const DEFAULT_TEST_CASE_MODE: TestCaseMode = 'sheet-plus-agent';
-export const TestCasesConfigSchema = z.object({
-  file: z.string().min(1),
-  mode: z.enum(TEST_CASE_MODES).optional(),
-});
+// link: a Jira issue, filter or search link, a Confluence page link, "jql: ...", or "zephyr: ..."
+// (agent/atlassian.ts), read live with the Atlassian credentials in .env. Give file or link, not both.
+export const TestCasesConfigSchema = z
+  .object({
+    file: z.string().min(1).optional(),
+    link: z.string().min(1).max(4000).optional(),
+    mode: z.enum(TEST_CASE_MODES).optional(),
+  })
+  .refine((t) => Boolean(t.file) !== Boolean(t.link), { message: 'testCases needs either file (a sheet) or link (Jira or Confluence), not both' });
 export type TestCasesConfig = z.infer<typeof TestCasesConfigSchema>;
 
 const ProfileSchema = z.object({

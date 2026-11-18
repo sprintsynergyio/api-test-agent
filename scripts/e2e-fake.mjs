@@ -1,7 +1,8 @@
 // End-to-end check with no model key, on any OS (CI runs it on Linux, macOS and Windows):
 //   1. start the local demo API with its planted bugs
 //   2. run the whole agent (FAKE_MODEL=1) for the Playwright and the Pactum input, and for the sample test
-//      case sheet (Playwright with agent suggestions, Pactum with only the sheet); expect exit 1 (findings)
+//      case sheet (Playwright with agent suggestions, Pactum with only the sheet, and the same sheet as a
+//      table on a fake Confluence page read through a link); expect exit 1 (findings)
 //   3. restart the API with the bugs fixed
 //   4. copy each exported framework to a temp folder outside this repo, npm install, npm test; expect a pass
 // Usage: npm run test:e2e   (needs npm to start it: the exported projects are installed with the same npm)
@@ -10,6 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { mockEnv, CONFLUENCE_PAGE_ID } from "./mock-atlassian.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = 4000;
@@ -30,12 +32,16 @@ const INPUTS = [
   { input: "input/local-shop-pactum.json", framework: "pactum" },
   { input: "input/local-shop-sheet.json", framework: "playwright", sheet: "sheet-plus-agent" },
   { input: "input/local-shop-pactum.json", framework: "pactum", sheet: "sheet-only", args: ["--test-cases", path.join("input", "local-shop-test-cases.csv"), "--test-cases-mode", "sheet-only"] },
+  // The sample sheet as a Confluence table, read live through a link (scripts/mock-atlassian.mjs). Its
+  // export is not installed again: the two runs above already prove the exported projects.
+  { input: "input/local-shop.json", framework: "playwright", sheet: "sheet-only", confluence: true, noExport: true },
 ];
 
-function checkSheetRun(label, summary, mode) {
+function checkSheetRun(label, summary, mode, format) {
   const t = summary.testCases;
   check(Boolean(t) && t.mode === mode && t.rows === 11, `${label}: summary.testCases has the 11 sheet rows in ${mode} mode`);
   if (!t) return;
+  if (format) check(t.format === format && t.source?.kind === format, `${label}: summary.testCases.format and source are ${format} (${t.format}, ${t.source?.kind})`);
   const got = Object.fromEntries((t.cases || []).map((c) => [c.id, c.status]));
   for (const [id, status] of Object.entries(SHEET_STATUS)) check(got[id] === status, `${label}: ${id} is ${status} (got ${got[id]})`);
   check(mode === "sheet-only" ? t.agentSuggestions === 0 : t.agentSuggestions > 0, `${label}: agent suggestions ${mode === "sheet-only" ? "off" : "on"} (${t.agentSuggestions})`);
@@ -84,6 +90,25 @@ async function startApi(fixed) {
   throw new Error("local API did not start within 30s");
 }
 
+// The fake Atlassian site runs in its own process: the agent runs are spawnSync, which blocks this one.
+async function startAtlassian() {
+  const child = spawn(process.execPath, [path.join(ROOT, "scripts", "mock-atlassian.mjs"), "0"], { cwd: ROOT, stdio: ["ignore", "pipe", "inherit"], windowsHide: true });
+  let out = "";
+  const url = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`mock Atlassian site did not start: ${out}`)), 15000);
+    child.stdout.on("data", (d) => {
+      out += d;
+      const m = /Mock Atlassian site on (http:\/\/[\d.]+:\d+)/.exec(out);
+      if (m) {
+        clearTimeout(timer);
+        resolve(m[1]);
+      }
+    });
+    child.on("exit", (code) => reject(new Error(`mock Atlassian site exited with ${code}: ${out}`)));
+  });
+  return { child, url, env: mockEnv(url) };
+}
+
 function run(cmd, args, opts) {
   console.log(`\n$ ${path.basename(cmd)} ${args.map((a) => path.basename(a) === a ? a : path.relative(ROOT, a) || a).join(" ")}  (in ${opts.cwd})`);
   const r = spawnSync(cmd, args, { stdio: "inherit", windowsHide: true, ...opts });
@@ -98,11 +123,15 @@ const check = (ok, what) => {
 };
 
 let api = null;
+let atlassian = null;
 const exported = [];
 try {
   api = await startApi(false);
-  for (const { input, framework, sheet, args = [] } of INPUTS) {
+  atlassian = await startAtlassian();
+  for (const { input, framework, sheet, args: given = [], confluence, noExport } of INPUTS) {
     const env = { ...process.env, FAKE_MODEL: "1", LOCAL_API_AUTH_VALUE: TOKEN };
+    const args = confluence ? ["--test-cases", `${atlassian.url}/wiki/spaces/QA/pages/${CONFLUENCE_PAGE_ID}/Local+shop+API+test+cases`, "--test-cases-mode", sheet] : given;
+    if (confluence) Object.assign(env, atlassian.env);
     const code = run(process.execPath, [tsxEntry(), "agent/cli.ts", input, ...args], { cwd: ROOT, env });
     check(code === 1, `${input}: agent exits 1 (findings against the planted bugs), got ${code}`);
     const summary = JSON.parse(fs.readFileSync(path.join(ROOT, "out", "summary.json"), "utf8"));
@@ -115,9 +144,15 @@ try {
     check((summary.findings || []).length > 0, `${input}: summary.json lists findings (${(summary.findings || []).length})`);
     check(summary.testFramework === framework && Boolean(summary.framework?.dir), `${input}: ${framework} project exported (${summary.framework?.dir})`);
     check(Boolean(summary.framework?.zip) && fs.existsSync(path.resolve(ROOT, summary.framework.zip)), `${input}: framework zip written`);
-    if (sheet) checkSheetRun(`${input} (${sheet})`, summary, sheet);
+    if (sheet) checkSheetRun(`${input} (${confluence ? "Confluence link, " : ""}${sheet})`, summary, sheet, confluence ? "confluence" : null);
     else check(summary.testCases === null, `${input}: no test case sheet, summary.testCases is null`);
-    if (summary.framework?.dir) {
+    if (confluence) {
+      const text = fs.readFileSync(path.join(ROOT, "out", "summary.json"), "utf8");
+      check(!text.includes(atlassian.env.ATLASSIAN_API_TOKEN), `${input} (Confluence link): the Atlassian token is not in summary.json`);
+      const seen = await fetch(`${atlassian.url}/__seen`).then((r) => r.json()).catch(() => []);
+      check(seen.some((s) => s.path === `/wiki/api/v2/pages/${CONFLUENCE_PAGE_ID}` && s.auth === "Basic"), `${input} (Confluence link): the page was read through the Confluence v2 API with Basic auth`);
+    }
+    if (summary.framework?.dir && !noExport) {
       const copy = fs.mkdtempSync(path.join(os.tmpdir(), `ata-e2e-${framework}${sheet ? "-sheet" : ""}-`));
       fs.cpSync(path.resolve(ROOT, summary.framework.dir), copy, { recursive: true });
       exported.push({ input, framework, dir: copy });
@@ -142,6 +177,7 @@ try {
   check(false, `e2e crashed: ${err?.stack || err}`);
 } finally {
   killTree(api);
+  killTree(atlassian?.child);
   for (const { dir } of exported) fs.rmSync(dir, { recursive: true, force: true });
 }
 console.log(failures.length ? `\n${failures.length} e2e check(s) failed` : "\nAll e2e checks passed");
