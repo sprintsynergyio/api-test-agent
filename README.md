@@ -167,7 +167,7 @@ named `[TC-ID] [type] Title`, so every result maps back to the sheet.
 
 In the UI: **Run options**, **Test cases**, then **Upload CSV or Excel** (or **Paste instead** and paste
 rows copied from Excel or Google Sheets). The preview shows how the columns were read, the row count and
-a warning per row (missing ID, unknown endpoint). **Download template CSV** gives a starting sheet.
+a warning per row (missing ID, unknown endpoint). **Template CSV** gives a starting sheet.
 From the terminal:
 
 ```
@@ -189,9 +189,9 @@ or put it in the input file: `"testCases": { "file": "local-shop-test-cases.csv"
 - **Endpoint matching.** The Endpoint column first (an endpoint id, `GET /products/{id}`, a path or a URL),
   then a `METHOD /path` line in the steps, then the model (one call per 25 unmatched cases, counted in the
   run budget). A case that matches nothing is reported as **not automated** with the reason, never dropped.
-- **Modes.** **My test cases + agent suggestions** (default, `sheet-plus-agent`): your cases, plus the
+- **Modes.** **My test cases + agent suggestions** (UI: **My cases + suggestions**; default, `sheet-plus-agent`): your cases, plus the
   agent's own cases for what the sheet does not cover, titled `[agent] [type] ...`; suggestions that repeat
-  a sheet case are dropped. **Only my test cases** (`sheet-only`): exactly one test per row and nothing
+  a sheet case are dropped. **Only my test cases** (UI: **Only my cases**; `sheet-only`): exactly one test per row and nothing
   else. The agent adds no tests of its own (the summary shows `agentSuggestions: 0`), and only the
   endpoints your rows name are probed and tested. The UI says which mode is on under the toggle; from the
   terminal use `--test-cases-mode sheet-only` or `"mode": "sheet-only"` in the input.
@@ -431,9 +431,9 @@ Write an input file (or use the Build tab in the UI):
 - `baseUrl` may have a path (`https://api.example.com/media/v1`). Endpoint paths are joined to it, so `/photos` calls `https://api.example.com/media/v1/photos`, in the probe, the generated tests and the exported framework, on every OS.
 - `query` is the sample query string (`{ "page": 1, "per_page": 10 }`).
 - `errorStatuses` (optional, 400-499): the 4xx codes the API documents for this endpoint. The OpenAPI importer fills it in. It turns on invalid-input tests.
-- `allowInvalidInput: true` (optional): invalid-input tests for an endpoint with nothing else to make invalid, such as a query-only GET (bad page or filter values). Same as `--allow-invalid-input <ids>` or **Run options > Test options > Invalid-input tests** in the UI.
+- `allowInvalidInput: true` (optional): invalid-input tests for an endpoint with nothing else to make invalid, such as a query-only GET (bad page or filter values). Same as `--allow-invalid-input <ids>` or **Run options > Extra tests > Invalid-input tests** in the UI.
 - `pathParams` (optional): fixed values for path placeholders no `setup` step fills, for example `"pathParams": { "id": "42" }` for `/products/{id}`. The importers write it for grouped routes. A setup value wins over it.
-- `stableData: true` (optional): the endpoint's data does not change during the run, so tests may compare several calls (paging, totals). Same as `--stable-data <ids>` or **Test options > Stable data** in the UI. Read-only GET endpoints get this automatically when nothing in the run writes the same resource.
+- `stableData: true` (optional): the endpoint's data does not change during the run, so tests may compare several calls (paging, totals). Same as `--stable-data <ids>` or **Extra tests > Stable data** in the UI. Read-only GET endpoints get this automatically when nothing in the run writes the same resource.
 
 Then run `npm run agent path/to/my-api.json`.
 

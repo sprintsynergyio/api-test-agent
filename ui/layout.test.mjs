@@ -1,6 +1,7 @@
 // npm run test:ui-layout: opens the UI in headless Chromium at several window widths and browser zoom levels
 // and checks the layout: the input column and the pipeline/runs column never overlap, no element sticks out
-// of its card, and the page never scrolls sideways. The saved input is a stress fixture served through
+// of its card, the page never scrolls sideways, and no placeholder, select option, label, tab or segmented
+// button has its text cut off. The saved input is a stress fixture served through
 // page.route (nothing is written to input/): a long input name, a long base URL, a long .env variable name
 // that is not set, and a long endpoint path. Recent runs are faked the same way. Offline: no agent run, no
 // model call. Needs Chromium for Playwright (npx playwright install chromium).
@@ -145,6 +146,62 @@ function layoutProblems() {
   return problems;
 }
 
+// Runs in the page. Returns text that does not fit its control, as strings: a placeholder or a selected
+// value cut off inside its input or select, an option wider than its select (the native dropdown would
+// spill out of the column), and labels, tabs and segmented buttons whose text is clipped or ellipsed.
+function truncationProblems() {
+  const problems = [];
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  const label = (el) => `${el.tagName.toLowerCase()}${el.id ? "#" + el.id : ""}${el.dataset && (el.dataset.fw || el.dataset.mode) ? "[" + (el.dataset.fw || el.dataset.mode) + "]" : ""}`;
+  const visible = (el) => {
+    const b = el.getBoundingClientRect();
+    if (!b.width || !b.height) return false;
+    const cs = getComputedStyle(el);
+    return cs.visibility !== "hidden" && cs.display !== "none";
+  };
+  const textWidth = (el, text) => {
+    const cs = getComputedStyle(el);
+    ctx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+    return ctx.measureText(text).width;
+  };
+  const contentWidth = (el) => {
+    const cs = getComputedStyle(el);
+    return el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  };
+  for (const el of document.querySelectorAll("input.txt, input.sm")) {
+    if (!visible(el)) continue;
+    const text = el.value || el.placeholder;
+    if (!text || el.type === "password") continue;
+    if (el.value && el === document.activeElement) continue;
+    // A typed value may scroll (a long URL); a placeholder is the label of an empty field and must fit.
+    if (!el.value) {
+      const w = textWidth(el, text);
+      if (w > contentWidth(el) + 1) problems.push(`${label(el)}: the placeholder "${text}" is cut off (${Math.round(w)}px of text in ${Math.round(contentWidth(el))}px)`);
+    }
+  }
+  for (const el of document.querySelectorAll("select")) {
+    // The saved-input list holds the user's own file names (the stress fixture's is 66 characters); its
+    // closed value ellipses. Every other select has fixed option text, written to fit.
+    if (!visible(el) || el.id === "inputSel") continue;
+    const room = contentWidth(el) - 16; // the arrow
+    for (const o of el.options) {
+      const w = textWidth(el, o.text);
+      if (w > room + 1) problems.push(`${label(el)}: option "${o.text}" is wider than its select (${Math.round(w)}px in ${Math.round(room)}px)`);
+    }
+  }
+  for (const el of document.querySelectorAll(".seg button, .tab, label.lbl, .radio-card .t, .radio-card .d, .check, .btn, .pill, .tag")) {
+    if (!visible(el)) continue;
+    if (el.scrollWidth > el.clientWidth + 1) problems.push(`${label(el)}: "${el.textContent.trim().slice(0, 60)}" is clipped (${el.scrollWidth}px in ${el.clientWidth}px)`);
+  }
+  for (const el of document.querySelectorAll(".seg button")) {
+    if (!visible(el)) continue;
+    const lh = parseFloat(getComputedStyle(el).lineHeight) || 20;
+    if (el.getBoundingClientRect().height > Math.max(lh * 1.6, 36)) problems.push(`${label(el)}: segmented button text wraps`);
+  }
+  return problems;
+}
+
 async function main() {
   if (SHOTS) fs.mkdirSync(SHOTS, { recursive: true });
   const ui = await startUi();
@@ -171,6 +228,18 @@ async function main() {
           const p = await page.evaluate(layoutProblems);
           assert.deepEqual(p, []);
         });
+        await check(`${name}: no cut-off placeholders, options, labels or buttons`, async () => {
+          const p = await page.evaluate(truncationProblems);
+          assert.deepEqual(p, []);
+        });
+        // Both extra-test options ticked: their endpoint-id fields show and must fit too.
+        await page.evaluate(() => ["optInvalid", "optStable"].forEach((id) => document.getElementById(id).click()));
+        await page.waitForTimeout(50);
+        await check(`${name}: run options with every extra test ticked`, async () => {
+          const p = [...(await page.evaluate(layoutProblems)), ...(await page.evaluate(truncationProblems))];
+          assert.deepEqual(p, []);
+        });
+        await page.evaluate(() => ["optInvalid", "optStable"].forEach((id) => document.getElementById(id).click()));
 
         await page.selectOption("#inputSel", STRESS_NAME);
         await page.waitForFunction(() => document.querySelectorAll("#epList li").length === 4 && /NOT_SET/.test(document.getElementById("authBox").textContent));
@@ -186,7 +255,7 @@ async function main() {
           await page.evaluate((id) => document.getElementById(id).click(), id);
           await page.waitForTimeout(100);
           await check(`${name}: ${tab} tab`, async () => {
-            const p = await page.evaluate(layoutProblems);
+            const p = [...(await page.evaluate(layoutProblems)), ...(await page.evaluate(truncationProblems))];
             assert.deepEqual(p, []);
           });
         }

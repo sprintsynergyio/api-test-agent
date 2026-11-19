@@ -67,6 +67,9 @@
   @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(79,70,229,.45); } 50% { box-shadow: 0 0 0 6px rgba(79,70,229,0); } }
   .link-btn { background: none; border: 0; color: var(--accent); font-weight: 600; font-size: 13px; padding: 0; }
   .link-btn:hover { text-decoration: underline; }
+  a.link-btn { text-decoration: none; }
+  a.link-btn:hover { text-decoration: underline; }
+  .hint code { white-space: nowrap; }
 
   /* Cards and layout */
   .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); box-shadow: var(--shadow); }
@@ -77,14 +80,17 @@
      Every track can shrink (minmax(0, ...)) and every grid child has min-width: 0, so long content (a long
      .env variable name, input name, path or URL) wraps or scrolls inside its own card instead of widening
      the column and sliding under the other one. ui/layout.test.mjs checks this at several widths. */
-  .grid { display: grid; grid-template-columns: minmax(0, 440px) minmax(0, 1fr); gap: 16px; align-items: start; margin-top: 16px; }
+  .grid { display: grid; grid-template-columns: minmax(0, clamp(460px, 36vw, 540px)) minmax(0, 1fr); gap: 20px; align-items: start; margin-top: 20px; }
   @media (max-width: 1100px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+  /* Wide, tall windows: the pipeline and log stay in view while the (taller) options column scrolls. */
+  @media (min-width: 1101px) and (min-height: 760px) { .grid > .stack:last-child { position: sticky; top: 76px; } }
   .grid > *, .stack > *, .card, .card-b { min-width: 0; }
   .card { overflow-wrap: anywhere; }
   .grid.dimmed { opacity: .45; pointer-events: none; filter: grayscale(.2); }
   .stack { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
   .muted { color: var(--muted); }
   .hint { font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+  .help { font-size: 12.5px; color: var(--muted); line-height: 1.45; margin-top: 6px; }
   .ok-msg { color: var(--ok); font-size: 13px; margin-top: 8px; }
   .bad-msg { color: var(--bad); font-size: 13px; margin-top: 8px; }
   .err-box { margin-top: 12px; padding: 10px 12px; border-radius: var(--r-sm); background: var(--bad-soft); color: var(--bad); font-size: 13px; border: 1px solid var(--bad-line); }
@@ -93,24 +99,32 @@
   /* Form controls */
   label.lbl { display: block; font-size: 12.5px; font-weight: 600; color: var(--ink-2); margin-bottom: 6px; }
   select, input.txt, textarea {
-    width: 100%; max-width: 100%; min-width: 0; font: inherit; padding: 9px 11px; border-radius: var(--r-sm); border: 1px solid var(--line-2);
+    width: 100%; max-width: 100%; min-width: 0; font: inherit; padding: 8px 11px; border-radius: var(--r-sm); border: 1px solid var(--line-2);
     background: #fff; color: var(--ink);
   }
+  select, input.txt { height: 38px; line-height: 20px; text-overflow: ellipsis; }
+  input.txt::placeholder, textarea::placeholder { color: #9ca3af; }
+  select:disabled, input.txt:disabled { background: #f3f4f6; color: var(--muted); cursor: not-allowed; }
+  /* One keyboard focus ring for every clickable control. */
+  button:focus-visible, a:focus-visible, label.btn:focus-within, .radio-card:focus-within, .check:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
   select:focus, input.txt:focus, textarea:focus, select.sm:focus, input.sm:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
   textarea { min-height: 120px; font: 12.5px/1.5 var(--mono); resize: vertical; background: #fbfcfe; }
   select.sm, input.sm { width: 100%; font: 13px var(--mono); padding: 7px 9px; border-radius: 7px; border: 1px solid var(--line-2); background: #fff; color: var(--ink); }
-  .field { margin-bottom: 12px; }
-  .row2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+  .field { margin-bottom: 14px; }
+  .row2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+  .row2.name-url { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); }
   .row3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
   .inline { display: flex; align-items: center; gap: 8px; }
   .inline .txt { flex: 1; min-width: 0; }
-  .seg { display: inline-grid; grid-auto-flow: column; grid-auto-columns: minmax(0, auto); max-width: 100%; gap: 2px; padding: 3px; border-radius: 9px; background: #eef0f4; }
-  .seg button { border: 0; background: transparent; padding: 6px 12px; border-radius: 7px; font-weight: 600; font-size: 13px; color: var(--muted); }
+  /* Segmented controls: full width, equal halves, one line each (the label is short, details are in the help text). */
+  .seg { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); width: 100%; gap: 2px; padding: 3px; border-radius: 9px; background: #eef0f4; }
+  .seg button { min-width: 0; height: 32px; border: 0; background: transparent; padding: 0 12px; border-radius: 7px; font-weight: 600; font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .seg button:hover:not(.on) { color: var(--ink-2); }
   .seg button.on { background: #fff; color: var(--ink); box-shadow: 0 1px 2px rgba(17,24,39,.12); }
   .tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2px; padding: 3px; border-radius: 9px; background: #eef0f4; margin-bottom: 14px; }
   .tab { min-width: 0; border: 0; background: transparent; padding: 8px 10px; border-radius: 7px; font-weight: 600; font-size: 13px; color: var(--muted); }
   .tab.on { background: #fff; color: var(--ink); box-shadow: 0 1px 2px rgba(17,24,39,.12); }
-  .check { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--ink); cursor: pointer; }
+  .check { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--ink); cursor: pointer; border-radius: 4px; }
   .check input { accent-color: var(--accent); width: 15px; height: 15px; }
 
   .btn {
@@ -182,9 +196,28 @@
   .info-box .env.missing { border-color: var(--warn-line); background: var(--warn-soft); color: var(--warn); }
   .prod-box { margin-top: 12px; padding: 10px 12px; border-radius: var(--r-sm); background: var(--bad-soft); color: var(--bad); border: 1px solid var(--bad-line); font-size: 13px; font-weight: 600; }
   .prod-box .check { margin-top: 8px; font-weight: 600; }
-  .options { display: grid; gap: 12px; }
-  .opt-row { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 10px; align-items: start; }
-  .opt-row .lbl { margin: 8px 0 0; }
+  /* Run options: each group is a label on top of its control, so controls get the full card width. */
+  .options { display: grid; gap: 18px; }
+  .opt-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .opt-row > .lbl { margin: 0 0 8px; }
+  .opt-row > .lbl .hint { font-weight: 400; }
+  .opt-list { display: grid; gap: 8px; }
+  .opt-item { border: 1px solid var(--line); border-radius: var(--r-sm); padding: 10px 12px; background: #fff; transition: border-color .15s, background .15s; }
+  .opt-item:has(input[type=checkbox]:checked) { border-color: var(--accent-line); background: #fafaff; }
+  .opt-item .check { font-weight: 600; }
+  .opt-item .desc { font-size: 12.5px; color: var(--muted); line-height: 1.45; margin: 2px 0 0 23px; }
+  .opt-item .ids { margin: 10px 0 0 23px; }
+  .opt-item .ids .lbl { font-weight: 600; font-size: 12px; margin-bottom: 4px; }
+  .radio-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  @media (max-width: 480px) { .radio-cards { grid-template-columns: minmax(0, 1fr); } }
+  .radio-card { position: relative; display: block; border: 1px solid var(--line-2); border-radius: var(--r-sm); padding: 10px 12px 10px 36px; background: #fff; cursor: pointer; transition: border-color .15s, background .15s, box-shadow .15s; }
+  .radio-card:hover { border-color: var(--accent-line); }
+  .radio-card input { position: absolute; left: 12px; top: 12px; margin: 0; width: 15px; height: 15px; accent-color: var(--accent); }
+  .radio-card .t { display: block; font-weight: 700; font-size: 13.5px; color: var(--ink); line-height: 1.3; }
+  .radio-card .d { display: block; font-size: 12.5px; color: var(--muted); line-height: 1.4; margin-top: 2px; }
+  .radio-card:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .run-hint { display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 8px; font-size: 12.5px; color: var(--muted); text-align: center; }
+  .run-hint svg { flex: none; color: var(--accent); }
   .dim-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
 
   /* Endpoint editor (build tab) */
@@ -216,13 +249,23 @@
   .step.mixed .ic { background: var(--warn); color: #fff; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .timer { font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
+  .card-meta { font-size: 12.5px; color: var(--muted); text-align: right; min-width: 0; overflow-wrap: anywhere; }
   .term-wrap { padding: 0 16px 16px; }
-  .term { background: var(--term); color: var(--term-ink); border-radius: var(--r-sm); padding: 12px 14px; font: 12.5px/1.6 var(--mono); height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+  .term { background: var(--term); color: var(--term-ink); border-radius: var(--r-sm); padding: 12px 14px; font: 12.5px/1.6 var(--mono); height: 340px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
   .term .h { color: #a5b4fc; font-weight: 700; margin-top: 6px; }
   .term .ok { color: #6ee7b7; }
   .term .fail { color: #fca5a5; }
   .term .dim { color: #64748b; }
   .term .empty { color: #64748b; font-style: italic; }
+  /* Before the first run: a light, compact empty state instead of a large blank terminal. */
+  .term:has(> .empty-state) { height: auto; min-height: 0; background: #fafbfc; border: 1px dashed var(--line-2); color: var(--muted); font-family: var(--sans); white-space: normal; padding: 22px 20px; overflow: visible; }
+  .empty-state { display: grid; justify-items: center; text-align: center; gap: 6px; }
+  .empty-state .ic { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); }
+  .empty-state .ttl { font-size: 14px; font-weight: 700; color: var(--ink); }
+  .empty-state .sub { font-size: 13px; color: var(--muted); max-width: 440px; }
+  .empty-state ol { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 8px; }
+  .empty-state li { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink-2); background: #fff; border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px 3px 4px; white-space: nowrap; }
+  .empty-state li b { width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); font-size: 11px; }
   .term::-webkit-scrollbar { width: 10px; }
   .term::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 10px; }
 
@@ -346,7 +389,18 @@
   .runs-table td:nth-child(2) { overflow-wrap: anywhere; }
   .runs-table td { font-size: 13px; }
   .runs-table .when { white-space: nowrap; color: var(--muted); }
-  .tc-box { border: 1px solid var(--line-2); border-radius: var(--r-sm); padding: 12px; background: #fbfcfe; }
+  .runs-table td:last-child, .runs-table th:last-child { text-align: right; }
+  .runs-table td { padding: 9px 10px; }
+  .table-scroll.runs { max-height: 300px; overflow-y: auto; }
+  .pill { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 700; padding: 2px 9px; border-radius: 999px; border: 1px solid; white-space: nowrap; line-height: 18px; }
+  .pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .pill.ok { color: var(--ok); background: var(--ok-soft); border-color: var(--ok-line); }
+  .pill.bad { color: var(--bad); background: var(--bad-soft); border-color: var(--bad-line); }
+  .pill.neutral { color: var(--ink-2); background: #f3f4f6; border-color: var(--line); }
+  .runs-table .n-tests { margin-left: 6px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .fw-name { text-transform: capitalize; }
+  .tc-box { border: 1px solid var(--line); border-radius: var(--r-sm); padding: 12px; background: #fbfcfe; }
+  .tc-box .seg { margin-top: 12px; }
   .tc-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 8px; }
   .tc-box textarea { min-height: 70px; margin-top: 8px; }
   .tc-map { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
@@ -356,6 +410,7 @@
   .tc-rows th { white-space: nowrap; }
   .tc-rows .w { color: var(--warn); font-size: 12px; margin-top: 2px; }
   .tc-rows td.id { white-space: nowrap; font-family: var(--mono); font-size: 12px; }
+  .tc-rows table.no-c5 :is(th, td):nth-child(5), .tc-rows table.no-c8 :is(th, td):nth-child(8), .tc-rows table.no-c9 :is(th, td):nth-child(9) { display: none; }
   .tc-rows td.ref { max-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
   .atl-setup { margin-top: 10px; padding: 12px; border: 1px dashed var(--accent-line); border-radius: var(--r-sm); background: #fff; }
   .atl-grid { display: grid; grid-template-columns: 1fr; gap: 10px; }
@@ -363,13 +418,15 @@
   .atl-setup summary { cursor: pointer; font-weight: 600; color: var(--ink-2); }
   .tc-source { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 2px 8px; margin-right: 6px; vertical-align: 1px; }
   .tc-tiles { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
-  /* Phones: less side padding, the header wraps, option labels sit above their controls. */
+  /* Phones: less side padding, the header wraps. */
   @media (max-width: 600px) {
     .wrap { padding: 0 12px 40px; }
     .top-inner { padding: 8px 12px; height: auto; min-height: 56px; flex-wrap: wrap; }
     .top-right { flex-wrap: wrap; }
-    .opt-row { grid-template-columns: minmax(0, 1fr); gap: 6px; }
-    .opt-row .lbl { margin: 0; }
+    #tcMode { grid-auto-flow: row; }
+    .row2.name-url { grid-template-columns: minmax(0, 1fr); }
+    .ep-edit .top { grid-template-columns: 86px minmax(0, 1fr) 30px 30px 30px; gap: 4px; }
+    .runs-table :is(th, td):nth-child(3) { display: none; }
   }
 </style>
 </head>
@@ -473,19 +530,19 @@
           </div>
 
           <div id="customPane" class="hidden">
-            <div class="row2 field">
+            <div class="row2 name-url field">
               <div><label class="lbl" for="cName">API name</label><input id="cName" class="txt" placeholder="orders-api" autocomplete="off"></div>
-              <div><label class="lbl" for="cBase">Base URL</label><div class="inline"><input id="cBase" class="txt" placeholder="https://api-staging.example.com" autocomplete="off" spellcheck="false"><span id="cBadge" class="host-badge hidden"></span></div></div>
+              <div><label class="lbl" for="cBase">Base URL</label><div class="inline"><input id="cBase" class="txt" placeholder="https://api.example.com" autocomplete="off" spellcheck="false"><span id="cBadge" class="host-badge hidden"></span></div></div>
             </div>
 
             <div class="field">
               <label class="lbl" for="cAuth">Auth</label>
               <select id="cAuth">
                 <option value="none">No auth</option>
-                <option value="header">Header (token or API key in a header)</option>
-                <option value="query">Query parameter (API key in the URL)</option>
+                <option value="header">Header: token or API key</option>
+                <option value="query">Query parameter: API key in the URL</option>
                 <option value="cookie">Cookie</option>
-                <option value="login">Login call (fetches a token first)</option>
+                <option value="login">Login call: fetches a token first</option>
               </select>
             </div>
             <div id="cAuthHeader" class="auth-pane hidden">
@@ -565,7 +622,7 @@
             <button id="impBtn" class="btn btn-ghost btn-block" type="button" style="margin-top:12px">Import endpoints</button>
             <div id="impMsg"></div>
             <div id="impPreview" class="hidden" style="margin-top:14px">
-              <div class="row2 field">
+              <div class="row2 name-url field">
                 <div><label class="lbl" for="impName">API name</label><input id="impName" class="txt" placeholder="orders-api" autocomplete="off"></div>
                 <div><label class="lbl" for="impBase">Base URL</label><div class="inline"><input id="impBase" class="txt" placeholder="https://api.example.com" autocomplete="off" spellcheck="false"><span id="impBadge" class="host-badge hidden"></span></div></div>
               </div>
@@ -591,48 +648,61 @@
         <div class="card-h"><h2>Run options</h2></div>
         <div class="card-b options">
           <div class="opt-row">
-            <label class="lbl">Framework</label>
-            <div class="seg" id="fwToggle" role="radiogroup">
-              <button type="button" data-fw="playwright" class="on">Playwright</button>
-              <button type="button" data-fw="pactum">Pactum</button>
+            <label class="lbl" id="fwLbl">Framework</label>
+            <div class="seg" id="fwToggle" role="radiogroup" aria-labelledby="fwLbl">
+              <button type="button" data-fw="playwright" class="on" title="Playwright Test with TypeScript">Playwright</button>
+              <button type="button" data-fw="pactum" title="PactumJS with Mocha and TypeScript">Pactum</button>
             </div>
           </div>
           <div class="opt-row">
-            <label class="lbl">Test options</label>
-            <div>
-              <label class="check"><input id="optInvalid" type="checkbox"> Invalid-input tests</label>
-              <input id="optInvalidIds" class="txt" style="margin:4px 0 8px" placeholder="Endpoint ids, comma separated (empty = all endpoints)" autocomplete="off" spellcheck="false">
-              <div class="hint" style="margin:0 0 10px">Already on for endpoints with a request body, a path id, a 4xx response in the API spec, or a test case that expects a 4xx. Tick it for query-only endpoints (bad page or filter values) too.</div>
-              <label class="check"><input id="optStable" type="checkbox"> Stable data</label>
-              <input id="optStableIds" class="txt" style="margin:4px 0 8px" placeholder="Endpoint ids, comma separated (empty = all endpoints)" autocomplete="off" spellcheck="false">
-              <div class="hint" style="margin:0">Lets tests compare several calls (paging, totals, no repeats across pages). Already on for read-only GET endpoints when nothing in the run changes their data. Those tests run one after another.</div>
+            <label class="lbl">Extra tests <span class="hint">(optional)</span></label>
+            <div class="opt-list">
+              <div class="opt-item">
+                <label class="check"><input id="optInvalid" type="checkbox"> Invalid-input tests</label>
+                <div class="desc">Adds bad-input tests to query-only endpoints too. Already on for endpoints with a body, a path id or a documented 4xx.</div>
+                <div class="ids hidden">
+                  <label class="lbl" for="optInvalidIds">Only for these endpoint ids</label>
+                  <input id="optInvalidIds" class="txt" placeholder="e.g. list-products, search" autocomplete="off" spellcheck="false">
+                  <div class="help">Leave empty for all endpoints.</div>
+                </div>
+              </div>
+              <div class="opt-item">
+                <label class="check"><input id="optStable" type="checkbox"> Stable data</label>
+                <div class="desc">Lets tests compare several calls (paging, totals). Already on for read-only GETs. These tests run one after another.</div>
+                <div class="ids hidden">
+                  <label class="lbl" for="optStableIds">Only for these endpoint ids</label>
+                  <input id="optStableIds" class="txt" placeholder="e.g. list-products, list-orders" autocomplete="off" spellcheck="false">
+                  <div class="help">Leave empty for all endpoints.</div>
+                </div>
+              </div>
             </div>
           </div>
           <div class="opt-row">
-            <label class="lbl" for="redactMode">Redaction</label>
-            <div>
-              <select id="redactMode">
-                <option value="standard">Standard: emails, phones, cards, tokens, IPs and secret fields are replaced</option>
-                <option value="strict">Strict: only the shape of response data reaches the model</option>
-              </select>
-              <input id="redactFields" class="txt" style="margin-top:8px" placeholder="Extra fields to hide, comma separated: customer.name, address.*" autocomplete="off" spellcheck="false">
+            <label class="lbl" id="redactLbl">Data sent to the model</label>
+            <input type="hidden" id="redactMode" value="standard">
+            <div class="radio-cards" role="radiogroup" aria-labelledby="redactLbl">
+              <label class="radio-card"><input type="radio" name="redactModeOpt" value="standard" checked><span class="t">Standard</span><span class="d">Emails, phones, cards, tokens, IPs and secrets are masked</span></label>
+              <label class="radio-card"><input type="radio" name="redactModeOpt" value="strict"><span class="t">Strict</span><span class="d">Only the shape of response data is sent</span></label>
             </div>
+            <label class="lbl" for="redactFields" style="margin:12px 0 4px;font-size:12px">Extra fields to hide <span class="hint" style="font-weight:400">(optional)</span></label>
+            <input id="redactFields" class="txt" placeholder="e.g. customer.name, address.*" autocomplete="off" spellcheck="false">
           </div>
           <div class="opt-row">
-            <label class="lbl">Test cases <span class="hint" style="font-weight:400">(optional)</span></label>
+            <label class="lbl">Test cases <span class="hint">(optional)</span></label>
             <div class="tc-box" id="tcBox">
-              <div class="hint" style="margin:0 0 8px">Automate your team's manual test case sheet: one test per row, named <code>[ID] Title</code>. Columns are matched by name (ID, Title, Steps / Request, Expected Result, and optionally Endpoint, Method, Priority).</div>
+              <div class="hint" style="margin:0 0 10px">Turn your manual test case sheet into tests, one per row named <code>[ID] Title</code>. Columns are matched by name: ID, Title, Steps, Expected Result.</div>
               <div class="tc-actions">
-                <label class="btn btn-ghost" style="cursor:pointer">Upload CSV or Excel<input id="tcFile" type="file" accept=".csv,.tsv,.txt,.xlsx" class="hidden"></label>
+                <label class="btn btn-ghost btn-sm" style="cursor:pointer">Upload CSV or Excel<input id="tcFile" type="file" accept=".csv,.tsv,.txt,.xlsx" class="hidden"></label>
                 <button id="tcPasteBtn" class="link-btn" type="button">Paste instead</button>
                 <button id="tcLinkBtn" class="link-btn" type="button">Jira or Confluence link</button>
-                <a id="tcTemplate" class="link-btn" href="/api/test-cases/template" download="test-cases-template.csv">Download template CSV</a>
+                <a id="tcTemplate" class="link-btn" href="/api/test-cases/template" download="test-cases-template.csv">Template CSV</a>
                 <button id="tcClear" class="link-btn hidden" type="button">Remove</button>
               </div>
-              <textarea id="tcText" class="hidden" spellcheck="false" placeholder="Paste rows from Excel, Google Sheets or a CSV export (with the header row)"></textarea>
-              <div id="tcLinkBox" class="hidden" style="margin-top:8px">
-                <input id="tcLink" class="txt" type="text" autocomplete="off" spellcheck="false" placeholder="Jira issue, filter or search link, Confluence page link, or JQL">
-                <div class="tc-actions"><button id="tcLinkLoad" class="btn btn-ghost" type="button">Load cases</button><span class="hint">e.g. project = QA AND issuetype = Test</span></div>
+              <textarea id="tcText" class="hidden" spellcheck="false" placeholder="Paste rows with the header row"></textarea>
+              <div id="tcLinkBox" class="hidden" style="margin-top:10px">
+                <div class="hint" style="margin:0 0 6px">Paste a Jira issue, filter or search link, JQL, or a Confluence page with a test case table. Xray and Zephyr Scale steps are read when connected.</div>
+                <input id="tcLink" class="txt" type="text" autocomplete="off" spellcheck="false" placeholder="Link or JQL">
+                <div class="tc-actions"><button id="tcLinkLoad" class="btn btn-ghost btn-sm" type="button">Load cases</button><span class="hint">e.g. project = QA AND issuetype = Test</span></div>
                 <div id="atlStatus" class="hint" style="margin-top:6px"></div>
                 <div id="atlSetup" class="atl-setup hidden">
                   <div class="hint" style="margin:0 0 10px">Connect Jira and Confluence once. Atlassian Cloud: create an API token at <a href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank" rel="noopener noreferrer">id.atlassian.com &gt; Security &gt; API tokens</a> and use your Atlassian email. Data Center: leave the email empty and paste a personal access token from your Jira profile. Saved only to <code>.env</code> on this computer; the token is never shown again.</div>
@@ -658,13 +728,12 @@
                   </div>
                 </div>
               </div>
-              <div class="seg" id="tcMode" role="radiogroup" style="margin-top:10px">
-                <button type="button" data-mode="sheet-only">Only my test cases</button>
-                <button type="button" data-mode="sheet-plus-agent" class="on">My test cases + agent suggestions</button>
+              <div class="seg" id="tcMode" role="radiogroup" aria-label="Test case mode">
+                <button type="button" data-mode="sheet-only" title="Exactly one test per sheet row, nothing else">Only my cases</button>
+                <button type="button" data-mode="sheet-plus-agent" class="on" title="One test per sheet row, plus [agent] tests for case types the sheet does not cover">My cases + suggestions</button>
               </div>
               <div id="tcPreview" class="hidden"></div>
               <div id="tcErr" class="bad-msg hidden"></div>
-              <div class="hint" style="margin-top:8px">Jira and Confluence: paste an issue, filter or search link (or JQL), or a Confluence page with a test case table. Xray and Zephyr Scale steps are read when connected. CSV exports work too.</div>
             </div>
           </div>
           <div id="prodBox" class="prod-box hidden">
@@ -680,7 +749,7 @@
               Generate tests
             </button>
             <button id="stopBtn" class="btn btn-danger btn-block hidden" type="button" style="margin-top:8px">Stop run</button>
-            <div id="runHint" class="hint hidden" style="margin-top:8px;text-align:center"></div>
+            <div id="runHint" class="run-hint hidden" role="status"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v5h1"/></svg><span id="runHintText"></span></div>
             <div id="runErr" class="err-box hidden"></div>
           </div>
         </div>
@@ -709,14 +778,19 @@
             <div class="t">Run tests</div><div class="s">Execute the suite</div>
           </div>
         </div>
-        <div class="term-wrap"><div id="term" class="term"><span class="empty">Pick an API and click Generate tests. Live agent output appears here.</span></div></div>
+        <div class="term-wrap"><div id="term" class="term"><div class="empty-state">
+          <div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m4 17 6-6-6-6"/><path d="M12 19h8"/></svg></div>
+          <div class="ttl">No run yet</div>
+          <div class="sub">Choose an API and options on the left, then click Generate tests. The agent's live output appears here.</div>
+          <ol><li><b>1</b>Probe</li><li><b>2</b>Plan</li><li><b>3</b>Generate</li><li><b>4</b>Run tests</li></ol>
+        </div></div></div>
       </section>
 
       <!-- Run history -->
       <section class="card" id="runsCard">
         <div class="card-h"><h2>Recent runs</h2><button id="runsRefresh" class="link-btn" type="button">Refresh</button></div>
         <div class="card-b" style="padding-top:6px">
-          <div class="table-scroll"><table class="runs-table">
+          <div class="table-scroll runs"><table class="runs-table">
             <thead><tr><th>When</th><th>Input</th><th>Framework</th><th>Result</th><th></th></tr></thead>
             <tbody id="runsBody"><tr><td colspan="5" class="hint">No runs yet.</td></tr></tbody>
           </table></div>
@@ -751,11 +825,11 @@
     </div>
     <div class="res-grid">
       <div class="card">
-        <div class="card-h"><h2>API findings</h2><span id="findCount" class="timer"></span></div>
+        <div class="card-h"><h2>API findings</h2><span id="findCount" class="card-meta"></span></div>
         <div class="card-b" id="findings"></div>
       </div>
       <div class="card">
-        <div class="card-h"><h2>Endpoints</h2><span class="timer">Click a row for its tests</span></div>
+        <div class="card-h"><h2>Endpoints</h2><span class="card-meta">Click a row for its tests</span></div>
         <div class="card-b" style="padding-top:6px">
           <table>
             <thead><tr><th>Endpoint</th><th>Cases</th><th>Spec</th><th>Result</th></tr></thead>
@@ -770,7 +844,7 @@
       <div id="code" class="code"></div>
     </section>
     <section id="tcCard" class="card hidden" style="margin-top:16px">
-      <div class="card-h"><h2>Test case sheet</h2><span id="tcFileName" class="timer"></span></div>
+      <div class="card-h"><h2>Test case sheet</h2><span id="tcFileName" class="card-meta"></span></div>
       <div class="card-b">
         <div id="tcTiles" class="tc-tiles"></div>
         <div class="tc-rows" style="max-height:480px"><table><thead><tr><th>ID</th><th>Title</th><th>Endpoint</th><th>Status</th><th>Reason code</th><th>Coverage</th><th>Reason</th><th>Jira</th><th>Confluence</th></tr></thead><tbody id="tcTable"></tbody></table></div>
@@ -781,7 +855,7 @@
       </div>
     </section>
     <section id="fwCard" class="card hidden" style="margin-top:16px">
-      <div class="card-h"><h2 id="fwTitle">Exported framework</h2><span id="fwPath" class="timer"></span></div>
+      <div class="card-h"><h2 id="fwTitle">Exported framework</h2><span id="fwPath" class="card-meta" style="font-family:var(--mono);font-size:12px"></span></div>
       <div class="card-b">
         <p class="fw-lead" style="margin:0 0 12px;color:var(--ink-2)">A standalone API test project for this API, ready to commit to your repo.</p>
         <div class="fw-grid">
@@ -860,7 +934,7 @@
       if (config && typeof config === "object") {
         if (config.framework === "pactum" || config.framework === "playwright") setFramework(config.framework, false);
         if (config.redaction) {
-          $("redactMode").value = config.redaction.mode || "standard";
+          setRedactMode(config.redaction.mode || "standard");
           $("redactFields").value = (config.redaction.fields || []).join(", ");
         }
       }
@@ -1028,6 +1102,19 @@
     const b = ev.target.closest("button[data-fw]");
     if (b && !running) setFramework(b.dataset.fw, true);
   });
+  // Redaction: radio cards write the chosen mode into the hidden #redactMode field.
+  function setRedactMode(m) {
+    const v = m === "strict" ? "strict" : "standard";
+    $("redactMode").value = v;
+    document.querySelectorAll('input[name="redactModeOpt"]').forEach((r) => { r.checked = r.value === v; });
+  }
+  document.querySelectorAll('input[name="redactModeOpt"]').forEach((r) => r.addEventListener("change", () => { if (r.checked) setRedactMode(r.value); }));
+  // Extra tests: the endpoint-id field shows only while its option is ticked.
+  [["optInvalid", "optInvalidIds"], ["optStable", "optStableIds"]].forEach(([box, ids]) => {
+    const sync = () => $(ids).closest(".ids").classList.toggle("hidden", !$(box).checked);
+    $(box).addEventListener("change", sync);
+    sync();
+  });
   function redactionBlock() {
     const fields = $("redactFields").value.split(",").map((s) => s.trim()).filter(Boolean);
     const m = $("redactMode").value;
@@ -1072,7 +1159,7 @@
     hint.id = "tcModeHint";
     hint.className = "hint";
     hint.style.marginTop = "6px";
-    const text = { "sheet-only": "Only my test cases: exactly one test per sheet row and nothing else. The agent adds no tests of its own, and endpoints without a row are not tested.", "sheet-plus-agent": "My test cases + agent suggestions: one test per sheet row, plus [agent] tests for case types the sheet does not cover, listed separately." };
+    const text = { "sheet-only": "Exactly one test per sheet row. Endpoints without a row are not tested.", "sheet-plus-agent": "One test per sheet row, plus [agent] tests for gaps, listed separately." };
     const update = () => { const on = seg.querySelector("button.on"); hint.textContent = text[on ? on.dataset.mode : "sheet-plus-agent"] || ""; };
     seg.after(hint);
     seg.addEventListener("click", () => setTimeout(update, 0));
@@ -1201,7 +1288,7 @@
   ["cBase", "impBase"].forEach((id) => $(id).addEventListener("input", updateSafety));
 
   function runBlocker() {
-    if (mode === "import") return imp ? "Review the import, then click Use these endpoints." : "Import endpoints first.";
+    if (mode === "import") return imp ? "Review the endpoints, then click Use these endpoints." : "Paste or upload a spec and click Import endpoints to continue.";
     if (mode === "saved" && config && config.profile) {
       const dims = Object.keys(config.profile.dimensions || {});
       const missing = dims.filter((d) => !selection[d] && (config.profile.dimensions[d] || []).length !== 1);
@@ -1214,7 +1301,7 @@
   function updateRunButton() {
     const why = running ? "" : runBlocker();
     $("runBtn").disabled = running || !!why;
-    $("runHint").textContent = why;
+    $("runHintText").textContent = why;
     $("runHint").classList.toggle("hidden", !why);
   }
   function setRunning(on) {
@@ -1466,7 +1553,7 @@
       $("heroSub").textContent = `${t.testsGenerated} generated tests ran green across ${eps.length - skipped.length} endpoints.${skipNote}`;
     } else {
       hero.className = "hero bad";
-      $("heroBig").textContent = `${t.failed ?? 0} test${t.failed === 1 ? "" : "s"} need review`;
+      $("heroBig").textContent = `${t.failed ?? 0} ${t.failed === 1 ? "test needs" : "tests need"} review`;
       $("heroSub").textContent = "No confirmed API bugs. Failures are listed below for review.";
     }
 
@@ -1883,6 +1970,11 @@
     };
     const ref = (v) => !v ? "" : /^https?:\/\//i.test(v) ? `<a href="${esc(v)}" title="${esc(v)}" target="_blank" rel="noopener noreferrer">${esc(refLabel(v))}</a>` : esc(v);
     $("tcTable").innerHTML = (t.cases || []).map((c) => `<tr><td class="id">${esc(c.id)}</td><td>${esc(c.title)}</td><td style="white-space:nowrap">${esc(c.endpoint || "")}</td><td style="white-space:nowrap"><span class="tag ${cls[c.status] || ""}">${esc(c.status)}</span></td><td style="white-space:nowrap;font-size:12px">${esc(c.reasonCode || "")}</td><td style="white-space:nowrap">${esc(c.coverage || "")}</td><td class="hint">${esc(c.reason || "")}</td><td class="ref">${ref(c.jira)}</td><td class="ref">${ref(c.confluence)}</td></tr>`).join("");
+    const tbl = $("tcTable").closest("table");
+    const cases = t.cases || [];
+    tbl.classList.toggle("no-c5", !cases.some((c) => c.reasonCode));
+    tbl.classList.toggle("no-c8", !cases.some((c) => c.jira));
+    tbl.classList.toggle("no-c9", !cases.some((c) => c.confluence));
   }
   $("tcCsv").addEventListener("click", () => { window.location.href = "/api/traceability" + (runQuery() ? runQuery() + "&" : "?") + "format=csv"; });
   $("tcXlsx").addEventListener("click", () => { window.location.href = "/api/traceability" + (runQuery() ? runQuery() + "&" : "?") + "format=xlsx"; });
@@ -1936,11 +2028,11 @@
     body.innerHTML = rows.map((r) => {
       const when = r.finishedAt ? new Date(r.finishedAt).toLocaleString() : "";
       const name = r.name || (r.inputFile ? r.inputFile.replace(/^input\//, "").replace(/\.json$/, "") : "run");
-      const result = r.status === "refused" ? `<span class="no">refused</span>`
-        : r.status === "no-tests" ? `<span class="no">no tests</span>`
-        : r.findings == null ? `<span class="hint">exit ${r.exitCode}</span>`
-        : r.findings ? `<span class="no">${r.findings} bug${r.findings === 1 ? "" : "s"}</span>` : `<span class="yes">clean</span>`;
-      return `<tr><td class="when">${esc(when)}</td><td>${esc(name)}</td><td>${esc(r.testFramework || "")}</td><td>${result}${r.tests != null ? ` <span class="hint">(${r.tests} tests)</span>` : ""}</td><td><button class="link-btn" type="button" data-run="${esc(r.id)}">Load</button></td></tr>`;
+      const result = r.status === "refused" ? `<span class="pill bad">Refused</span>`
+        : r.status === "no-tests" ? `<span class="pill bad">No tests</span>`
+        : r.findings == null ? `<span class="pill neutral">Exit ${esc(r.exitCode)}</span>`
+        : r.findings ? `<span class="pill bad">${r.findings} bug${r.findings === 1 ? "" : "s"}</span>` : `<span class="pill ok">Clean</span>`;
+      return `<tr><td class="when">${esc(when)}</td><td>${esc(name)}</td><td class="fw-name">${esc(r.testFramework || "")}</td><td style="white-space:nowrap">${result}${r.tests != null ? `<span class="n-tests">${esc(r.tests)} tests</span>` : ""}</td><td><button class="link-btn" type="button" data-run="${esc(r.id)}">Load</button></td></tr>`;
     }).join("");
     body.querySelectorAll("[data-run]").forEach((b) => b.addEventListener("click", async () => {
       currentRunId = b.dataset.run;
@@ -2060,7 +2152,7 @@
       <div class="ep-edit ${e.open ? "open" : ""}" data-i="${i}">
         <div class="top">
           <select class="sm" data-k="method">${METHODS.map((m) => `<option ${m === e.method ? "selected" : ""}>${m}</option>`).join("")}</select>
-          <input class="sm" data-k="path" placeholder="/products/{id}" value="${esc(e.path)}" spellcheck="false" autocomplete="off">
+          <input class="sm" data-k="path" placeholder="/orders/{id}" value="${esc(e.path)}" spellcheck="false" autocomplete="off">
           <button type="button" class="icon-btn ${e.auth ? "on" : ""}" data-act="auth" title="Requires auth">${icon.lock}</button>
           <button type="button" class="icon-btn ${e.open ? "on" : ""}" data-act="more" title="Body, query, headers and setup">${icon.more}</button>
           <button type="button" class="icon-btn del" data-act="del" title="Remove">${icon.del}</button>
