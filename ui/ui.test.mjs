@@ -151,6 +151,7 @@ async function main() {
       const html = read("ui/index.html");
       for (const id of ["tPartialTile", "tPartial", "tCovTile", "tCov", "covBar"]) assert.ok(html.includes(`id="${id}"`), `missing id ${id}`);
       assert.match(html, /<th>Coverage<\/th><th>Reason<\/th><th>Jira<\/th><th>Confluence<\/th>/);
+      assert.ok(html.includes("const refLabel = (v) =>") && html.includes('title="${esc(v)}"'), "Jira / Confluence links show a short label with the full URL on hover");
       assert.match(html, /Assertion coverage/);
     });
     await check("GET / serves the page", async () => {

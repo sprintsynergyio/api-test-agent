@@ -1844,7 +1844,16 @@
     $("tcTiles").innerHTML = tile("Rows", t.rows, "") + tile("Passed", t.passed, "ok") + tile("Partially covered", t.partiallyCovered, "warn") + tile("Failed", t.failed, "bad") + tile("Needs review", t.needsReview, "warn") + tile("Not automated", t.notAutomated, "warn") + covTile + tile("Agent suggestions", t.agentSuggestions, "");
     const cls = { passed: "ok", "partially covered": "warn", failed: "bad", "needs review": "warn", "not automated": "warn" };
     // Jira and Confluence cells: a link only for an http(s) address, else the text (a key such as QA-12).
-    const ref = (v) => !v ? "" : /^https?:\/\//i.test(v) ? `<a href="${esc(v)}" target="_blank" rel="noopener noreferrer">${esc(v.replace(/^https?:\/\/[^/]+/i, "") || v)}</a>` : esc(v);
+    // A link shows its Jira key (QA-12) or the last part of its path (the page name), full URL on hover.
+    const refLabel = (v) => {
+      const key = /\b[A-Z][A-Z0-9]+-\d+\b/.exec(v);
+      if (key) return key[0];
+      const seg = v.replace(/[?#].*$/, "").split("/").filter(Boolean).pop() || v;
+      let name = seg;
+      try { name = decodeURIComponent(seg.replace(/\+/g, " ")); } catch { /* keep it as written */ }
+      return name.length > 40 ? name.slice(0, 39) + "..." : name;
+    };
+    const ref = (v) => !v ? "" : /^https?:\/\//i.test(v) ? `<a href="${esc(v)}" title="${esc(v)}" target="_blank" rel="noopener noreferrer">${esc(refLabel(v))}</a>` : esc(v);
     $("tcTable").innerHTML = (t.cases || []).map((c) => `<tr><td class="id">${esc(c.id)}</td><td>${esc(c.title)}</td><td style="white-space:nowrap">${esc(c.endpoint || "")}</td><td style="white-space:nowrap"><span class="tag ${cls[c.status] || ""}">${esc(c.status)}</span></td><td style="white-space:nowrap">${esc(c.coverage || "")}</td><td class="hint">${esc(c.reason || "")}</td><td class="ref">${ref(c.jira)}</td><td class="ref">${ref(c.confluence)}</td></tr>`).join("");
   }
   $("tcCsv").addEventListener("click", () => { window.location.href = "/api/traceability" + (runQuery() ? runQuery() + "&" : "?") + "format=csv"; });
