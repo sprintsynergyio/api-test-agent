@@ -145,6 +145,9 @@ export const ConfigSchema = z.object({
     .optional(),
   // Optional test case sheet to automate (see TestCasesConfigSchema). --test-cases overrides it.
   testCases: TestCasesConfigSchema.optional(),
+  // Optional per-environment test data file (agent/test-data.ts), relative to the input file.
+  // --test-data overrides it.
+  testData: z.string().min(1).optional(),
   endpoints: z.array(EndpointSchema).min(1),
 });
 

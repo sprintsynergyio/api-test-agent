@@ -10,4 +10,5 @@ export function frameworkFor(config: Config): FrameworkAdapter {
   return FRAMEWORKS[config.framework ?? 'playwright'];
 }
 
-export type { FrameworkAdapter, FrameworkName, RunResult, TestOutcome, FrameworkInfo } from './types';
+export type { FrameworkAdapter, FrameworkName, RunResult, TestOutcome, FrameworkInfo, OutcomeKind } from './types';
+export { outcomeKind } from './types';

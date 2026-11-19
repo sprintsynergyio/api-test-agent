@@ -10,6 +10,7 @@ import { redactValue } from './redact';
 import { AGENT_CASE_PREFIX, isBinaryContentType, isReadOnlyMethod, PATH_PARAM as PATH_PLACEHOLDER } from './model';
 import { describeExpectedStatus, expectedContentType, parseExpectedStatus, splitClauses } from './expected';
 import type { SheetCase } from './test-cases';
+import { requiredDataNames } from './test-data';
 import type { TestCaseMode } from './config';
 import { untrusted, withUntrustedRule } from './untrusted';
 
@@ -70,16 +71,31 @@ const CaseSchema = z.object({
       }),
     )
     .optional(),
+  // A Known issue from the sheet ("KNOWN_ISSUE QA-123: ..."): the agent marks the test as expected to
+  // fail (Playwright test.fail, Pactum knownIssue). Set from the sheet, never by the model.
+  knownIssue: z.string().optional(),
+  // Required data names from the sheet: the agent adds the precondition check before the test.
+  requiredData: z.array(z.string()).optional(),
 });
 
 // A sheet case the agent will not guess at: its steps or expected result are too vague, it needs a
 // test type this endpoint cannot have, or what it expects contradicts the probe. It becomes a test
 // marked needs review (never run, never passed) with the reason.
+// code: why it does not run (agent/test-data.ts REASON_CODES). SPEC_UNCLEAR (or none) is needs review;
+// MISSING_TEST_DATA is skipped; MANUAL and MANUAL_VISUAL are manual. The model may suggest
+// SPEC_UNCLEAR, MISSING_TEST_DATA or MANUAL_VISUAL; the placeholder itself is written by the agent.
+export const PLAN_SKIP_CODES = ['SPEC_UNCLEAR', 'MISSING_TEST_DATA', 'MANUAL', 'MANUAL_VISUAL'] as const;
 const NeedsReviewSchema = z.object({
   caseId: z.string().min(1),
   title: z.string().optional(),
   reason: z.string().min(1),
+  code: z.enum(PLAN_SKIP_CODES).optional(),
 });
+
+// The title tag of a placeholder with this code: [needs-review], [skipped] or [manual].
+export function skipTag(code: string | undefined): 'needs-review' | 'skipped' | 'manual' {
+  return code === 'MISSING_TEST_DATA' ? 'skipped' : code === 'MANUAL' || code === 'MANUAL_VISUAL' ? 'manual' : 'needs-review';
+}
 
 const PlanSchema = z.object({
   endpointId: z.string().min(1),
@@ -422,7 +438,7 @@ ${untrusted('sheet-cases', JSON.stringify({ mode, cases: shown }, null, 2))}
 
 RULES:
 - Allowed case types for this endpoint: ${types.map((t) => `"${t}"`).join(', ')}.
-- For every team test case, either plan exactly one case with its "caseId", or list it in "needsReview" with a short reason. Use needsReview when the steps do not say what to send, the expected result does not say what to check, or the case needs something this endpoint cannot do. Never guess.
+- For every team test case, either plan exactly one case with its "caseId", or list it in "needsReview" with a short reason. Use needsReview when the steps do not say what to send, the expected result does not say what to check, or the case needs something this endpoint cannot do. Never guess. Give each needsReview entry a "code": "MANUAL_VISUAL" when only a person looking can check it (how an image or a page looks), "MISSING_TEST_DATA" when it needs a value or record the sheet does not give, else "SPEC_UNCLEAR".
 - Pick the type from what the case checks: a valid request that succeeds is "happy" (or "schema" when it checks the response fields and their types); a bad body, a missing or wrong field, a bad query value, or a missing or non-existent id is "invalid-input"; a request without auth is "auth"; another role trying the request is "authz".${
     types.includes('invalid-input') ? ` invalid-input is on for this endpoint because ${invalidSource}.` : ` invalid-input is off for this endpoint (${INVALID_INPUT_RULE}).`
   }
@@ -434,7 +450,7 @@ ${binary ? `${binary}\n` : ''}${extras}
 ${crossCallRule(endpoint, stability, true)}
 
 Answer with JSON only, exactly this shape:
-{"endpointId":"${endpoint.id}","cases":[{"caseId":"${sheetCases[0]?.id ?? 'TC-1'}","id":"short-kebab-id","type":"happy","title":"short title","requestDescription":"...","expectedStatus":"${probe.status}","assertions":["..."],"coverage":[{"clause":1,"check":"status is ${probe.status}"}]}],"needsReview":[{"caseId":"...","reason":"..."}]}`;
+{"endpointId":"${endpoint.id}","cases":[{"caseId":"${sheetCases[0]?.id ?? 'TC-1'}","id":"short-kebab-id","type":"happy","title":"short title","requestDescription":"...","expectedStatus":"${probe.status}","assertions":["..."],"coverage":[{"clause":1,"check":"status is ${probe.status}"}]}],"needsReview":[{"caseId":"...","reason":"...","code":"SPEC_UNCLEAR"}]}`;
 }
 
 // Applies the deterministic rules to the model's sheet plan: titles, statuses, the type an endpoint
@@ -447,13 +463,15 @@ export function finalizeSheetPlan(raw: Plan, endpoint: Endpoint, probe: ProbeRes
   const needsReview: NonNullable<Plan['needsReview']> = [];
   const done = new Set<string>();
   const errors: string[] = [];
-  const review = (c: SheetCase, reason: string) => {
-    needsReview.push({ caseId: c.id, title: sheetTitle(c.id, 'needs-review', c.title), reason: reason.replace(/\s+/g, ' ').trim() });
+  const review = (c: SheetCase, reason: string, code?: NonNullable<Plan['needsReview']>[number]['code']) => {
+    // MANUAL is the sheet's own Automation column; the model may not set it.
+    const kept = code && code !== 'MANUAL' ? code : undefined;
+    needsReview.push({ caseId: c.id, title: sheetTitle(c.id, skipTag(kept), c.title), reason: reason.replace(/\s+/g, ' ').trim(), ...(kept ? { code: kept } : {}) });
     done.add(c.id.toLowerCase());
   };
   for (const r of raw.needsReview ?? []) {
     const c = byId.get(r.caseId.trim().toLowerCase());
-    if (c && !done.has(c.id.toLowerCase())) review(c, r.reason);
+    if (c && !done.has(c.id.toLowerCase())) review(c, r.reason, r.code);
   }
   const agentCases: Plan['cases'] = [];
   for (const pc of raw.cases) {
@@ -476,7 +494,11 @@ export function finalizeSheetPlan(raw: Plan, endpoint: Endpoint, probe: ProbeRes
       continue;
     }
     const conflict = sheetStatusConflict(pc.type, c.expected, probe.status);
-    if (conflict) {
+    // A known issue: the probe showing the bug is expected, so a happy or schema case keeps the sheet's
+    // own (non-5xx) status instead of going to needs review.
+    const knownCodes = c.knownIssue && (pc.type === 'happy' || pc.type === 'schema') ? sheetStatusCodes(c.expected).filter((x) => x < 500) : [];
+    const knownStatus = conflict && knownCodes.length && !/5xx/.test(conflict) && !/never writes a test that expects a 5xx/.test(conflict) ? String(knownCodes[0]) : null;
+    if (conflict && !knownStatus) {
       review(c, conflict);
       continue;
     }
@@ -496,8 +518,10 @@ export function finalizeSheetPlan(raw: Plan, endpoint: Endpoint, probe: ProbeRes
       caseId: c.id,
       source: 'sheet',
       title: sheetTitle(c.id, pc.type, c.title),
-      expectedStatus: STATUS_FOR[pc.type](probe.status),
+      expectedStatus: knownStatus ?? STATUS_FOR[pc.type](probe.status),
       expectedResult: c.expected || undefined,
+      ...(c.knownIssue ? { knownIssue: `KNOWN_ISSUE ${c.knownIssue}` } : {}),
+      ...(c.requiredData ? { requiredData: requiredDataNames(c.requiredData) } : {}),
       ...(statusCodes.length ? { statusCodes } : {}),
       ...(contentType ? { contentType } : {}),
       ...(pc.crossCall ? { crossCall: true } : {}),
@@ -531,6 +555,24 @@ async function planWithSheet(endpoint: Endpoint, probe: ProbeResult, roles: stri
     savePlan(plan);
     return { ok: true, plan };
   }
+  // Cases the sheet or the test data already decide (agent/test-cases.ts prepareSheetCases): missing test
+  // data or a manual case. Placeholders written by the agent; the model never sees them.
+  const declared: NonNullable<Plan['needsReview']> = sheetCases
+    .filter((c) => c.declaredSkip)
+    .map((c) => ({ caseId: c.id, title: sheetTitle(c.id, skipTag(c.declaredSkip!.code), c.title), reason: c.declaredSkip!.reason, code: c.declaredSkip!.code }));
+  const active = sheetCases.filter((c) => !c.declaredSkip);
+  const withDeclared = (plan: Plan): Plan => (declared.length ? { ...plan, needsReview: [...(plan.needsReview ?? []), ...declared] } : plan);
+  if (!active.length) {
+    let plan: Plan = { endpointId: endpoint.id, cases: [] };
+    if (mode === 'sheet-plus-agent') {
+      const own = await planEndpoint(endpoint, probe, { roles, stability });
+      if (own.ok) plan = { ...own.plan, cases: own.plan.cases.map((c) => ({ ...c, source: 'agent' as const, title: agentTitle(c.type, c.title) })) };
+    }
+    plan = withDeclared(plan);
+    savePlan(plan);
+    return { ok: true, plan };
+  }
+  sheetCases = active;
   const prompt = buildSheetPrompt(endpoint, probe, roles, sheetCases, mode, stability);
   let errors: string[] = [];
   let last: Plan | null = null;
@@ -565,6 +607,7 @@ async function planWithSheet(endpoint: Endpoint, probe: ProbeResult, roles: stri
   if (!last) return { ok: false, reason: `plan invalid after retry: ${errors.join('; ')}` };
   if (errors.length) last = { ...last, cases: last.cases.filter((c) => c.source === 'sheet') };
   if (!last.cases.length && !last.needsReview?.length) return { ok: false, reason: `plan invalid after retry: ${errors.join('; ')}` };
+  last = withDeclared(last);
   savePlan(last);
   return { ok: true, plan: last };
 }

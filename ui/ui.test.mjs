@@ -150,9 +150,18 @@ async function main() {
     await check("result tiles: Partially covered and Assertion coverage tiles for sheet runs; sheet table has Coverage, Jira and Confluence", () => {
       const html = read("ui/index.html");
       for (const id of ["tPartialTile", "tPartial", "tCovTile", "tCov", "covBar"]) assert.ok(html.includes(`id="${id}"`), `missing id ${id}`);
-      assert.match(html, /<th>Coverage<\/th><th>Reason<\/th><th>Jira<\/th><th>Confluence<\/th>/);
+      assert.match(html, /<th>Status<\/th><th>Reason code<\/th><th>Coverage<\/th><th>Reason<\/th><th>Jira<\/th><th>Confluence<\/th>/);
       assert.ok(html.includes("const refLabel = (v) =>") && html.includes('title="${esc(v)}"'), "Jira / Confluence links show a short label with the full URL on hover");
       assert.match(html, /Assertion coverage/);
+    });
+    await check("result tiles: Skipped and Known issues tiles; known issues and tests that did not run are listed with reason codes, never as passed", () => {
+      const html = read("ui/index.html");
+      for (const id of ["tSkipTile", "tSkip", "tKnownTile", "tKnown"]) assert.ok(html.includes(`id="${id}"`), `missing id ${id}`);
+      assert.ok(html.includes('id="knownList"') && html.includes('id="skippedList"'), "known issues and skipped tests are listed");
+      assert.match(html, /not counted as passed/);
+      // The pass bar's total includes skipped tests and known issues, so they lower it.
+      assert.match(html, /const total = \(t\.passed \?\? 0\) \+ \(t\.failed \?\? 0\) \+ \(t\.skipped \?\? 0\) \+ \(t\.knownIssues \?\? 0\)/);
+      for (const st of ['skipped: "warn"', 'manual: ""', 'blocked: "warn"', '"known issue": "known"', '"unexpected pass": "bad"']) assert.ok(html.includes(st), `status class ${st}`);
     });
     await check("GET / serves the page", async () => {
       const res = await fetch(`http://127.0.0.1:${UI_PORT}/`);

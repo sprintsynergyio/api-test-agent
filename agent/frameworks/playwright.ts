@@ -9,6 +9,7 @@ import { addCleanup, emptyCleanup, type CleanupTotals } from '../http';
 import { validateSpec } from '../validate';
 import { addAllureLabels, type ExtraLabels } from './allure-labels';
 import type { FrameworkAdapter, RunResult, TestOutcome } from './types';
+import { reasonCodeOf, RUNTIME_CODES } from '../test-data';
 
 // The Playwright adapter: the original pipeline's runner, results parser, Allure step and exporter,
 // moved here unchanged in behaviour.
@@ -45,7 +46,17 @@ type JsonSpec = {
 };
 
 function readOutcomes(cleanError: (text: string) => string): { outcomes: TestOutcome[]; loadErrors: string[]; requestsSent: number; redactionReplaced: number; cleanup: CleanupTotals } {
-  const report = JSON.parse(readFileSync(RESULTS_FILE, 'utf8')) as { suites?: JsonSuite[]; errors?: { message?: string }[] };
+  return outcomesFromReport(JSON.parse(readFileSync(RESULTS_FILE, 'utf8')) as PlaywrightJson, cleanError);
+}
+
+export type PlaywrightJson = { suites?: JsonSuite[]; errors?: { message?: string }[] };
+
+// The Playwright JSON report as outcomes. Skipped tests are left out (needs-review and declared-skip
+// placeholders are reported from the plan; read-only skips from the endpoint), except a test the
+// precondition check skipped while running ("DATA_NOT_ON_ENV: ..." / "ENV_UNAVAILABLE: ..."), which is
+// 'blocked'. A test with test.fail() (a Known issue the agent marked) that failed is 'known-issue', and
+// one that passed is 'unexpected-pass'. Neither is ever passed.
+export function outcomesFromReport(report: PlaywrightJson, cleanError: (text: string) => string): { outcomes: TestOutcome[]; loadErrors: string[]; requestsSent: number; redactionReplaced: number; cleanup: CleanupTotals } {
   const outcomes: TestOutcome[] = [];
   let requestsSent = 0;
   let redactionReplaced = 0;
@@ -68,13 +79,29 @@ function readOutcomes(cleanError: (text: string) => string): { outcomes: TestOut
             cleanup.failures.push(`unreadable cleanup annotation on "${spec.title}"`);
           }
         }
-        if (t.status === 'skipped') continue;
         const annotations = [...(t.annotations ?? []), ...(last?.annotations ?? [])];
+        const endpointId = basename(spec.file).replace(/\.spec\.ts$/, '');
+        if (t.status === 'skipped') {
+          const skip = annotations.find((a) => a.type === 'skip' && RUNTIME_CODES.includes(reasonCodeOf(a.description)!));
+          if (!skip) continue;
+          const reason = cleanError(skip.description ?? '');
+          outcomes.push({ endpointId, title: spec.title, passed: false, actualStatus: null, error: '', kind: 'blocked', reasonCode: reasonCodeOf(reason) ?? undefined, reason });
+          continue;
+        }
         const statusNote = annotations.find((a) => a.type === 'actual-status')?.description;
         const actual = statusNote !== undefined && /^\d{3}$/.test(statusNote) ? Number(statusNote) : null;
         const message = last?.errors?.[0]?.message ?? last?.error?.message ?? '';
+        const known = annotations.find((a) => a.type === 'fail');
+        if (known) {
+          const reason = cleanError(known.description ?? 'KNOWN_ISSUE');
+          // test.fail(): "expected" means it failed as expected; a passing result is "unexpected".
+          const kind = t.status === 'expected' ? 'known-issue' : last?.status === 'passed' ? 'unexpected-pass' : 'failed';
+          const error = kind === 'unexpected-pass' ? `UNEXPECTED PASS: ${reason}; the test passed, so the bug may be fixed: check it and remove the Known issue from the sheet` : cleanError(message).slice(0, 300);
+          outcomes.push({ endpointId, title: spec.title, passed: false, actualStatus: actual, error, kind, reasonCode: 'KNOWN_ISSUE', reason });
+          continue;
+        }
         outcomes.push({
-          endpointId: basename(spec.file).replace(/\.spec\.ts$/, ''),
+          endpointId,
           title: spec.title,
           passed: t.status === 'expected' || t.status === 'flaky',
           actualStatus: actual,

@@ -4,18 +4,19 @@ import { redactHomeFolders } from './home-paths';
 import { responseSchemaIssues } from './response-schema';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { extraRoles, pickAuthEnv, secretValues } from './auth';
 import { BudgetExceeded, claudeBudget, claudeCallsUsed, claudeEnv, describeModelChoice, fakeModelEnabled, hostedWithoutApiKeyProblem, modelChoice, promptRedaction, redact, usingApiKey } from './claude';
 import { CHECKPOINT_FILE, endpointHash, hashOf, inputHash, loadCheckpoint, newCheckpoint, reusable, saveCheckpoint, type Checkpoint, type ScopeMode } from './checkpoint';
 import { parseAgentFlags, type AgentFlags } from './flags';
 import { apiName, DEFAULT_TEST_CASE_MODE, loadConfig, selectionLine, takeSelectFlag, type Config, type Endpoint, type TestCaseMode } from './config';
 import { atlassianSecrets, isLinkSource, loadLinkCases, redactSecrets } from './atlassian';
-import { loadSheetFile, type MatchResult, type ParsedSheet, type SheetCase } from './test-cases';
+import { loadSheetFile, prepareSheetCases, type MatchResult, type ParsedSheet, type SheetCase } from './test-cases';
+import { loadTestData, type TestData } from './test-data';
 import { matchCases } from './match-cases';
 import { buildTraceRows, coverageGaps, traceCsv, traceTotals, traceXlsx, type TraceRow } from './traceability';
 import { testTypeOf } from './model';
-import { frameworkFor, type FrameworkAdapter, type FrameworkInfo, type TestOutcome } from './frameworks';
+import { frameworkFor, outcomeKind, type FrameworkAdapter, type FrameworkInfo, type TestOutcome } from './frameworks';
 import { generateEndpoint } from './generate';
 import { dataStability, planEndpoint, type Plan, type Stability } from './plan';
 import { addCleanup, cleanupLine, emptyCleanup, type CleanupTotals } from './http';
@@ -285,11 +286,18 @@ function writeSummary(o: {
       concurrency: scope.concurrency,
       testWorkers: scope.testWorkers,
     },
+    // passed counts real passes only. failed: failed tests and known issues whose test passed
+    // (unexpected pass). skipped: tests that did not run, while running (blocked by the precondition
+    // check) or by the sheet (skipped for missing test data, manual), with their reason codes in
+    // skippedByCode. knownIssues: Known issue tests that failed as expected. None of them is passed.
     totals: {
       endpoints: states.length,
       testsGenerated: outcomes.length,
-      passed: outcomes.filter((o) => o.passed).length,
-      failed: outcomes.filter((o) => !o.passed).length,
+      passed: outcomes.filter((o) => outcomeKind(o) === 'passed').length,
+      failed: outcomes.filter((o) => outcomeKind(o) === 'failed' || outcomeKind(o) === 'unexpected-pass').length,
+      skipped: skippedTests(states, outcomes).length,
+      knownIssues: outcomes.filter((o) => outcomeKind(o) === 'known-issue').length,
+      skippedByCode: countBy(skippedTests(states, outcomes).map((x) => x.reasonCode)),
     },
     endpoints: states.map((s) => {
       const mine = outcomes.filter((o) => o.endpointId === s.endpoint.id);
@@ -302,8 +310,10 @@ function writeSummary(o: {
         casesPlanned: s.plan?.cases.length ?? 0,
         specWritten: s.specFile !== null,
         specFile: s.specFile,
-        passed: mine.filter((o) => o.passed).length,
-        failed: mine.filter((o) => !o.passed).length,
+        passed: mine.filter((o) => outcomeKind(o) === 'passed').length,
+        failed: mine.filter((o) => outcomeKind(o) === 'failed' || outcomeKind(o) === 'unexpected-pass').length,
+        skipped: skippedTests([s], mine).length,
+        knownIssues: mine.filter((o) => outcomeKind(o) === 'known-issue').length,
         failureReason: s.failureReason === null ? null : cleanError(oneLine(s.failureReason), secrets),
         skippedReason: s.skippedReason,
         // Where the probe response breaks the documented response schema; null without a schema, or
@@ -312,6 +322,10 @@ function writeSummary(o: {
       };
     }),
     findings,
+    // Tests that did not run, each with its reason code, and the known issues (failed as expected, with
+    // the Jira key in the reason). Listed in full, never hidden.
+    skippedTests: skippedTests(states, outcomes).map((x) => ({ ...x, reason: cleanError(x.reason, secrets) })),
+    knownIssues: outcomes.filter((o) => outcomeKind(o) === 'known-issue').map((o) => ({ endpointId: o.endpointId, testTitle: o.title, reason: cleanError(o.reason ?? '', secrets), actualStatus: o.actualStatus, error: o.error })),
     framework,
     // Why the standalone framework is missing when its export failed; the rest of the summary still holds.
     frameworkError: o.frameworkError ? cleanError(o.frameworkError, secrets) : null,
@@ -325,6 +339,25 @@ function writeSummary(o: {
   mkdirSync('out', { recursive: true });
   writeFileSync(SUMMARY_FILE, JSON.stringify(summary, null, 2) + '\n');
   return summary;
+}
+
+// Tests that did not run: blocked by the precondition check while running, or skipped / manual by the
+// sheet and the test data (the plan's coded placeholders).
+function skippedTests(states: EndpointState[], outcomes: TestOutcome[]): { endpointId: string; testTitle: string; reasonCode: string; reason: string; when: 'run' | 'plan' }[] {
+  const ids = new Set(states.map((s) => s.endpoint.id));
+  const run = outcomes.filter((o) => outcomeKind(o) === 'blocked' && ids.has(o.endpointId)).map((o) => ({ endpointId: o.endpointId, testTitle: o.title, reasonCode: o.reasonCode ?? 'DATA_NOT_ON_ENV', reason: o.reason ?? '', when: 'run' as const }));
+  const plan = states.flatMap((s) =>
+    (s.specFile ? (s.plan?.needsReview ?? []) : [])
+      .filter((n) => n.code && n.code !== 'SPEC_UNCLEAR')
+      .map((n) => ({ endpointId: s.endpoint.id, testTitle: n.title ?? n.caseId, reasonCode: n.code!, reason: n.reason, when: 'plan' as const })),
+  );
+  return [...run, ...plan];
+}
+
+function countBy(keys: string[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const k of keys) out[k] = (out[k] ?? 0) + 1;
+  return out;
 }
 
 function schemaIssuesFor(s: EndpointState): string[] | null {
@@ -343,6 +376,11 @@ function classify(type: string, actual: number | null): Finding['classification'
 
 function toFinding(o: TestOutcome, plan: Plan | undefined): Finding {
   const type = testTypeOf(o.title) ?? 'unknown';
+  // A known issue whose test passed: the bug may be fixed. Never an API finding, always needs review.
+  if (outcomeKind(o) === 'unexpected-pass') {
+    const planCase = plan?.cases.find((c) => c.title === o.title);
+    return { endpointId: o.endpointId, testTitle: o.title, type, expectedStatus: planCase?.expectedStatus ?? null, actualStatus: o.actualStatus, classification: 'needs review', error: o.error };
+  }
   const planCase = plan?.cases.find((c) => c.title === o.title) ?? plan?.cases.find((c) => c.type === type);
   return {
     endpointId: o.endpointId,
@@ -432,8 +470,21 @@ async function main() {
       throw new Error(`test case ${sheetIsLink ? 'link' : 'sheet'}: ${redactSecrets((err as Error).message, atlassianSecrets())}`);
     }
   } else if (flags.testCasesMode) throw new Error('--test-cases-mode needs a test case sheet (--test-cases <file or link> or testCases in the input)');
+  // The per-environment test data file: --test-data, else the input's testData (relative to the input).
+  // Its values fill the sheet's [NAME] placeholders; the test run reads it (TEST_DATA_FILE) for the
+  // Required data precondition check.
+  const testDataFile = flags.testData ?? (config.testData ? (isAbsolute(config.testData) ? config.testData : join(dirname(inputFile), config.testData)) : null);
+  const testData: TestData | null = testDataFile ? loadTestData(testDataFile) : null;
+  if (testDataFile) process.env.TEST_DATA_FILE = resolve(testDataFile);
+  else delete process.env.TEST_DATA_FILE;
+  if (testData) console.log(`test data: ${relativePaths(testDataFile!)}${testData.environment ? ` (${testData.environment})` : ''}: ${Object.keys(testData.values).length} value(s)${testData.lookup ? `, required data looked up with ${testData.lookup.endpointId}` : ''}`);
+  if (testData?.lookup && !config.endpoints.some((e) => e.id === testData.lookup!.endpointId && e.method === 'GET')) throw new Error(`test data file: lookup.endpointId "${testData.lookup.endpointId}" is not a GET endpoint in ${inputFile}`);
+  if (sheet) {
+    const prepared = prepareSheetCases(sheet.cases, testData);
+    sheet = { ...sheet, cases: prepared.cases, warnings: [...sheet.warnings, ...prepared.notes.map((message) => ({ row: null, caseId: null, message }))] };
+  }
   const sheetDisplay = sheetSource ? (sheetIsLink ? sheetSource : relativePaths(isAbsolute(sheetSource) ? sheetSource : relative('.', sheetSource)).split(sep).join('/')) : null;
-  const { mode, cp } = resolveScope(flags, config, fw, inputFile, sheet ? { sheet: sheet.hash, mode: sheetMode } : undefined);
+  const { mode, cp } = resolveScope(flags, config, fw, inputFile, sheet ? { sheet: sheet.hash, mode: sheetMode, ...(testData ? { testData: hashOf(testData) } : {}) } : undefined);
   let inScope = flags.endpoints ? config.endpoints.filter((e) => flags.endpoints!.includes(e.id)) : config.endpoints;
   const scope: Scope = { mode, endpoints: flags.endpoints, reused: { probes: 0, plans: 0, specs: 0 }, concurrency: flags.concurrency, testWorkers: flags.testWorkers };
 
@@ -652,8 +703,10 @@ async function main() {
     if (!run.allureReport) console.log(`allure report not generated: ${run.allureReason ?? 'unknown reason'}`);
   }
 
+  // Only real failures and unexpected passes are findings: a blocked test or a known issue that failed
+  // as expected is listed separately (summary.skippedTests, summary.knownIssues), never as passed.
   const findings = outcomes
-    .filter((o) => !o.passed)
+    .filter((o) => outcomeKind(o) === 'failed' || outcomeKind(o) === 'unexpected-pass')
     .map((o) => toFinding(o, states.find((s) => s.endpoint.id === o.endpointId)?.plan));
 
   // The prompt-level pass (agent/claude.ts) counts what the structured redaction did not already hide.
@@ -685,11 +738,12 @@ async function main() {
       ...traceTotals(traceRows),
       warnings: sheetRun.sheet.warnings.map((w) => `${w.row ? `row ${w.row}: ` : ''}${w.message}`),
       traceability: { csv: TRACE_CSV, xlsx: TRACE_XLSX },
-      cases: traceRows.filter((r) => r.source === 'sheet').map((r) => ({ id: r.id, title: r.title, endpoint: r.endpoint || null, testFile: r.testFile || null, status: r.status, reason: r.reason, coverage: r.coverage || null, asserted: r.asserted ?? 0, clauses: r.clauses ?? 0, jira: r.jira ?? null, confluence: r.confluence ?? null })),
+      cases: traceRows.filter((r) => r.source === 'sheet').map((r) => ({ id: r.id, title: r.title, endpoint: r.endpoint || null, testFile: r.testFile || null, status: r.status, reasonCode: r.reasonCode ?? null, reason: r.reason, coverage: r.coverage || null, asserted: r.asserted ?? 0, clauses: r.clauses ?? 0, jira: r.jira ?? null, confluence: r.confluence ?? null })),
     };
   }
   const summaryInput = { status, inputFile, config, startedAt, states, outcomes, findings, allureReport, secrets, safety, requestsSent, testFramework: fw.name, redactionReplaced, cleanup, scope, failOn: flags.failOn, testCases };
-  let exitCode = runExitCode({ status, findings: findings.length, untestedEndpoints: untested, exportFailed: false, failOn: flags.failOn });
+  const skippedCount = skippedTests(states, outcomes).length;
+  let exitCode = runExitCode({ status, findings: findings.length, untestedEndpoints: untested, exportFailed: false, failOn: flags.failOn, skipped: skippedCount });
   // The summary is written before the export, so a failed export never loses the run's results.
   let summary = writeSummary({ ...summaryInput, framework: null, exitCode });
 
@@ -707,12 +761,13 @@ async function main() {
         endpoints: states.map((s) => ({ ...s, failureReason: s.failureReason ?? s.skippedReason })),
         findings: findings.filter((f) => f.classification === 'suspected API finding'),
         extraFiles: sheetRun ? [{ path: 'traceability.csv', content: traceCsv(traceRows) }] : [],
+        testData,
       });
     } catch (err) {
       frameworkError = (err as Error).message;
       console.log(`framework export failed: ${cleanError(oneLine(frameworkError), secrets)}`);
     }
-    exitCode = runExitCode({ status, findings: findings.length, untestedEndpoints: untested, exportFailed: frameworkError !== null, failOn: flags.failOn });
+    exitCode = runExitCode({ status, findings: findings.length, untestedEndpoints: untested, exportFailed: frameworkError !== null, failOn: flags.failOn, skipped: skippedCount });
     summary = writeSummary({ ...summaryInput, framework, frameworkError, exitCode });
   }
   process.exitCode = exitCode;
@@ -734,7 +789,7 @@ async function main() {
   if (status === 'stopped-budget') console.log(BUDGET_HINT);
   console.log(`Framework: ${fw.name}`);
   console.log(`Scope: ${mode}${flags.endpoints ? `, endpoints ${flags.endpoints.join(', ')}` : ''}${scope.reused.probes ? `, reused ${scope.reused.probes} probes, ${scope.reused.plans} plans, ${scope.reused.specs} specs` : ''}`);
-  console.log(`Endpoints: ${t.endpoints}, specs written: ${written.length}, tests: ${t.testsGenerated}, passed: ${t.passed}, failed: ${t.failed}`);
+  console.log(`Endpoints: ${t.endpoints}, specs written: ${written.length}, tests: ${t.testsGenerated}, passed: ${t.passed}, failed: ${t.failed}, skipped: ${t.skipped}, known issues: ${t.knownIssues}`);
   console.log(`Claude calls: ${summary.claudeCalls.used}/${summary.claudeCalls.budget}, duration: ${summary.durationSec}s`);
   console.log(`Safety: ${safety.hostClass} host, ${safety.mode} mode, requests sent: ${requestsSent}`);
   console.log(`Redaction: ${summary.redaction.mode}, ${summary.redaction.replaced} value(s) replaced before Claude and in evidence`);
@@ -746,7 +801,15 @@ async function main() {
   for (const f of api) console.log(`  - ${f.testTitle}: expected ${f.expectedStatus}, got ${f.actualStatus}`);
   if (review.length) {
     console.log(`${review.length} need${review.length === 1 ? 's' : ''} review`);
-    for (const f of review) console.log(`  - ${f.testTitle}: expected ${f.expectedStatus}, got ${f.actualStatus ?? 'no status'}`);
+    for (const f of review) console.log(`  - ${f.testTitle}: ${/^UNEXPECTED PASS/.test(f.error) ? oneLine(f.error) : `expected ${f.expectedStatus}, got ${f.actualStatus ?? 'no status'}`}`);
+  }
+  if (summary.knownIssues.length) {
+    console.log(`${summary.knownIssues.length} known issue${summary.knownIssues.length === 1 ? '' : 's'} (failed as expected, not counted as passed)`);
+    for (const k of summary.knownIssues) console.log(`  - ${k.testTitle}: ${oneLine(k.reason)}`);
+  }
+  if (summary.skippedTests.length) {
+    console.log(`${summary.skippedTests.length} skipped (did not run, not counted as passed${flags.failOn === 'skipped' ? '; --fail-on skipped' : ''})`);
+    for (const k of summary.skippedTests) console.log(`  - ${k.testTitle}: ${oneLine(k.reason)}`);
   }
   if (testCases) {
     console.log(testCasesLine(testCases));
@@ -764,6 +827,12 @@ function coverageLabels(states: EndpointState[]): Record<string, { name: string;
   const out: Record<string, { name: string; value: string }[]> = {};
   for (const s of states) {
     for (const c of s.plan?.cases ?? []) {
+      // A known issue: tagged with its Jira key, so the Allure report shows it is expected to fail.
+      if (c.knownIssue) {
+        const key = /\b[A-Z][A-Z0-9]+-\d+\b/.exec(c.knownIssue)?.[0];
+        out[c.title] = [{ name: 'tag', value: 'known issue' }, ...(key ? [{ name: 'issue', value: key }] : [])];
+        continue;
+      }
       const { missing, disagrees } = coverageGaps(c);
       if (!missing.length && !disagrees.length) continue;
       const status = disagrees.length ? 'needs review' : 'partially covered';
@@ -780,7 +849,17 @@ function coverageLabels(states: EndpointState[]): Record<string, { name: string;
 function testCasesLine(t: Record<string, unknown>): string {
   const cov = t.assertionCoverage as { asserted: number; clauses: number; percent: number | null } | undefined;
   const covText = cov && cov.percent !== null ? `; assertion coverage ${cov.percent}% (${cov.asserted} of ${cov.clauses} expected-result clauses asserted)` : '';
-  return `Test cases: ${t.rows} in the sheet: ${t.passed} passed, ${t.partiallyCovered ?? 0} partially covered, ${t.failed} failed, ${t.needsReview} need review, ${t.notAutomated} not automated; ${t.agentSuggestions} agent suggestion(s)${covText}; traceability in ${TRACE_CSV} and ${TRACE_XLSX}`;
+  const extra = [
+    [t.skipped, 'skipped'],
+    [t.manual, 'manual'],
+    [t.blocked, 'blocked'],
+    [t.knownIssues, 'known issue(s)'],
+    [t.unexpectedPasses, 'unexpected pass(es)'],
+  ]
+    .filter(([n]) => Number(n) > 0)
+    .map(([n, label]) => `, ${n} ${label}`)
+    .join('');
+  return `Test cases: ${t.rows} in the sheet: ${t.passed} passed, ${t.partiallyCovered ?? 0} partially covered, ${t.failed} failed, ${t.needsReview} need review, ${t.notAutomated} not automated${extra}; ${t.agentSuggestions} agent suggestion(s)${covText}; traceability in ${TRACE_CSV} and ${TRACE_XLSX}`;
 }
 
 main().catch((err) => {

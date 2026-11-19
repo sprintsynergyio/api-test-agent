@@ -1,0 +1,9 @@
+{
+  "environment": "local",
+  "values": {
+    "CATEGORY": "tops"
+  },
+  "lookup": {
+    "endpointId": "list-products"
+  }
+}
