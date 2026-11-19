@@ -39,7 +39,7 @@ const RUNS = [
 // [label, window width, browser zoom]. Browser zoom is emulated the way the browser does it: the page sees a
 // viewport of width / zoom CSS pixels drawn at zoom device pixels per CSS pixel.
 const CASES = [
-  ["1920", 1920, 1], ["1440", 1440, 1], ["1280", 1280, 1], ["1101", 1101, 1], ["1100", 1100, 1], ["1024", 1024, 1],
+  ["1920", 1920, 1], ["1536", 1536, 1], ["1440", 1440, 1], ["1366", 1366, 1], ["1280", 1280, 1], ["1101", 1101, 1], ["1100", 1100, 1], ["1024", 1024, 1],
   ["900", 900, 1], ["768", 768, 1], ["390", 390, 1], ["1280-zoom125", 1280, 1.25], ["1280-zoom150", 1280, 1.5],
 ];
 
@@ -148,7 +148,8 @@ function layoutProblems() {
 
 // Runs in the page. Returns text that does not fit its control, as strings: a placeholder or a selected
 // value cut off inside its input or select, an option wider than its select (the native dropdown would
-// spill out of the column), and labels, tabs and segmented buttons whose text is clipped or ellipsed.
+// spill out of the column), labels, tabs and segmented buttons whose text is clipped or ellipsed, and help
+// text or labels cut off at the bottom.
 function truncationProblems() {
   const problems = [];
   const canvas = document.createElement("canvas");
@@ -193,6 +194,27 @@ function truncationProblems() {
   for (const el of document.querySelectorAll(".seg button, .tab, label.lbl, .radio-card .t, .radio-card .d, .check, .btn, .pill, .tag")) {
     if (!visible(el)) continue;
     if (el.scrollWidth > el.clientWidth + 1) problems.push(`${label(el)}: "${el.textContent.trim().slice(0, 60)}" is clipped (${el.scrollWidth}px in ${el.clientWidth}px)`);
+  }
+  // Vertical clipping: help text, descriptions and labels must show every line. A text box that clips
+  // (overflow hidden or clip, or a line clamp) must not have more text than it shows, and no ancestor up
+  // to the card may clip it. Boxes that scroll (log, tables, code) are skipped: their content scrolls.
+  for (const el of document.querySelectorAll(".hint, .help, .desc, .legend, label, .radio-card .t, .radio-card .d, .empty-state .sub, .empty-state .ttl, .step .t, .step .s, .card-h h2, .card-meta, p")) {
+    if (!visible(el)) continue;
+    const cs = getComputedStyle(el);
+    const clamp = cs.webkitLineClamp || cs.getPropertyValue("line-clamp");
+    if (clamp && clamp !== "none") problems.push(`${label(el)}: "${el.textContent.trim().slice(0, 60)}" uses a line clamp (${clamp})`);
+    if (/hidden|clip/.test(cs.overflowY) && el.scrollHeight > el.clientHeight + 1) problems.push(`${label(el)}: "${el.textContent.trim().slice(0, 60)}" is cut off at the bottom (${el.scrollHeight}px in ${el.clientHeight}px)`);
+    const b = el.getBoundingClientRect();
+    for (let a = el.parentElement; a && a !== document.body; a = a.parentElement) {
+      const oy = getComputedStyle(a).overflowY;
+      if (oy === "auto" || oy === "scroll") break;
+      if (oy === "hidden" || oy === "clip") {
+        const ab = a.getBoundingClientRect();
+        if (b.bottom > ab.bottom + 1 || b.top < ab.top - 1) problems.push(`${label(el)}: "${el.textContent.trim().slice(0, 60)}" is clipped by ${label(a)} (text ${Math.round(b.top)}..${Math.round(b.bottom)}, box ${Math.round(ab.top)}..${Math.round(ab.bottom)})`);
+        break;
+      }
+      if (a.classList.contains("card")) break;
+    }
   }
   for (const el of document.querySelectorAll(".seg button")) {
     if (!visible(el)) continue;
