@@ -22,7 +22,7 @@ const MAX_XLSX_ENTRIES = 2000;
 const MAX_ID_CHARS = 40;
 const MAX_TITLE_CHARS = 150;
 
-export type CaseField = 'id' | 'title' | 'steps' | 'expected' | 'endpoint' | 'method' | 'priority' | 'preconditions' | 'testData' | 'jira' | 'confluence' | 'knownIssue' | 'requiredData' | 'automation';
+export type CaseField = 'id' | 'title' | 'steps' | 'expected' | 'endpoint' | 'method' | 'priority' | 'preconditions' | 'testData' | 'jira' | 'confluence' | 'knownIssue' | 'requiredData' | 'automation' | 'documented5xx';
 
 // Header aliases, compared after lowercasing and turning every non-letter, non-digit run into one space.
 // Common Jira, Xray, Zephyr Scale, TestRail and Confluence export names are included.
@@ -49,6 +49,9 @@ const ALIASES: Record<CaseField, string[]> = {
   requiredData: ['required data', 'required files', 'required test data', 'data required', 'files required', 'needs data', 'data dependencies', 'data dependency', 'depends on data'],
   // "Manual" (or "Manual - visual check"): never automated, listed as manual with its reason code.
   automation: ['automation', 'automation status', 'automation type', 'automatable', 'automated', 'execution type', 'manual or automated'],
+  // The team's contract really answers with a 5xx here ("yes", or where it is documented). Only then may
+  // a test expect a 5xx; it is reported as "accepted 5xx", never hidden. Also the tag @documented-5xx.
+  documented5xx: ['documented 5xx', 'accepted 5xx', 'expected 5xx', 'documented server error', 'contract 5xx', '5xx documented', '5xx by design'],
 };
 // Looser rules for exports that wrap names, e.g. "Custom field (Expected Result)".
 const CONTAINS: [CaseField, RegExp][] = [
@@ -73,7 +76,10 @@ export const FIELD_LABELS: Record<CaseField, string> = {
   knownIssue: 'Known issue',
   requiredData: 'Required data',
   automation: 'Automation',
+  documented5xx: 'Documented 5xx',
 };
+
+export const DOCUMENTED_5XX_TAG = /@documented-5xx\b/i;
 
 export type SheetCase = {
   id: string;
@@ -95,6 +101,12 @@ export type SheetCase = {
   knownIssue?: string;
   requiredData?: string;
   automation?: string;
+  // A documented 5xx (the Documented 5xx column says yes or names where, or the tag @documented-5xx in
+  // the title, steps or expected result): the text of that cell or "tag @documented-5xx".
+  documented5xx?: string;
+  // Set by the matching (agent/cli.ts), never read from the sheet: the concrete values this case's own
+  // request puts in the endpoint's path placeholders ("GET /products/42" gives { id: "42" }).
+  pathValues?: Record<string, string>;
   // Set by prepareSheetCases, never read from the sheet: a case that will not run, with its reason code
   // (missing test data, manual). The agent writes its placeholder; the model never plans it.
   declaredSkip?: { code: 'MISSING_TEST_DATA' | 'MANUAL' | 'MANUAL_VISUAL'; reason: string };
@@ -412,6 +424,9 @@ export function casesFromRows(rows: string[][], format: ParsedSheet['format']): 
     if (requiredData) c.requiredData = requiredData;
     const automation = get('automation');
     if (automation) c.automation = automation;
+    const documented = get('documented5xx');
+    if (documented && !/^(no|n|false|0|-|none|n\/a)$/i.test(documented.trim())) c.documented5xx = documented.replace(/\s+/g, ' ');
+    else if (DOCUMENTED_5XX_TAG.test(`${c.title}\n${c.steps}\n${c.expected}`)) c.documented5xx = 'tag @documented-5xx';
     if (!title) warnings.push({ row: rowNo, caseId: id, message: 'no title, using the first line of the steps' });
     if (!c.steps && !c.expected) warnings.push({ row: rowNo, caseId: id, message: 'no steps and no expected result: it will be marked needs review' });
     cases.push(c);
@@ -464,7 +479,29 @@ export async function loadSheetFile(file: string): Promise<ParsedSheet> {
 // segment; {id}, :id and {{id}} are placeholders, and a number or UUID matches a placeholder.
 
 export type EndpointRef = { id: string; method: string; path: string };
-export type MatchResult = { endpointId: string | null; by: 'column' | 'steps' | 'ai' | null; reason: string };
+export type MatchResult = { endpointId: string | null; by: 'column' | 'steps' | 'ai' | null; reason: string; pathValues?: Record<string, string> };
+
+// The concrete values a literal request path puts in an endpoint's placeholders: "/products/42" against
+// "/products/{id}" gives { id: "42" }. A placeholder token in the request ("{id}", ":id") gives nothing.
+export function pathValuesFor(literal: string, endpointPath: string): Record<string, string> | undefined {
+  const a = pathSegments(literal);
+  const b = pathSegments(endpointPath);
+  if (a.length !== b.length) return undefined;
+  const out: Record<string, string> = {};
+  b.forEach((want, i) => {
+    const name = /^\{([^}]+)\}$/.exec(want)?.[1];
+    if (name && !PLACEHOLDER.test(a[i])) out[name] = safeDecodeSegment(a[i]);
+  });
+  return Object.keys(out).length ? out : undefined;
+}
+
+function safeDecodeSegment(seg: string): string {
+  try {
+    return decodeURIComponent(seg);
+  } catch {
+    return seg;
+  }
+}
 
 function pathSegments(p: string): string[] {
   let path = p.trim();
@@ -502,6 +539,11 @@ function bestPathMatch(method: string, path: string, endpoints: EndpointRef[]): 
 
 const REQUEST_LINE = /\b(GET|POST|PUT|PATCH|DELETE)\s+((?:https?:\/\/[^\s/]+)?\/[^\s"'`,;)]*)/i;
 
+function withValues(m: MatchResult, literal: string, e: EndpointRef): MatchResult {
+  const values = pathValuesFor(literal, e.path);
+  return values ? { ...m, pathValues: values } : m;
+}
+
 export function matchExplicit(c: SheetCase, endpoints: EndpointRef[]): MatchResult {
   const ref = c.endpoint.trim();
   const method = /^(GET|POST|PUT|PATCH|DELETE)$/.test(c.method) ? c.method : '';
@@ -513,7 +555,7 @@ export function matchExplicit(c: SheetCase, endpoints: EndpointRef[]): MatchResu
     const p = line ? line[2] : ref;
     if (/^(https?:\/\/|\/)/i.test(p)) {
       const hits = bestPathMatch(m, p, endpoints);
-      if (hits.length === 1) return { endpointId: hits[0].id, by: 'column', reason: `Endpoint column "${ref}"` };
+      if (hits.length === 1) return withValues({ endpointId: hits[0].id, by: 'column', reason: `Endpoint column "${ref}"` }, p, hits[0]);
       if (hits.length > 1) return { endpointId: null, by: null, reason: `Endpoint column "${ref}" fits ${hits.map((h) => h.id).join(', ')}; add a Method column or use the endpoint id` };
     }
     return { endpointId: null, by: null, reason: `unknown endpoint "${ref}" (not an endpoint id, method and path of this API)` };
@@ -522,7 +564,7 @@ export function matchExplicit(c: SheetCase, endpoints: EndpointRef[]): MatchResu
   if (inSteps) inSteps[2] = inSteps[2].replace(/[.:]+$/, '');
   if (inSteps) {
     const hits = bestPathMatch(inSteps[1].toUpperCase(), inSteps[2], endpoints);
-    if (hits.length === 1) return { endpointId: hits[0].id, by: 'steps', reason: `request line "${inSteps[1].toUpperCase()} ${inSteps[2]}" in the steps` };
+    if (hits.length === 1) return withValues({ endpointId: hits[0].id, by: 'steps', reason: `request line "${inSteps[1].toUpperCase()} ${inSteps[2]}" in the steps` }, inSteps[2], hits[0]);
     if (!hits.length) return { endpointId: null, by: null, reason: `the request in the steps (${inSteps[1].toUpperCase()} ${inSteps[2]}) is not an endpoint of this API` };
   }
   return { endpointId: null, by: null, reason: 'no Endpoint column value and no "METHOD /path" in the steps' };

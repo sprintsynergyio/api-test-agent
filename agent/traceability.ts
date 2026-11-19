@@ -16,7 +16,7 @@ import { crc32 } from './zip';
 //   "known issue"     a Known issue (Jira key) from the sheet whose test failed as expected (KNOWN_ISSUE)
 //   "unexpected pass" a known issue whose test passed: the bug may be fixed; check it (KNOWN_ISSUE)
 // None of them is ever counted as passed. needs review carries SPEC_UNCLEAR when the AI gave that code.
-export type TraceStatus = 'passed' | 'partially covered' | 'failed' | 'needs review' | 'not automated' | 'skipped' | 'manual' | 'blocked' | 'known issue' | 'unexpected pass';
+export type TraceStatus = 'passed' | 'partially covered' | 'failed' | 'needs review' | 'not automated' | 'skipped' | 'manual' | 'blocked' | 'known issue' | 'unexpected pass' | 'accepted 5xx';
 // testFile is blank when no runnable test automates the row (needs review, dropped by the gate, not
 // automated). coverage: how many clauses of the case's expected result a test assertion checks
 // ("3/5 (60%)"; blank when the case has no test or no expected result). reason is never shortened.
@@ -164,6 +164,7 @@ export type TraceTotals = {
   blocked: number;
   knownIssues: number;
   unexpectedPasses: number;
+  accepted5xx: number;
   agentSuggestions: number;
   assertionCoverage: AssertionCoverage;
 };
@@ -178,7 +179,7 @@ export function traceTotals(rows: TraceRow[]): TraceTotals {
   const clauses = sheet.reduce((n, r) => n + (r.clauses ?? 0), 0);
   return {
     rows: sheet.length,
-    automated: sheet.filter((r) => ['passed', 'partially covered', 'failed', 'blocked', 'known issue', 'unexpected pass'].includes(r.status)).length,
+    automated: sheet.filter((r) => ['passed', 'partially covered', 'failed', 'blocked', 'known issue', 'unexpected pass', 'accepted 5xx'].includes(r.status)).length,
     passed: sheet.filter((r) => r.status === 'passed').length,
     partiallyCovered: sheet.filter((r) => r.status === 'partially covered').length,
     failed: sheet.filter((r) => r.status === 'failed').length,
@@ -189,6 +190,7 @@ export function traceTotals(rows: TraceRow[]): TraceTotals {
     blocked: sheet.filter((r) => r.status === 'blocked').length,
     knownIssues: sheet.filter((r) => r.status === 'known issue').length,
     unexpectedPasses: sheet.filter((r) => r.status === 'unexpected pass').length,
+    accepted5xx: sheet.filter((r) => r.status === 'accepted 5xx').length,
     agentSuggestions: rows.filter((r) => r.source === 'agent').length,
     assertionCoverage: { asserted, clauses, percent: percentOf(asserted, clauses) },
   };
@@ -197,7 +199,7 @@ export function traceTotals(rows: TraceRow[]): TraceTotals {
 // ---------- Building the rows ----------
 
 export type ClauseLike = { n: number; text: string; status: 'asserted' | 'not-asserted' | 'probe-disagrees'; reason?: string; expected?: string; actual?: string };
-type PlanCaseLike = { title: string; caseId?: string; source?: 'sheet' | 'agent'; expectedStatus: string; statusCodes?: number[]; clauses?: ClauseLike[] };
+type PlanCaseLike = { title: string; caseId?: string; source?: 'sheet' | 'agent'; expectedStatus: string; statusCodes?: number[]; clauses?: ClauseLike[]; accepted5xx?: boolean; probeNote?: string };
 type PlanLike = { cases: PlanCaseLike[]; needsReview?: { caseId: string; reason: string; code?: string }[]; notAutomated?: { caseId?: string; title: string; reason: string }[] };
 // caseReasons: when the whole spec was rejected, the gate's reasons for each planned test by title.
 export type TraceEndpoint = { endpointId: string; specFile: string | null; plan?: PlanLike; failureReason: string | null; skippedReason: string | null; caseReasons?: Record<string, string[]> };
@@ -240,7 +242,7 @@ export function caseCoverage(expected: string | undefined, pc?: { clauses?: Clau
   return { asserted, clauses: total, coverage: hasTest ? `${asserted}/${total} (${percentOf(asserted, total)}%)` : '' };
 }
 
-export type TraceCase = { id: string; title: string; expected?: string; jira?: string; confluence?: string };
+export type TraceCase = { id: string; title: string; expected?: string; jira?: string; confluence?: string; documented5xx?: string };
 export type TraceMatch = { endpointId: string | null; by: string | null; reason: string };
 export type TraceOutcome = { endpointId: string; title: string; passed: boolean; actualStatus: number | null; error: string; kind?: 'passed' | 'failed' | 'blocked' | 'known-issue' | 'unexpected-pass'; reasonCode?: string; reason?: string };
 export type TraceFinding = { endpointId: string; testTitle: string; classification: string; expectedStatus: string | null; actualStatus: number | null };
@@ -331,11 +333,15 @@ export function buildTraceRows(o: {
     }
     if (outcome.passed) {
       const cover = passedStatus(pc);
+      if (pc.accepted5xx && cover.status === 'passed') {
+        rows.push({ ...tested, status: 'accepted 5xx', reason: flat([`documented 5xx: the API answered ${outcome.actualStatus ?? pc.expectedStatus} as the sheet documents (${c.documented5xx ?? 'documented'})`, via].filter(Boolean).join('; ')) });
+        continue;
+      }
       rows.push({ ...tested, status: cover.status, reason: flat([cover.reason, via].filter(Boolean).join('; ')) });
     } else {
       const f = o.findings.find((x) => x.endpointId === e.endpointId && x.testTitle === pc.title);
       const { missing } = coverageGaps(pc);
-      rows.push({ ...tested, status: 'failed', reason: flat([failReason(outcome, f, pc.statusCodes?.length ? pc.statusCodes.join('|') : pc.expectedStatus), missing.length ? `not asserted: ${missingText(missing)}` : '', via].filter(Boolean).join('; ')) });
+      rows.push({ ...tested, status: 'failed', reason: flat([failReason(outcome, f, pc.statusCodes?.length ? pc.statusCodes.join('|') : pc.expectedStatus), missing.length ? `not asserted: ${missingText(missing)}` : '', pc.probeNote ? `probe warning before the run: ${pc.probeNote}` : '', via].filter(Boolean).join('; ')) });
     }
   }
   // Agent suggestions (sheet-plus-agent): listed after the sheet so the team can adopt them.

@@ -32,9 +32,11 @@ export function buildPrompt(fw: FrameworkAdapter, endpoint: Endpoint, plan: Plan
   const { responseSchema: _documented, ...shown } = promptEndpoint(endpoint);
   const steps = setupSteps(endpoint);
   const params = pathParams(endpoint.path);
+  const fixed = Object.keys(endpoint.pathParams ?? {}).filter((p) => !steps.some((s) => s.param === p));
+  const fillers = [...steps.map((s) => `${s.endpointId} fills {${s.param}}`), ...fixed.map((p) => `{${p}} has the fixed value ${JSON.stringify(endpoint.pathParams![p])}`)];
   const setupLine =
-    steps.length > 1 || params.length > 1
-      ? `- This endpoint's path has ${params.length} placeholders (${params.map((p) => `{${p}}`).join(', ')}) filled by setup (${steps.map((s) => `${s.endpointId} fills {${s.param}}`).join('; ')}). Each test that needs an existing resource calls \`const p = await ctx.setup();\` and builds the path as \`${endpoint.path.replace(/\{([^}]+)\}/g, '${p.$1}')}\`. Do not call ctx.createResource for these placeholders.`
+    steps.length > 1 || params.length > 1 || fixed.length
+      ? `- This endpoint's path has ${params.length} placeholder${params.length === 1 ? '' : 's'} (${params.map((p) => `{${p}}`).join(', ')}) filled by setup (${fillers.join('; ')}). Each test that needs an existing resource calls \`const p = await ctx.setup();\` and builds the path as \`${endpoint.path.replace(/\{([^}]+)\}/g, '${p.$1}')}\`. Do not call ctx.createResource for these placeholders.`
       : steps.length === 1
         ? `- This endpoint has setup. Each test that needs an existing resource gets one with \`const id = await ctx.createResource('${steps[0].endpointId}');\` (returns the id as a string) and puts it in the path.`
         : '- This endpoint has no setup. Do not call ctx.createResource unless a test needs a resource.';
@@ -92,7 +94,9 @@ RULES:
 ${setupLine}${queryLine ? `\n${queryLine}` : ''}${headersLine ? `\n${headersLine}` : ''}
 - Paths are relative, for example \`${params.length > 1 ? endpoint.path.replace(/\{([^}]+)\}/g, '${p.$1}') : endpoint.path.replace(/\{[^}]+\}/, '${id}')}\`. The base URL comes from ctx.api. Never write http:// or https://.
 - Use ctx.api for normal requests and ctx.noAuthApi for auth cases (the same valid request without the auth header).
-- Never expect a 5xx. Assert status codes, field presence and field types. Every [happy] and [schema] test must assert at least one field value or type of the response body${probeHasBody(probe) && ![204, 205, 304].includes(probe.status ?? 0) ? '' : ' (this endpoint answered without a body, so here the status is enough)'}. Assert exact values only for values the test itself sent.
+- Never expect a 5xx, except a plan case with "accepted5xx": true: the team documented that 5xx, so that one test asserts exactly expect(response.status()).toBe(<its expectedStatus>) and nothing else about the status.
+- Every [happy] and [schema] test asserts exactly its plan case's "expectedStatus" (the team's sheet decides it; it may differ from the probe status, and then the probe does not show that response's body: assert only what the case's expected result says).
+- A plan case with "pathValues" sends its own values in the path placeholders (for example { "id": "42" } means the path uses 42), instead of creating a resource or calling ctx.setup() for those placeholders. Assert status codes, field presence and field types. Every [happy] and [schema] test must assert at least one field value or type of the response body${probeHasBody(probe) && ![204, 205, 304].includes(probe.status ?? 0) ? '' : ' (this endpoint answered without a body, so here the status is enough)'}. Assert exact values only for values the test itself sent.
 - Tests run against a shared live API while other tests create, update and delete data. Never assert a list length or item count, never compare the results of two calls, and never assume a list is unchanged or contains (or lacks) a specific item you did not create in the same test${opts.stability?.stable ? ' (except in the plan cases marked "crossCall": true, see below)' : ''}. For lists, assert the array type and the shape of its items only.
 ${fw.generatorRules(endpoint, plan, probe).map((r) => `- ${r}`).join('\n')}${binaryLines}${crossCallLine}${sheetRules}
 
@@ -161,6 +165,21 @@ function emptySpecHeader(fw: FrameworkAdapter): string {
   return fw.name === 'pactum' ? `import { expect } from '../tests-pactum/setup/ctx';\n\nvoid expect;\n` : `import { test } from '../tests/fixtures/ctx';\n`;
 }
 
+// The sheet decides the expected status (agent/plan.ts sheetStatusDecision): [happy] / [schema] cases
+// whose status is not the probe's, and documented 5xx cases, get their own status rule in the gate.
+export function sheetStatusGate(plan: Plan, probe: ProbeResult): Pick<ValidateOptions, 'expectedStatuses' | 'accepted5xx' | 'bodyOptional'> {
+  const exact = plan.cases.filter((c) => (c.type === 'happy' || c.type === 'schema') && /^\d{3}$/.test(c.expectedStatus));
+  const own = exact.filter((c) => Number(c.expectedStatus) !== probe.status || !probe.usable);
+  const expectedStatuses = Object.fromEntries(own.filter((c) => !c.accepted5xx).map((c) => [c.title, Number(c.expectedStatus)]));
+  const accepted5xx = Object.fromEntries(exact.filter((c) => c.accepted5xx && Number(c.expectedStatus) >= 500).map((c) => [c.title, Number(c.expectedStatus)]));
+  const bodyOptional = own.map((c) => c.title);
+  return {
+    ...(Object.keys(expectedStatuses).length ? { expectedStatuses } : {}),
+    ...(Object.keys(accepted5xx).length ? { accepted5xx } : {}),
+    ...(bodyOptional.length ? { bodyOptional } : {}),
+  };
+}
+
 export async function generateEndpoint(fw: FrameworkAdapter, endpoint: Endpoint, plan: Plan, probe: ProbeResult, genOpts: GenerateOptions = {}): Promise<GenerateResult> {
   mkdirSync(CANDIDATE_DIR, { recursive: true });
   const candidate = join(CANDIDATE_DIR, `${endpoint.id}.spec.ts`);
@@ -182,6 +201,7 @@ export async function generateEndpoint(fw: FrameworkAdapter, endpoint: Endpoint,
     requiredTitles: plan.cases.some((c) => c.source) ? plan.cases.map((c) => c.title) : undefined,
     contentTypes: contentTypesOf(plan),
     probeContentType: probeContentType(probe),
+    ...sheetStatusGate(plan, probe),
   };
 
   let reasons: string[] = [];

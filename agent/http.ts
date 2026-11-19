@@ -607,5 +607,7 @@ export async function runSetup(
     if (step.param! in params) continue;
     params[step.param!] = await createResource(config, clients, step.endpointId, step.idField, params);
   }
+  // Placeholders no setup step fills take the endpoint's fixed values (route grouping).
+  for (const [name, value] of Object.entries(endpoint.pathParams ?? {})) if (!(name in params)) params[name] = value;
   return params;
 }

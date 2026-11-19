@@ -26,6 +26,10 @@ const EndpointSchema = z.object({
   query: z.record(z.string(), QueryValue).optional(),
   headers: z.record(z.string(), z.string()).optional(),
   setup: z.union([SetupSchema, z.array(SetupSchema).min(1)]).optional(),
+  // Values for path placeholders that no setup step fills, e.g. { "brand": "fabletics" } for
+  // /asset/{brand}/badge. The importers write the first literal value when they group several literal
+  // paths into one route; sheet cases may use their own values (agent/test-cases.ts pathValues).
+  pathParams: z.record(z.string(), z.string().min(1)).optional(),
   // The documented success response (the OpenAPI importer fills it in): agent/response-schema.ts.
   responseSchema: ResponseSchemaZ.optional(),
   // The documented client error statuses (4xx other than 401 and 403), from the OpenAPI spec's
@@ -194,6 +198,12 @@ export function configProblems(config: Omit<Config, 'baseUrl' | 'selection'> & {
     }
   });
   problems.push(...authProblems(config.auth));
+  config.endpoints.forEach((ep, i) => {
+    const params = pathParams(ep.path);
+    for (const name of Object.keys(ep.pathParams ?? {})) {
+      if (!params.includes(name)) problems.push(`field "endpoints[${i}].pathParams.${name}" is not a placeholder of ${ep.path}`);
+    }
+  });
   config.endpoints.forEach((ep, i) => {
     if (!ep.setup) return;
     const params = pathParams(ep.path);

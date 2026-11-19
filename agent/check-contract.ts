@@ -113,7 +113,7 @@ if (isObj(s.testCases)) {
   for (const c of cases) {
     if (!isObj(c)) continue;
     field('summary.testCases.cases[]', c, 'id', ['string']);
-    field('summary.testCases.cases[]', c, 'status', ['string'], ['passed', 'partially covered', 'failed', 'needs review', 'not automated', 'skipped', 'manual', 'blocked', 'known issue', 'unexpected pass']);
+    field('summary.testCases.cases[]', c, 'status', ['string'], ['passed', 'partially covered', 'failed', 'needs review', 'not automated', 'skipped', 'manual', 'blocked', 'known issue', 'unexpected pass', 'accepted 5xx']);
     need(c.reasonCode === undefined || c.reasonCode === null || (typeof c.reasonCode === 'string' && (REASON_CODES as readonly string[]).includes(c.reasonCode)), `summary.testCases.cases[].reasonCode must be null or one of ${REASON_CODES.join(', ')}`);
     // A case that did not pass or fail always says why with a code.
     if (['skipped', 'manual', 'blocked', 'known issue', 'unexpected pass'].includes(String(c.status))) need(typeof c.reasonCode === 'string', `summary.testCases.cases[] ${String(c.id)} is ${String(c.status)} without a reasonCode`);
@@ -123,7 +123,7 @@ if (isObj(s.testCases)) {
   need(by('passed') === tc.passed && by('failed') === tc.failed && by('needs review') === tc.needsReview && by('not automated') === tc.notAutomated, 'summary.testCases counts must match the case statuses');
   // partiallyCovered (added later): a test that passed without asserting every clause; never counted as passed.
   // skipped, manual, blocked, knownIssues, unexpectedPasses (added later): never counted as passed.
-  for (const [k, st] of [['skipped', 'skipped'], ['manual', 'manual'], ['blocked', 'blocked'], ['knownIssues', 'known issue'], ['unexpectedPasses', 'unexpected pass']] as const) {
+  for (const [k, st] of [['skipped', 'skipped'], ['manual', 'manual'], ['blocked', 'blocked'], ['knownIssues', 'known issue'], ['unexpectedPasses', 'unexpected pass'], ['accepted5xx', 'accepted 5xx']] as const) {
     need(tc[k] === undefined ? by(st) === 0 : isInt(tc[k]) && by(st) === tc[k], `summary.testCases.${k} must match the "${st}" cases`);
   }
   need(tc.partiallyCovered === undefined ? by('partially covered') === 0 : isInt(tc.partiallyCovered) && by('partially covered') === tc.partiallyCovered, 'summary.testCases.partiallyCovered must match the "partially covered" cases');
@@ -145,6 +145,18 @@ if (isObj(s.testCases)) {
 }
 
 need(isObj(s.totals), 'summary.totals is missing');
+// Section 17 (added later): documented 5xx tests that passed, per-case probes, early warnings.
+need(s.accepted5xx === undefined || (Array.isArray(s.accepted5xx) && s.accepted5xx.every((a) => isObj(a) && typeof a.endpointId === 'string' && typeof a.testTitle === 'string')), 'summary.accepted5xx must be a list of { endpointId, testTitle, status }');
+need(totals.accepted5xx === undefined || (isInt(totals.accepted5xx) && totals.accepted5xx === (Array.isArray(s.accepted5xx) ? s.accepted5xx.length : 0) && (totals.accepted5xx as number) <= (totals.passed as number)), 'summary.totals.accepted5xx must count summary.accepted5xx (they are included in passed)');
+need(s.probeWarnings === undefined || (Array.isArray(s.probeWarnings) && s.probeWarnings.every((w) => isObj(w) && typeof w.endpointId === 'string' && typeof w.message === 'string')), 'summary.probeWarnings must be a list of { endpointId, caseId, testTitle, message }');
+if (s.caseProbes !== undefined && s.caseProbes !== null) {
+  const cp = s.caseProbes;
+  need(isObj(cp) && isInt(cp.cap) && isInt(cp.sent) && Array.isArray(cp.results) && Array.isArray(cp.notProbed), 'summary.caseProbes must be null or { cap, sent, results, notProbed }');
+  if (isObj(cp) && Array.isArray(cp.results)) {
+    need((cp.sent as number) <= (cp.cap as number) && cp.results.length === cp.sent, 'summary.caseProbes: sent must equal the results and stay within the cap');
+    need(cp.results.every((r) => isObj(r) && /^GET /.test(String(r.request))), 'summary.caseProbes: a case probe is always a GET');
+  }
+}
 for (const k of ['endpoints', 'testsGenerated', 'passed', 'failed']) need(isInt(totals[k]), `summary.totals.${k} is not a count`);
 
 // Safety (section 7)

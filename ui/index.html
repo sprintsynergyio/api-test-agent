@@ -1540,6 +1540,12 @@
     const listRow = (code, cls, title, why) => `<div class="row"><span class="tag ${cls} code-tag">${esc(code)}</span><div><div>${esc(title)}</div><div class="why">${esc(why)}</div></div></div>`;
     if (known.length) html += `<div class="notrun" id="knownList"><h3>Known issues (${known.length}): failed as expected, not counted as passed</h3>${known.map((k) => listRow("KNOWN_ISSUE", "known", k.testTitle, k.reason)).join("")}</div>`;
     if (notRun.length) html += `<div class="notrun" id="skippedList"><h3>Did not run (${notRun.length}): not counted as passed</h3>${notRun.map((k) => listRow(k.reasonCode, "warn", k.testTitle, k.reason)).join("")}</div>`;
+    // Documented 5xx answers that passed, and early warnings from the probes (the sheet decides the
+    // expected status; the tests show who is right).
+    const accepted = Array.isArray(s.accepted5xx) ? s.accepted5xx : [];
+    const warned = Array.isArray(s.probeWarnings) ? s.probeWarnings : [];
+    if (accepted.length) html += `<div class="notrun" id="acceptedList"><h3>Accepted 5xx (${accepted.length}): documented by the team, passed</h3>${accepted.map((a) => listRow(String(a.status ?? "5xx"), "known", a.testTitle, "The sheet documents this server error")).join("")}</div>`;
+    if (warned.length) html += `<div class="notrun" id="probeWarnList"><h3>Probe warnings (${warned.length}): the API answered differently from the sheet before the run</h3>${warned.map((w) => listRow("PROBE", "warn", w.testTitle || w.endpointId, w.message)).join("")}</div>`;
     $("findings").innerHTML = html;
     $("findings").querySelectorAll(".finding").forEach((el) => {
       const f = all[+el.dataset.f].f;
@@ -1862,9 +1868,9 @@
     const cov = t.assertionCoverage;
     const covTile = cov && cov.percent !== null && cov.percent !== undefined ? tile("Assertion coverage", `${cov.percent}% (${cov.asserted}/${cov.clauses} clauses)`, cov.percent >= 80 ? "ok" : "warn") : "";
     // Statuses that did not pass or fail: shown when the run has any.
-    const more = [["Skipped", t.skipped, "warn"], ["Manual", t.manual, ""], ["Blocked", t.blocked, "warn"], ["Known issues", t.knownIssues, "known"], ["Unexpected passes", t.unexpectedPasses, "bad"]].filter(([, n]) => n > 0).map(([l, n, c]) => tile(l, n, c)).join("");
+    const more = [["Skipped", t.skipped, "warn"], ["Manual", t.manual, ""], ["Blocked", t.blocked, "warn"], ["Known issues", t.knownIssues, "known"], ["Unexpected passes", t.unexpectedPasses, "bad"], ["Accepted 5xx", t.accepted5xx, "known"]].filter(([, n]) => n > 0).map(([l, n, c]) => tile(l, n, c)).join("");
     $("tcTiles").innerHTML = tile("Rows", t.rows, "") + tile("Passed", t.passed, "ok") + tile("Partially covered", t.partiallyCovered, "warn") + tile("Failed", t.failed, "bad") + tile("Needs review", t.needsReview, "warn") + tile("Not automated", t.notAutomated, "warn") + more + covTile + tile("Agent suggestions", t.agentSuggestions, "");
-    const cls = { passed: "ok", "partially covered": "warn", failed: "bad", "needs review": "warn", "not automated": "warn", skipped: "warn", manual: "", blocked: "warn", "known issue": "known", "unexpected pass": "bad" };
+    const cls = { passed: "ok", "partially covered": "warn", failed: "bad", "needs review": "warn", "not automated": "warn", skipped: "warn", manual: "", blocked: "warn", "known issue": "known", "unexpected pass": "bad", "accepted 5xx": "known" };
     // Jira and Confluence cells: a link only for an http(s) address, else the text (a key such as QA-12).
     // A link shows its Jira key (QA-12) or the last part of its path (the page name), full URL on hover.
     const refLabel = (v) => {
