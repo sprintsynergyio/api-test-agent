@@ -51,6 +51,7 @@
     "test:gate:pactum": "tsx agent/frameworks/pactum.test.ts",
     "test:response-schema": "tsx agent/response-schema.test.ts",
     "test:sheet-feedback": "tsx agent/sheet-feedback.test.ts",
+    "test:statuses": "tsx agent/statuses.test.ts",
     "test:e2e-media": "node scripts/e2e-media.mjs",
     "test:template:pactum": "cross-env INPUT_FILE=input/local-shop.json mocha --config .mocharc.pactum.json \"tests-pactum/template/*.spec.ts\"",
     "test:generated:pactum": "mocha --config .mocharc.pactum.json \"generated/**/*.spec.ts\"",

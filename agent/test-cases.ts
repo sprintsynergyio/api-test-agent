@@ -3,6 +3,7 @@ import { readFileSync, statSync } from 'node:fs';
 import { extname } from 'node:path';
 import { readSheet } from 'read-excel-file/node';
 import { AGENT_CASE_PREFIX, TEST_TYPES } from './model';
+import { fillPlaceholders, type TestData } from './test-data';
 
 // The team's own test case sheet: CSV, TSV (what Excel and Google Sheets put on the clipboard) or XLSX,
 // including CSV exported from Jira, Xray, Zephyr, TestRail or a Confluence table. Each row becomes one
@@ -21,7 +22,7 @@ const MAX_XLSX_ENTRIES = 2000;
 const MAX_ID_CHARS = 40;
 const MAX_TITLE_CHARS = 150;
 
-export type CaseField = 'id' | 'title' | 'steps' | 'expected' | 'endpoint' | 'method' | 'priority' | 'preconditions' | 'testData' | 'jira' | 'confluence';
+export type CaseField = 'id' | 'title' | 'steps' | 'expected' | 'endpoint' | 'method' | 'priority' | 'preconditions' | 'testData' | 'jira' | 'confluence' | 'knownIssue' | 'requiredData' | 'automation';
 
 // Header aliases, compared after lowercasing and turning every non-letter, non-digit run into one space.
 // Common Jira, Xray, Zephyr Scale, TestRail and Confluence export names are included.
@@ -39,6 +40,15 @@ const ALIASES: Record<CaseField, string[]> = {
   // "Jira key" / "Issue key" stay the case ID; these are extra reference columns.
   jira: ['jira', 'jira link', 'jira url', 'jira issue', 'jira ticket', 'jira story', 'jira ref', 'jira reference', 'story', 'user story', 'requirement', 'requirement id'],
   confluence: ['confluence', 'confluence link', 'confluence url', 'confluence page', 'confluence id', 'confluence ref', 'confluence reference', 'spec page', 'spec link'],
+  // A bug the team already knows about, with its Jira key ("QA-123" or "QA-123: 500 for an unknown
+  // brand"). The test still checks the right behaviour; it is expected to fail and is reported as a known
+  // issue, never as passed. A cell without a Jira key is ignored with a warning.
+  knownIssue: ['known issue', 'known issues', 'known bug', 'known bugs', 'known defect', 'known defects', 'open bug', 'open defect', 'linked bug', 'linked defect', 'bug', 'bugs', 'defect', 'defects', 'bug id', 'defect id'],
+  // Data the test needs on the environment ("Test_A.png; kk-coming-soon.png"), checked before it runs
+  // with the lookup in the test data file (agent/test-data.ts).
+  requiredData: ['required data', 'required files', 'required test data', 'data required', 'files required', 'needs data', 'data dependencies', 'data dependency', 'depends on data'],
+  // "Manual" (or "Manual - visual check"): never automated, listed as manual with its reason code.
+  automation: ['automation', 'automation status', 'automation type', 'automatable', 'automated', 'execution type', 'manual or automated'],
 };
 // Looser rules for exports that wrap names, e.g. "Custom field (Expected Result)".
 const CONTAINS: [CaseField, RegExp][] = [
@@ -60,6 +70,9 @@ export const FIELD_LABELS: Record<CaseField, string> = {
   testData: 'Test Data',
   jira: 'Jira',
   confluence: 'Confluence',
+  knownIssue: 'Known issue',
+  requiredData: 'Required data',
+  automation: 'Automation',
 };
 
 export type SheetCase = {
@@ -78,7 +91,52 @@ export type SheetCase = {
   // older sheets stays the same).
   jira?: string;
   confluence?: string;
+  // Known issue (with its Jira key), required data names and the automation cell, absent when empty.
+  knownIssue?: string;
+  requiredData?: string;
+  automation?: string;
+  // Set by prepareSheetCases, never read from the sheet: a case that will not run, with its reason code
+  // (missing test data, manual). The agent writes its placeholder; the model never plans it.
+  declaredSkip?: { code: 'MISSING_TEST_DATA' | 'MANUAL' | 'MANUAL_VISUAL'; reason: string };
 };
+
+// Before planning: fills [NAME] placeholders from the per-environment test data (agent/test-data.ts)
+// and marks the cases that will not run: a placeholder with no value (MISSING_TEST_DATA) or an
+// Automation cell that says manual (MANUAL, MANUAL_VISUAL). Returns new case objects.
+export function prepareSheetCases(cases: SheetCase[], data: TestData | null): { cases: SheetCase[]; notes: string[] } {
+  const values = data?.values ?? {};
+  const notes: string[] = [];
+  const out = cases.map((c) => {
+    const missing = new Set<string>();
+    const fill = (text: string) => {
+      const r = fillPlaceholders(text, values);
+      r.missing.forEach((m) => missing.add(m));
+      return r.text;
+    };
+    const next: SheetCase = { ...c, steps: fill(c.steps), expected: fill(c.expected), testData: fill(c.testData), preconditions: fill(c.preconditions) };
+    const manual = manualCodeOf(c.automation);
+    if (manual) {
+      next.declaredSkip = { code: manual, reason: `${manual}: the sheet marks this case as manual ("${(c.automation ?? '').replace(/\s+/g, ' ').slice(0, 80)}"), so it is not automated` };
+    } else if (missing.size) {
+      const names = [...missing].map((m) => `[${m}]`).join(', ');
+      next.declaredSkip = { code: 'MISSING_TEST_DATA', reason: `MISSING_TEST_DATA: needs ${names}; add ${missing.size === 1 ? 'it' : 'them'} to "values" in the test data file${data?.environment ? ` for ${data.environment}` : ''} (testData in the input, or --test-data)` };
+      notes.push(`${c.id}: no test data for ${names}, skipped (MISSING_TEST_DATA)`);
+    }
+    if (c.requiredData && !data?.lookup && !next.declaredSkip) notes.push(`${c.id}: Required data "${c.requiredData.slice(0, 60)}" is not checked: the test data file has no "lookup" endpoint`);
+    return next;
+  });
+  return { cases: out, notes };
+}
+
+// "Manual", "Manual - visual check", "Not automatable", "No": the case is checked by a person. Returns
+// the reason code, or null when the cell says nothing about manual testing.
+export function manualCodeOf(cell: string | undefined): 'MANUAL' | 'MANUAL_VISUAL' | null {
+  const v = String(cell ?? '').trim().toLowerCase();
+  if (!v) return null;
+  const manual = /\bmanual(?:ly)?\b|\bnot automat|\bcannot be automat|\bcan ?not automat|^(?:no|false|n)$/.test(v);
+  if (!manual) return null;
+  return /\bvisual|\blook|\blayout|\bscreenshot|\bimage quality/.test(v) ? 'MANUAL_VISUAL' : 'MANUAL';
+}
 
 export type SheetWarning = { row: number | null; caseId: string | null; message: string };
 
@@ -315,7 +373,7 @@ export function casesFromRows(rows: string[][], format: ParsedSheet['format']): 
     } else if (id !== rawId.trim()) {
       warnings.push({ row: rowNo, caseId: id, message: `ID "${rawId.trim().slice(0, 50)}" changed to "${id}" (brackets, quotes and line breaks are not allowed in a test name)` });
     }
-    if (id.toLowerCase() === AGENT_CASE_PREFIX || (TEST_TYPES as readonly string[]).includes(id.toLowerCase()) || id.toLowerCase() === 'needs-review') {
+    if (id.toLowerCase() === AGENT_CASE_PREFIX || (TEST_TYPES as readonly string[]).includes(id.toLowerCase()) || ['needs-review', 'skipped', 'manual'].includes(id.toLowerCase())) {
       const renamed = `ROW-${rowNo}`;
       warnings.push({ row: rowNo, caseId: renamed, message: `ID "${id}" is reserved for test types, using ${renamed}` });
       id = renamed;
@@ -345,6 +403,15 @@ export function casesFromRows(rows: string[][], format: ParsedSheet['format']): 
     const confluence = get('confluence');
     if (jira) c.jira = jira;
     if (confluence) c.confluence = confluence;
+    const knownIssue = get('knownIssue');
+    if (knownIssue) {
+      if (/\b[A-Z][A-Z0-9]+-\d+\b/.test(knownIssue)) c.knownIssue = knownIssue.replace(/\s+/g, ' ');
+      else warnings.push({ row: rowNo, caseId: id, message: `Known issue "${knownIssue.slice(0, 60)}" has no Jira key (like QA-123), so it is ignored and the case runs as a normal test` });
+    }
+    const requiredData = get('requiredData');
+    if (requiredData) c.requiredData = requiredData;
+    const automation = get('automation');
+    if (automation) c.automation = automation;
     if (!title) warnings.push({ row: rowNo, caseId: id, message: 'no title, using the first line of the steps' });
     if (!c.steps && !c.expected) warnings.push({ row: rowNo, caseId: id, message: 'no steps and no expected result: it will be marked needs review' });
     cases.push(c);

@@ -248,6 +248,14 @@
   .tile.pass .v { color: var(--ok); }
   .tile.fail .v { color: var(--bad); }
   .tile.warn .v { color: var(--warn); }
+  /* Known issues: a known bug with a Jira key, expected to fail; never passed, never a new finding. */
+  .tile.known .v { color: #6d28d9; }
+  .tag.known { border-color: #ddd6fe; color: #6d28d9; }
+  .notrun { margin-top: 14px; }
+  .notrun h3 { margin: 0 0 8px; font-size: 13px; font-weight: 600; color: var(--ink-2); }
+  .notrun .row { display: flex; gap: 8px; align-items: baseline; padding: 6px 0; border-top: 1px solid var(--line); font-size: 13px; }
+  .notrun .row .code-tag { flex: none; }
+  .notrun .row .why { color: var(--ink-2); overflow-wrap: anywhere; }
   .bar { height: 6px; border-radius: 99px; background: #fee2e2; overflow: hidden; margin-top: 8px; }
   .bar > span { display: block; height: 100%; background: var(--ok); border-radius: 99px; transition: width .8s ease; }
   .res-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
@@ -736,6 +744,8 @@
       <div class="card tile"><div class="k">Tests generated</div><div id="tGen" class="v">0</div></div>
       <div class="card tile pass"><div class="k">Passed</div><div id="tPass" class="v">0</div><div class="bar"><span id="passBar" style="width:0"></span></div></div>
       <div class="card tile fail"><div class="k">Failed</div><div id="tFail" class="v">0</div></div>
+      <div id="tSkipTile" class="card tile warn" title="Tests and sheet cases that did not run: missing test data, data not on this environment, manual. Each has a reason code. Never counted as passed."><div class="k">Skipped</div><div id="tSkip" class="v">0</div></div>
+      <div id="tKnownTile" class="card tile known" title="Known bugs from the sheet's Known issue column (with a Jira key) whose test failed as expected. Never counted as passed."><div class="k">Known issues</div><div id="tKnown" class="v">0</div></div>
       <div id="tPartialTile" class="card tile warn hidden" title="Sheet cases whose test passed but does not assert every clause of the expected result. Never counted as passed."><div class="k">Partially covered</div><div id="tPartial" class="v">0</div></div>
       <div id="tCovTile" class="card tile hidden" title="Of all the clauses in the sheet's expected results, how many a test assertion checks. Cases without a test count as not checked."><div class="k">Assertion coverage</div><div id="tCov" class="v">-</div><div class="bar"><span id="covBar" style="width:0"></span></div></div>
     </div>
@@ -763,7 +773,7 @@
       <div class="card-h"><h2>Test case sheet</h2><span id="tcFileName" class="timer"></span></div>
       <div class="card-b">
         <div id="tcTiles" class="tc-tiles"></div>
-        <div class="tc-rows" style="max-height:480px"><table><thead><tr><th>ID</th><th>Title</th><th>Endpoint</th><th>Status</th><th>Coverage</th><th>Reason</th><th>Jira</th><th>Confluence</th></tr></thead><tbody id="tcTable"></tbody></table></div>
+        <div class="tc-rows" style="max-height:480px"><table><thead><tr><th>ID</th><th>Title</th><th>Endpoint</th><th>Status</th><th>Reason code</th><th>Coverage</th><th>Reason</th><th>Jira</th><th>Confluence</th></tr></thead><tbody id="tcTable"></tbody></table></div>
         <div class="tc-actions" style="margin-top:12px">
           <button id="tcCsv" class="btn btn-primary" type="button">Download traceability (.csv)</button>
           <button id="tcXlsx" class="btn btn-ghost" type="button">Download traceability (.xlsx)</button>
@@ -1483,7 +1493,10 @@
     animateNum($("tGen"), t.testsGenerated ?? 0);
     animateNum($("tPass"), t.passed ?? 0);
     animateNum($("tFail"), t.failed ?? 0);
-    const total = (t.passed ?? 0) + (t.failed ?? 0);
+    animateNum($("tSkip"), t.skipped ?? 0);
+    animateNum($("tKnown"), t.knownIssues ?? 0);
+    // Skipped tests and known issues count in the total, so they lower the pass bar (never passed).
+    const total = (t.passed ?? 0) + (t.failed ?? 0) + (t.skipped ?? 0) + (t.knownIssues ?? 0);
     requestAnimationFrame(() => { $("passBar").style.width = total ? Math.round(((t.passed ?? 0) / total) * 100) + "%" : "0"; });
     // Sheet runs: partially covered cases (never counted as passed) and the assertion coverage.
     const tc = s.testCases;
@@ -1521,6 +1534,12 @@
     if (apiFindings.length) html += all.filter((x) => x.isApi).map((x, i) => card(x.f, true, i)).join("");
     else html += `<div class="no-findings">No suspected API bugs</div>`;
     if (review.length) html += `<div style="margin:14px 0 8px;font-weight:600;color:var(--ink-2)">Other failures</div>` + all.filter((x) => !x.isApi).map((x) => card(x.f, false, all.indexOf(x))).join("");
+    // Known issues and tests that did not run, listed in full under the findings with their reason codes.
+    const known = Array.isArray(s.knownIssues) ? s.knownIssues : [];
+    const notRun = Array.isArray(s.skippedTests) ? s.skippedTests : [];
+    const listRow = (code, cls, title, why) => `<div class="row"><span class="tag ${cls} code-tag">${esc(code)}</span><div><div>${esc(title)}</div><div class="why">${esc(why)}</div></div></div>`;
+    if (known.length) html += `<div class="notrun" id="knownList"><h3>Known issues (${known.length}): failed as expected, not counted as passed</h3>${known.map((k) => listRow("KNOWN_ISSUE", "known", k.testTitle, k.reason)).join("")}</div>`;
+    if (notRun.length) html += `<div class="notrun" id="skippedList"><h3>Did not run (${notRun.length}): not counted as passed</h3>${notRun.map((k) => listRow(k.reasonCode, "warn", k.testTitle, k.reason)).join("")}</div>`;
     $("findings").innerHTML = html;
     $("findings").querySelectorAll(".finding").forEach((el) => {
       const f = all[+el.dataset.f].f;
@@ -1533,7 +1552,7 @@
     $("epTable").innerHTML = eps.map((e) => {
       const spec = e.specWritten ? `<span class="yes">Yes</span>` : `<span class="no">No</span>`;
       const result = e.skippedReason ? `<span class="skip-note">Skipped: read-only mode</span>`
-        : e.specWritten ? `<span class="p">${e.passed ?? 0} passed</span>${(e.failed ?? 0) ? ` <span class="f">· ${e.failed} failed</span>` : ""}`
+        : e.specWritten ? `<span class="p">${e.passed ?? 0} passed</span>${(e.failed ?? 0) ? ` <span class="f">· ${e.failed} failed</span>` : ""}${(e.skipped ?? 0) ? ` <span class="skip-note">· ${e.skipped} skipped</span>` : ""}${(e.knownIssues ?? 0) ? ` <span class="skip-note">· ${e.knownIssues} known</span>` : ""}`
         : `<span class="f">Not run</span>`;
       return `<tr class="ep-row" data-spec="${esc(e.specFile || "")}" data-id="${esc(e.id)}">
         <td><span class="m ${esc((e.method || "").toUpperCase())}" style="margin-right:8px">${esc((e.method || "").toUpperCase())}</span><strong>${esc(e.id)}</strong>
@@ -1842,8 +1861,10 @@
     const tile = (label, n, cls) => `<span class="tag ${cls}">${esc(label)} ${esc(n ?? 0)}</span>`;
     const cov = t.assertionCoverage;
     const covTile = cov && cov.percent !== null && cov.percent !== undefined ? tile("Assertion coverage", `${cov.percent}% (${cov.asserted}/${cov.clauses} clauses)`, cov.percent >= 80 ? "ok" : "warn") : "";
-    $("tcTiles").innerHTML = tile("Rows", t.rows, "") + tile("Passed", t.passed, "ok") + tile("Partially covered", t.partiallyCovered, "warn") + tile("Failed", t.failed, "bad") + tile("Needs review", t.needsReview, "warn") + tile("Not automated", t.notAutomated, "warn") + covTile + tile("Agent suggestions", t.agentSuggestions, "");
-    const cls = { passed: "ok", "partially covered": "warn", failed: "bad", "needs review": "warn", "not automated": "warn" };
+    // Statuses that did not pass or fail: shown when the run has any.
+    const more = [["Skipped", t.skipped, "warn"], ["Manual", t.manual, ""], ["Blocked", t.blocked, "warn"], ["Known issues", t.knownIssues, "known"], ["Unexpected passes", t.unexpectedPasses, "bad"]].filter(([, n]) => n > 0).map(([l, n, c]) => tile(l, n, c)).join("");
+    $("tcTiles").innerHTML = tile("Rows", t.rows, "") + tile("Passed", t.passed, "ok") + tile("Partially covered", t.partiallyCovered, "warn") + tile("Failed", t.failed, "bad") + tile("Needs review", t.needsReview, "warn") + tile("Not automated", t.notAutomated, "warn") + more + covTile + tile("Agent suggestions", t.agentSuggestions, "");
+    const cls = { passed: "ok", "partially covered": "warn", failed: "bad", "needs review": "warn", "not automated": "warn", skipped: "warn", manual: "", blocked: "warn", "known issue": "known", "unexpected pass": "bad" };
     // Jira and Confluence cells: a link only for an http(s) address, else the text (a key such as QA-12).
     // A link shows its Jira key (QA-12) or the last part of its path (the page name), full URL on hover.
     const refLabel = (v) => {
@@ -1855,7 +1876,7 @@
       return name.length > 40 ? name.slice(0, 39) + "..." : name;
     };
     const ref = (v) => !v ? "" : /^https?:\/\//i.test(v) ? `<a href="${esc(v)}" title="${esc(v)}" target="_blank" rel="noopener noreferrer">${esc(refLabel(v))}</a>` : esc(v);
-    $("tcTable").innerHTML = (t.cases || []).map((c) => `<tr><td class="id">${esc(c.id)}</td><td>${esc(c.title)}</td><td style="white-space:nowrap">${esc(c.endpoint || "")}</td><td style="white-space:nowrap"><span class="tag ${cls[c.status] || ""}">${esc(c.status)}</span></td><td style="white-space:nowrap">${esc(c.coverage || "")}</td><td class="hint">${esc(c.reason || "")}</td><td class="ref">${ref(c.jira)}</td><td class="ref">${ref(c.confluence)}</td></tr>`).join("");
+    $("tcTable").innerHTML = (t.cases || []).map((c) => `<tr><td class="id">${esc(c.id)}</td><td>${esc(c.title)}</td><td style="white-space:nowrap">${esc(c.endpoint || "")}</td><td style="white-space:nowrap"><span class="tag ${cls[c.status] || ""}">${esc(c.status)}</span></td><td style="white-space:nowrap;font-size:12px">${esc(c.reasonCode || "")}</td><td style="white-space:nowrap">${esc(c.coverage || "")}</td><td class="hint">${esc(c.reason || "")}</td><td class="ref">${ref(c.jira)}</td><td class="ref">${ref(c.confluence)}</td></tr>`).join("");
   }
   $("tcCsv").addEventListener("click", () => { window.location.href = "/api/traceability" + (runQuery() ? runQuery() + "&" : "?") + "format=csv"; });
   $("tcXlsx").addEventListener("click", () => { window.location.href = "/api/traceability" + (runQuery() ? runQuery() + "&" : "?") + "format=xlsx"; });

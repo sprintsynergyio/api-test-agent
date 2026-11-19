@@ -120,11 +120,21 @@ npm run ui            # then open http://localhost:3000
 
 | Code | Meaning |
 |---|---|
-| `0` | The run completed and nothing fails it: no failed tests, or `--fail-on none` |
-| `1` | Findings: at least one failed test (a suspected API finding or a failure that needs review), with `--fail-on finding` (the default) |
+| `0` | The run completed and nothing fails it: no failed tests, or `--fail-on none`. Skipped tests and known issues that failed as expected do not fail the run unless you ask for it (below) |
+| `1` | Findings: at least one failed test (a suspected API finding or a failure that needs review) or an unexpected pass (a known issue whose test passed), with `--fail-on finding` (the default). With `--fail-on skipped`, also any test or sheet case that did not run (skipped, blocked, manual) |
 | `2` | Tool or setup error: bad input or flags, a refused host, no model set up, no tests generated, a budget stop, an endpoint that could not be tested, a failed framework export, or a crash |
 
-`--fail-on none` still reports every finding in the console and `out/summary.json`; only the exit code changes. `out/summary.json` is written before the framework export and holds `exitCode`, `failOn` and, when the export failed, `frameworkError`, so a failed export never loses the results.
+`--fail-on none` still reports every finding in the console and `out/summary.json`; only the exit code changes.
+
+**CI policy for skips.** By default a skipped or blocked test does not fail the pipeline, but it is never
+counted as passed: the console, `out/summary.json` (`totals.skipped`, `skippedTests`), the traceability
+files and the dashboard show every one with its reason code. Use `--fail-on skipped` in the pipeline that
+must prove full coverage (for example the release gate), and the default `--fail-on finding` for nightly
+runs against shared environments where some data comes and goes. Known issues that fail as expected
+never fail the run; when one starts passing the run fails (exit 1), so someone closes the bug and removes
+the marker.
+
+`out/summary.json` is written before the framework export and holds `exitCode`, `failOn` and, when the export failed, `frameworkError`, so a failed export never loses the results.
 
 ## Importers
 
@@ -171,7 +181,8 @@ or put it in the input file: `"testCases": { "file": "local-shop-test-cases.csv"
 - **Columns** are matched by name, ignoring case and punctuation: **ID** (`Test Case ID`, `TC ID`, `Key`,
   `Issue key`, ...), **Title** (`Summary`, `Name`, `Scenario`, ...), **Steps / Request** (`Steps`,
   `Request`, `Description`, `Action`, ...), **Expected Result** (`Expected`, `Expected Outcome`, ...), and
-  optional **Endpoint**, **Method**, **Priority**, **Preconditions**, **Test Data**. Other columns are
+  optional **Endpoint**, **Method**, **Priority**, **Preconditions**, **Test Data**, **Known issue**,
+  **Required data** and **Automation** (see [Statuses, skips and known issues](#statuses-skips-and-known-issues)). Other columns are
   ignored and listed. Step-per-row exports (Xray, Zephyr) work: a row with no ID and no title continues the
   case above.
 - **Endpoint matching.** The Endpoint column first (an endpoint id, `GET /products/{id}`, a path or a URL),
@@ -188,6 +199,7 @@ or put it in the input file: `"testCases": { "file": "local-shop-test-cases.csv"
   sheet says 201 and the API returns 200) is not guessed at: it becomes a test marked **needs review**
   (`test.fixme` in Playwright, a pending test in Pactum) with the reason. It never runs and never passes,
   and it does not change the exit code.
+- **Skipped, blocked, manual and known issues.** See [Statuses, skips and known issues](#statuses-skips-and-known-issues).
 - **Expected results are read clause by clause.** "Response is 400 or 404 JSON error, not 500 or 502"
   expects 400 or 404 (the test asserts the status is one of them) and rules out 500 and 502; codes after
   *not*, *never*, *must not be*, *instead of* or *other than* are never read as expected. Each clause
@@ -202,8 +214,8 @@ or put it in the input file: `"testCases": { "file": "local-shop-test-cases.csv"
   another role. A case of a type the endpoint does not allow is **needs review** with that rule and how to
   turn the type on. See [Test rules](#test-rules) for images, paging and cross-call checks.
 - **Traceability.** `out/traceability.csv` and `out/traceability.xlsx` list every row with ID, Title,
-  Endpoint, Test file, Status (passed, partially covered, failed, needs review, not automated), Coverage,
-  Reason, Jira and Confluence, followed by the agent suggestions. Test file is blank when no runnable test
+  Endpoint, Test file, Status (passed, partially covered, failed, needs review, not automated, skipped,
+  manual, blocked, known issue, unexpected pass), Reason code, Coverage, Reason, Jira and Confluence, followed by the agent suggestions. Test file is blank when no runnable test
   automates the case (needs review, dropped by the static gate, not automated). Coverage is how many
   clauses of the case's expected result a test assertion checks (`2/3 (66.7%)`). Reasons are never
   shortened. Jira and Confluence come from sheet columns of that name (`Jira`, `Jira link`, `Story`,
@@ -216,6 +228,53 @@ or put it in the input file: `"testCases": { "file": "local-shop-test-cases.csv"
 - **Limits.** 5 MB, 1000 test cases, 100 columns and 4000 characters per cell. Excel files are read for
   their stored values only: formulas are never run, links never followed.
 - **Jira and Confluence links.** See the next section: paste a link instead of exporting a file.
+
+### Statuses, skips and known issues
+
+A test that did not run, or that failed for a bug the team already knows about, is never shown as passed
+and never hidden. Every such case has a status and a **reason code**:
+
+| Status | Reason code | When |
+|---|---|---|
+| skipped | `MISSING_TEST_DATA` | The case uses a placeholder like `[OTHER_BRAND]` and the test data file has no value for it |
+| manual | `MANUAL` / `MANUAL_VISUAL` | The **Automation** column says manual (`Manual`, `Manual - visual check`, ...). Visual checks get `MANUAL_VISUAL` |
+| blocked | `DATA_NOT_ON_ENV` | The **Required data** is not on the environment: the test checked before it ran and skipped itself |
+| blocked | `ENV_UNAVAILABLE` | The data lookup could not answer (no connection, 401, 403, 429 or a 5xx) |
+| needs review | `SPEC_UNCLEAR` (or none) | Steps or expected result too vague, or they contradict the API |
+| known issue | `KNOWN_ISSUE` | The **Known issue** column names a Jira bug and the test failed as expected |
+| unexpected pass | `KNOWN_ISSUE` | The known issue's test passed: the bug may be fixed. This is a finding (needs review, exit 1) |
+
+- **Known issue column** (`Known issue`, `Known bug`, `Bug`, `Defect`, ...): a Jira key and an optional note,
+  for example `SHOP-8: delete does not check the token`. A cell without a Jira key is ignored with a
+  warning and the case runs as a normal test. The agent then writes the test with the correct expected
+  status (401 here) and marks it as expected to fail (`test.fail(...)` in Playwright, `knownIssue(...)` in
+  Pactum). Known issues come only from this column: the model can never mark a test as a known issue.
+- **Required data column** (`Required data`, `Required files`, ...): names separated by `;`, `,` or new
+  lines (`Summer Hat (seasonal); Classic Tee`). Before the test runs it asks the environment, with the
+  lookup endpoint from the test data file, and skips itself as **blocked** (`DATA_NOT_ON_ENV`) when a name
+  is not in the answer. The lookup is always a GET.
+- **Automation column**: a case marked manual is listed as **manual** and never generated.
+- **Test data file**, one per environment (`input/local-shop-test-data.json`):
+
+  ```json
+  { "environment": "local", "values": { "CATEGORY": "tops" }, "lookup": { "endpointId": "list-products" } }
+  ```
+
+  `values` fill the `[PLACEHOLDER]` names (upper case, 3 or more characters) in the steps and expected
+  results; `lookup` names a GET endpoint of the input (and an optional `query`) used for Required data.
+  Give it with `--test-data input/staging-test-data.json` or `"testData": "staging-test-data.json"` in the
+  input file. Keep no secrets in it. The exported framework includes it as `config/test-data.json`
+  (point `TEST_DATA_FILE` at another file to run the same tests against another environment).
+- **Where you see them.** The console lists each skipped test and known issue with its reason. The
+  dashboard has **Skipped** and **Known issues** tiles next to Passed and Failed, and lists each one with
+  its code and reason under the findings. `out/summary.json` has `totals.skipped`, `totals.knownIssues`,
+  `totals.skippedByCode`, `skippedTests` and `knownIssues` (see `ui/CONTRACT.md`). Allure tags known
+  issues `known issue` with a link to the Jira key.
+- **The model cannot skip.** The static gate still rejects `test.skip`, `test.fixme`, `test.fail`,
+  `this.skip()` and the markers above in model-written code. The agent adds the markers itself, after the
+  gate, only from the sheet columns and the test data file.
+
+Try it: `npm run agent -- input/local-shop-statuses.json` (seven cases, one of each status).
 
 ### Test cases straight from Jira, Confluence, Xray or Zephyr Scale
 

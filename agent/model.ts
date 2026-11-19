@@ -171,7 +171,7 @@ export function applyProfile<T extends { profile?: Profile; baseUrl?: string; de
 // sheet describes too vaguely to automate is "[TC-010] [needs-review] ..." and never runs.
 export const TEST_TYPES = ['happy', 'schema', 'invalid-input', 'auth', 'authz'] as const;
 export const AGENT_CASE_PREFIX = 'agent';
-const TITLE_RE = /^(?:\[([^[\]]{1,64})\]\s+)?\[(happy|schema|invalid-input|auth|authz|needs-review)\]/;
+const TITLE_RE = /^(?:\[([^[\]]{1,64})\]\s+)?\[(happy|schema|invalid-input|auth|authz|needs-review|skipped|manual)\]/;
 
 export function parseTestTitle(title: string): { caseId: string | null; type: string | null } {
   const m = title.match(TITLE_RE);
@@ -181,11 +181,11 @@ export function parseTestTitle(title: string): { caseId: string | null; type: st
   return { caseId: m[1] === undefined || m[1] === AGENT_CASE_PREFIX ? null : m[1], type: m[2] };
 }
 
-// The test type of a title, with or without a case ID prefix; null for a needs-review placeholder or an
-// untagged title.
+// The test type of a title, with or without a case ID prefix; null for a needs-review, skipped or manual
+// placeholder, or an untagged title.
 export function testTypeOf(title: string): string | null {
   const t = parseTestTitle(title).type;
-  return t && t !== 'needs-review' ? t : null;
+  return t && t !== 'needs-review' && t !== 'skipped' && t !== 'manual' ? t : null;
 }
 
 // Joins the base URL and a request path so the base URL's own path is kept:

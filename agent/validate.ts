@@ -90,7 +90,7 @@ function isNonJsonAssertion(call: ExpectCall, headerVars: string[], bytesVars: s
   return /\.headers\(\)/.test(call.arg) || /\.body\(\)/.test(call.arg) || uses(headerVars) || uses(bytesVars);
 }
 
-function matchingParen(code: string, open: number): number {
+export function matchingParen(code: string, open: number): number {
   let depth = 0;
   for (let i = open; i < code.length; i++) {
     if (code[i] === '(') depth++;
@@ -379,6 +379,12 @@ const PLAYWRIGHT_RULES: GateRules = {
     if (/@playwright\/test/.test(code)) reasons.push('imports from @playwright/test directly instead of the ctx fixture');
     if (/\btest(?:\.describe)?\.only\b/.test(code)) reasons.push('contains test.only');
     if (/\btest(?:\.describe)?\.skip\b/.test(code)) reasons.push('contains test.skip');
+    // Skips, expected failures and precondition checks are added by the agent itself from the sheet and
+    // the test data file (reason codes, Known issue, Required data), never by the model.
+    if (/\btest(?:\.describe)?\.fixme\b/.test(code)) reasons.push('contains test.fixme (cases that cannot be automated go to needsReview in the plan)');
+    if (/\btest\.fail\b/.test(code)) reasons.push('contains test.fail (known issues come only from the Known issue column of the sheet)');
+    if (/(?:\btestInfo|\btest\.info\s*\(\s*\))\s*\.\s*(?:skip|fail|fixme|slow)\b/.test(code)) reasons.push('skips or marks a test as failing through test.info() (skips and expected failures are added by the agent)');
+    if (/\.requireData\s*\(/.test(code)) reasons.push('calls ctx.requireData (precondition checks are added by the agent from the Required data column)');
     // Serial mode skips every later test in the file after one failure, so one API bug would hide the
     // results of unrelated cases. A case that compares calls is one test that sends them all itself.
     if (/\btest\.describe\.serial\b/.test(code) || /\bdescribe\.configure\s*\(\s*\{[^}]*\bmode\s*:\s*['"`]serial['"`]/.test(code)) {

@@ -168,6 +168,28 @@ row into an automated test that keeps the case ID in its name.
 Cases marked **needs review** were too vague to automate safely, or what they expect contradicts what the
 API actually answered. Fix the row (say what to send and which status to expect) and run again.
 
+### Known bugs, missing data and manual cases
+
+Three optional columns tell the agent what it cannot or should not simply run:
+
+- **Known issue**: the Jira key of a bug that is still open, for example `SHOP-8: delete does not check the
+  token`. The test still expects the correct answer, is marked expected to fail, and shows as **Known
+  issue** (purple) instead of failing the build. When the bug is fixed and the test passes, the run fails
+  with **unexpected pass** so someone closes the bug and clears the cell. Without a Jira key the cell is
+  ignored.
+- **Required data**: names the test needs on the environment (`Summer Hat (seasonal); Classic Tee`). The
+  test checks first and shows as **Blocked** (`DATA_NOT_ON_ENV`) when they are missing, instead of failing.
+- **Automation**: `Manual` or `Manual - visual check` keeps the case as **Manual** (not generated).
+
+Placeholders such as `[CATEGORY]` in the steps or expected result are filled from a test data file, one
+per environment (copy `input/local-shop-test-data.json`, set `values` and the `lookup` endpoint the
+Required data check uses, and pass it with `--test-data` or `"testData"` in the input). A placeholder
+with no value shows as **Skipped** (`MISSING_TEST_DATA`).
+
+None of these ever count as passed. The dashboard shows them in the **Skipped** and **Known issues**
+tiles and lists each with its reason. In CI, skips do not fail the build by default; add
+`--fail-on skipped` to the pipeline that must prove everything ran.
+
 ## Test cases from a Jira or Confluence link
 
 No export needed: paste a link and the agent reads the cases itself, with your own Atlassian account. It

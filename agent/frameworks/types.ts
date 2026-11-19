@@ -1,3 +1,4 @@
+import type { TestData } from '../test-data';
 import type { Config, Endpoint } from '../config';
 import type { CleanupTotals } from '../http';
 import type { Plan } from '../plan';
@@ -11,13 +12,28 @@ import type { ValidateOptions, ValidationResult } from '../validate';
 
 export type FrameworkName = 'playwright' | 'pactum';
 
+// kind: what happened, beyond passed / failed (missing means passed or failed as `passed` says):
+//   'blocked'          skipped while running: the precondition check found the required data missing
+//                      (DATA_NOT_ON_ENV) or could not look it up (ENV_UNAVAILABLE); reason says why
+//   'known-issue'      a test marked with a Known issue (Jira key) that failed as expected
+//   'unexpected-pass'  a known-issue test that passed: the bug may be fixed; a finding (needs review)
+// passed is true only for a real pass, never for any of these.
+export type OutcomeKind = 'passed' | 'failed' | 'blocked' | 'known-issue' | 'unexpected-pass';
 export type TestOutcome = {
   endpointId: string;
   title: string;
   passed: boolean;
   actualStatus: number | null;
   error: string;
+  kind?: OutcomeKind;
+  // The reason code and text of a blocked test or a known issue ("DATA_NOT_ON_ENV: ...", "KNOWN_ISSUE QA-1: ...").
+  reasonCode?: string;
+  reason?: string;
 };
+
+export function outcomeKind(o: { passed: boolean; kind?: OutcomeKind }): OutcomeKind {
+  return o.kind ?? (o.passed ? 'passed' : 'failed');
+}
 
 // extraLabels: Allure labels to add by test title (coverage of sheet cases).
 export type RunOptions = { secrets: string[]; reportName: string; cleanError: (text: string) => string; specFiles?: string[]; workers?: number; extraLabels?: Record<string, { name: string; value: string }[]> };
@@ -54,6 +70,8 @@ export type ExportOptions = {
   findings: ExportFinding[];
   // Extra text files written into the project root (the test case sheet's traceability.csv).
   extraFiles?: { path: string; content: string }[];
+  // The run's per-environment test data (agent/test-data.ts), written as config/test-data.json.
+  testData?: TestData | null;
 };
 
 export type FrameworkAdapter = {

@@ -16,12 +16,15 @@ export type AgentFlags = {
   concurrency: number;
   // Test workers (Playwright --workers; Pactum runs one at a time and says so).
   testWorkers: number;
-  // What makes the exit code 1: any finding (default) or nothing (findings are reported, exit 0).
+  // What makes the exit code 1: any finding (default), any finding or test that did not run (skipped,
+  // blocked, manual), or nothing (everything is reported, exit 0).
   failOn: FailOn;
   // A test case sheet, or a Jira / Confluence link or JQL, to automate (overrides the input file's
   // testCases), and the mode.
   testCases: string | null;
   testCasesMode: TestCaseMode | null;
+  // The per-environment test data file (overrides the input file's testData).
+  testData: string | null;
   // Test options per endpoint (agent/config.ts allowInvalidInput and stableData): a list of endpoint
   // ids, 'all', or null to keep what the input file says.
   allowInvalidInput: EndpointList;
@@ -65,6 +68,7 @@ export function parseAgentFlags(argv: string[], defaultInput = 'input/endpoints.
     failOn: 'finding',
     testCases: null,
     testCasesMode: null,
+    testData: null,
     allowInvalidInput: null,
     stableData: null,
   };
@@ -107,6 +111,12 @@ export function parseAgentFlags(argv: string[], defaultInput = 'input/endpoints.
         flags.failOn = v as FailOn;
         break;
       }
+      case '--test-data': {
+        const v = value().trim();
+        if (!v) throw new Error('--test-data needs a test data .json file');
+        flags.testData = v;
+        break;
+      }
       case '--test-cases': {
         const v = value().trim();
         if (!v) throw new Error('--test-cases needs a .csv, .tsv or .xlsx test case sheet, or a Jira / Confluence link or JQL');
@@ -130,7 +140,7 @@ export function parseAgentFlags(argv: string[], defaultInput = 'input/endpoints.
         break;
       }
       default:
-        if (arg.startsWith('--')) throw new Error(`unknown flag ${arg}. Known flags: --resume, --only-new, --endpoints a,b, --budget N, --concurrency N, --test-workers N, --fail-on none|finding, --test-cases <sheet|link>, --test-cases-mode sheet-only|sheet-plus-agent, --select k=v`);
+        if (arg.startsWith('--')) throw new Error(`unknown flag ${arg}. Known flags: --resume, --only-new, --endpoints a,b, --budget N, --concurrency N, --test-workers N, --fail-on none|finding|skipped, --test-cases <sheet|link>, --test-cases-mode sheet-only|sheet-plus-agent, --test-data <file>, --select k=v`);
         positional.push(arg);
     }
   }

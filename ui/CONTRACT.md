@@ -361,7 +361,9 @@ The agent's exit code is 0 (completed, nothing fails it), 1 (findings: at least 
 no tests, budget stop, an endpoint that could not be tested, a failed framework export, or a crash). The
 "done" event carries it; the page shows 0 and 1 as a completed run.
 
-`out/summary.json` also has `exitCode` (the same number), `failOn` ("finding" or "none") and
+With `--fail-on skipped` a run also exits 1 when any test or sheet case did not run (skipped, blocked,
+manual); see section 16. `out/summary.json` also has `exitCode` (the same number), `failOn` ("finding",
+"skipped" or "none") and
 `frameworkError` (null, or why the export failed; `framework` is then null). The summary is written
 before the framework export and rewritten after it, so a failed export never loses the run's results.
 The console's summary block ends with `Exit code: <n>`.
@@ -446,9 +448,10 @@ did not pass.
             jira|null, confluence|null }] }
 ```
 
-`status` is `passed`, `failed`, `needs review` or `not automated`; `cases` lists every sheet row in sheet
+`status` is `passed`, `failed`, `needs review` or `not automated`, plus (section 16) `partially covered`,
+`skipped`, `manual`, `blocked`, `known issue` and `unexpected pass`; `cases` lists every sheet row in sheet
 order. `out/traceability.csv` (CRLF, cells starting with `= + - @` prefixed with `'`) and
-`out/traceability.xlsx` have the columns ID, Title, Endpoint, Test file, Status, Coverage, Reason, Jira,
+`out/traceability.xlsx` have the columns ID, Title, Endpoint, Test file, Status, Reason code, Coverage, Reason, Jira,
 Confluence, with agent suggestions after the sheet rows (ID `agent`). `testFile` is null / blank unless a
 runnable test automates the case. Reasons are complete (never shortened). `coverage` is
 `<asserted>/<clauses> (<percent>%)` for a case with a test, else null. `assertionCoverage` (missing in older
@@ -501,3 +504,46 @@ Safety: only the configured Atlassian site, the Confluence site and the Xray / Z
 followed; HTTPS unless loopback; 1000 cases, 100 per page, 10 MB per response, 2500 requests and 30 s per
 request; 429 and 503 retried 3 times after `Retry-After` (at most 60 s). Every message is redacted of the
 tokens, which are also removed from the test runner's and the model CLI's environment.
+
+## 16. Statuses, skip reason codes and known issues (additive)
+
+Reason codes (`agent/test-data.ts` REASON_CODES): `MISSING_TEST_DATA`, `DATA_NOT_ON_ENV`,
+`ENV_UNAVAILABLE`, `MANUAL`, `MANUAL_VISUAL`, `SPEC_UNCLEAR`, `KNOWN_ISSUE`. Skip and known-issue reasons
+start with their code (`DATA_NOT_ON_ENV: not on this environment (local) ...`).
+
+Input: `testData` (a file relative to the input) or `--test-data <file>`: `{ environment?, values: { NAME:
+value }, lookup?: { endpointId, query? } }`; `lookup.endpointId` must be a GET endpoint of the input, else
+a setup error (exit 2). Sheet columns `knownIssue`, `requiredData` and `automation` (section 15
+`columns`). `--fail-on` accepts `none`, `finding` (default) and `skipped`.
+
+Test titles: a declared skip (missing placeholder value, manual) is `[<ID>] [skipped] <Title>` or
+`[<ID>] [manual] <Title>` (Playwright `test.fixme` with a `skip-reason` annotation, Pactum a pending `it`).
+Known issue tests keep their type tag and are marked expected to fail (Playwright `test.fail(true,
+"KNOWN_ISSUE <key>...")`, Pactum `knownIssue("KNOWN_ISSUE <key>...", ...)`); a required-data check skips
+the test at run time with a `DATA_NOT_ON_ENV` or `ENV_UNAVAILABLE` reason. Allure: a known issue that
+failed as expected has `tag=known issue` and an `issue` label with the Jira key.
+
+`out/summary.json` (all missing in older summaries; treat as 0 / []):
+
+```
+totals: { ..., skipped, knownIssues, skippedByCode: { <code>: n } }
+endpoints[]: { ..., skipped, knownIssues }
+skippedTests: [{ endpointId, testTitle, reasonCode, reason, when: "run" | "plan" }]
+knownIssues: [{ endpointId, testTitle, reason, actualStatus, error }]
+testCases: { ..., partiallyCovered, skipped, manual, blocked, knownIssues, unexpectedPasses,
+             cases: [{ ..., reasonCode|null }] }
+```
+
+`totals.passed` never includes skipped tests or known issues: `passed + failed + blocked (run time) +
+knownIssues === testsGenerated`. `skippedTests` holds run-time skips (`when: "run"`, blocked) and
+placeholders the agent wrote at planning (`when: "plan"`, skipped or manual). A known issue that failed as
+expected is not a finding. A known issue whose test passed is a finding with `error` starting `UNEXPECTED
+PASS` and classification `needs review`.
+
+Console SUMMARY: `Endpoints: <n>, specs written: <w>, tests: <t>, passed: <p>, failed: <f>, skipped: <s>,
+known issues: <k>`, then when present `<k> known issue(s) (failed as expected, not counted as passed)` and
+`<s> skipped (did not run, not counted as passed)` with one `  - <title>: <reason>` line each.
+
+UI: tiles **Skipped** (warning colour) and **Known issues** (purple) next to Passed and Failed; the pass
+bar's total includes them; the findings card lists known issues and skipped tests with their code and
+reason; the test case table has the Reason code column and a tile per status.
