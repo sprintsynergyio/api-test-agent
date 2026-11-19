@@ -53,6 +53,7 @@ jobs:
       - run: npm run test:response-schema
       - run: npm run test:sheet-feedback
       - run: npm run test:statuses
+      - run: npm run test:probe-redesign
       - run: npm run test:eval
       - run: npm run test:claude-api
       - run: npm run test:settings

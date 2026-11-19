@@ -216,6 +216,13 @@ const server = http.createServer(async (req, res) => {
     issuedTokens.set(`Bearer ${token}`, "admin");
     return send(res, 200, { access_token: token, token_type: "Bearer", expires_in: 3600 });
   }
+  // GET /maintenance: a documented 5xx, not a bug. It always answers 503 (the shop's "maintenance mode is
+  // on" contract), used by input/local-shop-probes.json for the Documented 5xx column and for an endpoint
+  // whose probe is never usable.
+  if (parts[0] === "maintenance" && parts.length === 1) {
+    if (req.method !== "GET") return send(res, 405, { error: "method not allowed" });
+    return send(res, 503, { error: "down for maintenance", retryAfterSeconds: 60 });
+  }
   // /media/v1/...: images, a paged read-only list and 400 validation errors (local-api/media.mjs).
   if (parts[0] === "media" && parts[1] === "v1") return handleMedia(req, res, parts.slice(2), url, readBody);
   // /products/:id/reviews and /products/:id/reviews/:reviewId (nested resource, used by
