@@ -1,6 +1,7 @@
 // npm run test:ui-layout: opens the UI in headless Chromium at several window widths and browser zoom levels
 // and checks the layout: the input column and the pipeline/runs column never overlap, no element sticks out
-// of its card, and the page never scrolls sideways. The saved input is a stress fixture served through
+// of its card, the page never scrolls sideways, and no placeholder, select option, label, tab or segmented
+// button has its text cut off. The saved input is a stress fixture served through
 // page.route (nothing is written to input/): a long input name, a long base URL, a long .env variable name
 // that is not set, and a long endpoint path. Recent runs are faked the same way. Offline: no agent run, no
 // model call. Needs Chromium for Playwright (npx playwright install chromium).
@@ -38,7 +39,7 @@ const RUNS = [
 // [label, window width, browser zoom]. Browser zoom is emulated the way the browser does it: the page sees a
 // viewport of width / zoom CSS pixels drawn at zoom device pixels per CSS pixel.
 const CASES = [
-  ["1920", 1920, 1], ["1440", 1440, 1], ["1280", 1280, 1], ["1101", 1101, 1], ["1100", 1100, 1], ["1024", 1024, 1],
+  ["1920", 1920, 1], ["1536", 1536, 1], ["1440", 1440, 1], ["1366", 1366, 1], ["1280", 1280, 1], ["1101", 1101, 1], ["1100", 1100, 1], ["1024", 1024, 1],
   ["900", 900, 1], ["768", 768, 1], ["390", 390, 1], ["1280-zoom125", 1280, 1.25], ["1280-zoom150", 1280, 1.5],
 ];
 
@@ -145,6 +146,84 @@ function layoutProblems() {
   return problems;
 }
 
+// Runs in the page. Returns text that does not fit its control, as strings: a placeholder or a selected
+// value cut off inside its input or select, an option wider than its select (the native dropdown would
+// spill out of the column), labels, tabs and segmented buttons whose text is clipped or ellipsed, and help
+// text or labels cut off at the bottom.
+function truncationProblems() {
+  const problems = [];
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  const label = (el) => `${el.tagName.toLowerCase()}${el.id ? "#" + el.id : ""}${el.dataset && (el.dataset.fw || el.dataset.mode) ? "[" + (el.dataset.fw || el.dataset.mode) + "]" : ""}`;
+  const visible = (el) => {
+    const b = el.getBoundingClientRect();
+    if (!b.width || !b.height) return false;
+    const cs = getComputedStyle(el);
+    return cs.visibility !== "hidden" && cs.display !== "none";
+  };
+  const textWidth = (el, text) => {
+    const cs = getComputedStyle(el);
+    ctx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+    return ctx.measureText(text).width;
+  };
+  const contentWidth = (el) => {
+    const cs = getComputedStyle(el);
+    return el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  };
+  for (const el of document.querySelectorAll("input.txt, input.sm")) {
+    if (!visible(el)) continue;
+    const text = el.value || el.placeholder;
+    if (!text || el.type === "password") continue;
+    if (el.value && el === document.activeElement) continue;
+    // A typed value may scroll (a long URL); a placeholder is the label of an empty field and must fit.
+    if (!el.value) {
+      const w = textWidth(el, text);
+      if (w > contentWidth(el) + 1) problems.push(`${label(el)}: the placeholder "${text}" is cut off (${Math.round(w)}px of text in ${Math.round(contentWidth(el))}px)`);
+    }
+  }
+  for (const el of document.querySelectorAll("select")) {
+    // The saved-input list holds the user's own file names (the stress fixture's is 66 characters); its
+    // closed value ellipses. Every other select has fixed option text, written to fit.
+    if (!visible(el) || el.id === "inputSel") continue;
+    const room = contentWidth(el) - 16; // the arrow
+    for (const o of el.options) {
+      const w = textWidth(el, o.text);
+      if (w > room + 1) problems.push(`${label(el)}: option "${o.text}" is wider than its select (${Math.round(w)}px in ${Math.round(room)}px)`);
+    }
+  }
+  for (const el of document.querySelectorAll(".seg button, .tab, label.lbl, .radio-card .t, .radio-card .d, .check, .btn, .pill, .tag")) {
+    if (!visible(el)) continue;
+    if (el.scrollWidth > el.clientWidth + 1) problems.push(`${label(el)}: "${el.textContent.trim().slice(0, 60)}" is clipped (${el.scrollWidth}px in ${el.clientWidth}px)`);
+  }
+  // Vertical clipping: help text, descriptions and labels must show every line. A text box that clips
+  // (overflow hidden or clip, or a line clamp) must not have more text than it shows, and no ancestor up
+  // to the card may clip it. Boxes that scroll (log, tables, code) are skipped: their content scrolls.
+  for (const el of document.querySelectorAll(".hint, .help, .desc, .legend, label, .radio-card .t, .radio-card .d, .empty-state .sub, .empty-state .ttl, .step .t, .step .s, .card-h h2, .card-meta, p")) {
+    if (!visible(el)) continue;
+    const cs = getComputedStyle(el);
+    const clamp = cs.webkitLineClamp || cs.getPropertyValue("line-clamp");
+    if (clamp && clamp !== "none") problems.push(`${label(el)}: "${el.textContent.trim().slice(0, 60)}" uses a line clamp (${clamp})`);
+    if (/hidden|clip/.test(cs.overflowY) && el.scrollHeight > el.clientHeight + 1) problems.push(`${label(el)}: "${el.textContent.trim().slice(0, 60)}" is cut off at the bottom (${el.scrollHeight}px in ${el.clientHeight}px)`);
+    const b = el.getBoundingClientRect();
+    for (let a = el.parentElement; a && a !== document.body; a = a.parentElement) {
+      const oy = getComputedStyle(a).overflowY;
+      if (oy === "auto" || oy === "scroll") break;
+      if (oy === "hidden" || oy === "clip") {
+        const ab = a.getBoundingClientRect();
+        if (b.bottom > ab.bottom + 1 || b.top < ab.top - 1) problems.push(`${label(el)}: "${el.textContent.trim().slice(0, 60)}" is clipped by ${label(a)} (text ${Math.round(b.top)}..${Math.round(b.bottom)}, box ${Math.round(ab.top)}..${Math.round(ab.bottom)})`);
+        break;
+      }
+      if (a.classList.contains("card")) break;
+    }
+  }
+  for (const el of document.querySelectorAll(".seg button")) {
+    if (!visible(el)) continue;
+    const lh = parseFloat(getComputedStyle(el).lineHeight) || 20;
+    if (el.getBoundingClientRect().height > Math.max(lh * 1.6, 36)) problems.push(`${label(el)}: segmented button text wraps`);
+  }
+  return problems;
+}
+
 async function main() {
   if (SHOTS) fs.mkdirSync(SHOTS, { recursive: true });
   const ui = await startUi();
@@ -171,6 +250,18 @@ async function main() {
           const p = await page.evaluate(layoutProblems);
           assert.deepEqual(p, []);
         });
+        await check(`${name}: no cut-off placeholders, options, labels or buttons`, async () => {
+          const p = await page.evaluate(truncationProblems);
+          assert.deepEqual(p, []);
+        });
+        // Both extra-test options ticked: their endpoint-id fields show and must fit too.
+        await page.evaluate(() => ["optInvalid", "optStable"].forEach((id) => document.getElementById(id).click()));
+        await page.waitForTimeout(50);
+        await check(`${name}: run options with every extra test ticked`, async () => {
+          const p = [...(await page.evaluate(layoutProblems)), ...(await page.evaluate(truncationProblems))];
+          assert.deepEqual(p, []);
+        });
+        await page.evaluate(() => ["optInvalid", "optStable"].forEach((id) => document.getElementById(id).click()));
 
         await page.selectOption("#inputSel", STRESS_NAME);
         await page.waitForFunction(() => document.querySelectorAll("#epList li").length === 4 && /NOT_SET/.test(document.getElementById("authBox").textContent));
@@ -186,7 +277,7 @@ async function main() {
           await page.evaluate((id) => document.getElementById(id).click(), id);
           await page.waitForTimeout(100);
           await check(`${name}: ${tab} tab`, async () => {
-            const p = await page.evaluate(layoutProblems);
+            const p = [...(await page.evaluate(layoutProblems)), ...(await page.evaluate(truncationProblems))];
             assert.deepEqual(p, []);
           });
         }

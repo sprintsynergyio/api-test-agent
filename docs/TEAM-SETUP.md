@@ -137,7 +137,7 @@ Click the **Build** tab.
    Or click the **Import** tab, pick a **Source** and import: an OpenAPI or Swagger file, a Postman collection, cURL commands, a browser HAR capture, or ticket text. Credentials in the import are dropped automatically and the import tells you what it removed.
 
 5. **Run options**: the test framework (**Playwright** or **Pactum**), and redaction. Standard redaction replaces emails, phone numbers, card numbers, tokens and IP addresses before anything reaches the model; **Strict** sends only the shape of the response data. Add field paths such as `customer.name, address.*` to hide more.
-   **Test options** (optional): **Invalid-input tests** adds tests that send bad values to endpoints that only take a query string (bad page numbers, unknown filters); endpoints with a body, an `{id}`, a 4xx in the API spec or a test case expecting a 4xx have them already. **Stable data** tells the agent an endpoint's data does not change during the run, so tests may compare several calls (page 1 against page 2, totals); read-only GET endpoints get this on their own when nothing in the run changes them. Leave the endpoint ids empty for all endpoints, or list some, comma separated.
+   **Extra tests** (optional): **Invalid-input tests** adds tests that send bad values to endpoints that only take a query string (bad page numbers, unknown filters); endpoints with a body, an `{id}`, a 4xx in the API spec or a test case expecting a 4xx have them already. **Stable data** tells the agent an endpoint's data does not change during the run, so tests may compare several calls (page 1 against page 2, totals); read-only GET endpoints get this on their own when nothing in the run changes them. Ticking one shows an "Only for these endpoint ids" field: leave it empty for all endpoints, or list some, comma separated.
 6. Click **Generate tests**.
 
 **Save as input file** stores the configuration (without any auth value) under `input/<name>.json`, so next time it is in the Saved list. Put your real auth values in `.env` as the variables the file names, for example `CUSTOM_API_AUTH=Bearer ...`. The Saved tab shows which variables an input reads and highlights the ones your `.env` does not have yet.
@@ -152,13 +152,13 @@ If your team keeps manual test cases in Excel, Google Sheets, Jira or Confluence
 row into an automated test that keeps the case ID in its name.
 
 1. Export the sheet as `.csv` or `.xlsx` (from Jira: **Export > CSV**; from Confluence: export or copy the
-   table), or skip the export and paste a link (next section). Or download the template from the UI (**Run options**, **Test cases**, **Download template CSV**).
+   table), or skip the export and paste a link (next section). Or download the template from the UI (**Run options**, **Test cases**, **Template CSV**).
    The columns that matter are ID, Title, Steps / Request and Expected Result; an Endpoint column (for
    example `get-product` or `GET /products/{id}`) makes the matching exact. Optional `Jira` and
    `Confluence` columns (a key such as `QA-12` or a link) are copied to the traceability report.
 2. In **Run options**, **Test cases**, click **Upload CSV or Excel** (or **Paste instead**). Check the
    preview: how many cases were found, which column became which field, and any warnings per row.
-3. Pick **Only my test cases** or **My test cases + agent suggestions**, then **Generate tests**.
+3. Pick **Only my cases** or **My cases + suggestions**, then **Generate tests**.
 4. After the run, the **Test case sheet** card lists every case as passed, partially covered, failed,
    needs review or not automated, with the full reason, how many clauses of its expected result the test
    checks (Coverage) and its Jira and Confluence links. The **Assertion coverage** tile shows that for the
@@ -322,8 +322,8 @@ APIs behind OAuth2 client credentials use `"auth": { "type": "oauth2_client", "t
 - The run stops with `stopped at budget: run again with --resume to continue`: the default is 60 model calls per run, about 25 endpoints. Run `npm run agent -- input/<name>.json --resume` in the terminal and it continues where it stopped without paying for the finished endpoints again, or raise `MAX_CLAUDE_CALLS` in `.env`.
 - A test case is **partially covered**: its test passed, but some part of the expected result has no assertion (the reason names it, for example "clause 2 items are sorted by name"). It is never counted as passed. Make that part checkable from the response, or accept it as a manual check.
 - A test case is **needs review** with "expected ... actual ...": the API answered differently from the sheet when probed. Decide which is right; the agent does not change either.
-- A test case is **not automated** with "invalid-input is off for this endpoint": the endpoint has nothing to make invalid that the agent knows about. Tick **Test options > Invalid-input tests** (or add `"allowInvalidInput": true` to the endpoint, or run with `--allow-invalid-input <id>`).
-- A test case that compares pages is **needs review** with "turn on Stable data": tick **Test options > Stable data** for that endpoint if its data does not change while the tests run (or `"stableData": true`, or `--stable-data <id>`).
+- A test case is **not automated** with "invalid-input is off for this endpoint": the endpoint has nothing to make invalid that the agent knows about. Tick **Extra tests > Invalid-input tests** (or add `"allowInvalidInput": true` to the endpoint, or run with `--allow-invalid-input <id>`).
+- A test case that compares pages is **needs review** with "turn on Stable data": tick **Extra tests > Stable data** for that endpoint if its data does not change while the tests run (or `"stableData": true`, or `--stable-data <id>`).
 - An image or file endpoint: nothing to do. The agent sees it is not JSON and checks the content type, size and file signature instead.
 - A finding on your API that you think is wrong: open the report, look at the request and response attached to the test, and decide. The agent never changes an expected status to make a test pass; it reports what the API did.
 

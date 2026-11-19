@@ -325,7 +325,7 @@ The agent is unchanged; the UI reads the artifacts the agent already writes.
 - All three routes are 401 without a session when login is on.
 
 Page ids the tests rely on (`npm run test:ui`): `fwToggle` (framework), `cAuth` (auth type select, values
-none, header, query, cookie, login), `profileBox` and `profileDims`, `redactMode` and `redactFields`,
+none, header, query, cookie, login), `profileBox` and `profileDims`, `redactMode` (hidden field holding the mode the Standard / Strict radio cards set) and `redactFields`,
 `findings` (finding cards with `data-act="evidence" | "jira" | "md"` buttons), `runsBody` (run history),
 `strip` (summary strip), plus every id section 10 and the settings test use.
 
@@ -405,7 +405,7 @@ traceability files and the UI card.
   that is not text (no `body`/`bodyText` then) and `responseHeaders` (content-type, cache-control,
   content-length, content-disposition, etag, last-modified).
 - Input endpoints may carry `errorStatuses: [400-499]`, `allowInvalidInput: true` and `stableData: true`.
-  The UI's **Test options** set the last two per endpoint in the run's JSON. The CLI flags
+  The UI's **Extra tests** options set the last two per endpoint in the run's JSON. The CLI flags
   `--allow-invalid-input [ids]` and `--stable-data [ids]` do the same (no ids: every endpoint; an unknown
   id is a setup error, exit 2).
 - `baseUrl` may have a path; endpoint paths are joined after it everywhere.
