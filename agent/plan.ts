@@ -8,7 +8,7 @@ import { loadConfig, PATH_PARAM, type Endpoint } from './config';
 import { readProbe, type ProbeResult } from './probe';
 import { redactValue } from './redact';
 import { AGENT_CASE_PREFIX, isBinaryContentType, isReadOnlyMethod, PATH_PARAM as PATH_PLACEHOLDER } from './model';
-import { describeExpectedStatus, parseExpectedStatus, splitClauses } from './expected';
+import { describeExpectedStatus, expectedContentType, parseExpectedStatus, splitClauses } from './expected';
 import type { SheetCase } from './test-cases';
 import type { TestCaseMode } from './config';
 import { untrusted, withUntrustedRule } from './untrusted';
@@ -34,10 +34,14 @@ const CaseSchema = z.object({
   source: z.enum(['sheet', 'agent']).optional(),
   expectedResult: z.string().optional(),
   // The case compares several calls (a paging walk, totals across filters). Only for endpoints with
-  // stable data (dataStability); the generated file then runs its tests serially.
+  // stable data (dataStability). The case is one test that sends all its calls itself (never serial mode).
   crossCall: z.boolean().optional(),
   // Sheet cases: the 4xx codes the sheet names ("400 or 404"), which the test checks as a list.
   statusCodes: z.array(z.number().int()).optional(),
+  // Sheet cases: the response format the expected result names ("Content-Type application/json",
+  // "a JSON error", "plain text"), read by the agent (expectedContentType). The test asserts the
+  // Content-Type header, and a test for a format that is not JSON never calls response.json().
+  contentType: z.string().optional(),
   // Sheet cases, from the model: what it did with each clause of the expected result (numbered from 1).
   coverage: z
     .array(
@@ -151,7 +155,7 @@ function allowedTypes(endpoint: Endpoint, roles: string[], sheetCases: SheetCase
 // The rule about tests that compare calls, for both prompts.
 function crossCallRule(endpoint: Endpoint, stability: Stability | undefined, sheet: boolean): string {
   if (stability?.stable) {
-    return `- This endpoint's data is stable during the run: ${stability.why}. Cases may compare several calls to it (a paging walk across pages, totals that add up across filters, no item repeated across pages, the same item on two pages). Give such a case "crossCall": true; those tests run one after another (serially). Every other case is independent and checks one call.`;
+    return `- This endpoint's data is stable during the run: ${stability.why}. Cases may compare several calls to it (a paging walk across pages, totals that add up across filters, no item repeated across pages, the same item on two pages). Give such a case "crossCall": true; it is one test that sends all the calls it compares, never a chain of tests that depend on each other. Every other case is independent and checks one call.`;
   }
   const why = stability ? stability.why : 'its data is not known to be stable';
   return `- Tests run in parallel against a shared live API while other tests create, update and delete data. Never plan checks that compare two calls ("stable", "idempotent", "unchanged"), count items, or check the exact contents of a list. For list endpoints check the array type and the shape of its items only.${
@@ -343,10 +347,10 @@ export function clausesFor(expected: string, coverage: Plan['cases'][number]['co
   return splitClauses(expected).map((text, i) => {
     const n = i + 1;
     const m = (coverage ?? []).find((x) => x.clause === n);
-    if (m?.disagrees) return { n, text, status: 'probe-disagrees' as const, expected: m.disagrees.expected.slice(0, 200), actual: m.disagrees.actual.slice(0, 200) };
+    if (m?.disagrees) return { n, text, status: 'probe-disagrees' as const, expected: m.disagrees.expected, actual: m.disagrees.actual };
     if (isStatusOnlyClause(text)) return { n, text, status: 'asserted' as const, via: 'status' as const, check: m?.check ?? 'the status assertion' };
-    if (m?.check && !m.notAsserted) return { n, text, status: 'asserted' as const, via: 'assertion' as const, check: m.check.slice(0, 200) };
-    return { n, text, status: 'not-asserted' as const, reason: (m?.notAsserted ?? 'the AI did not turn it into an assertion').slice(0, 200) };
+    if (m?.check && !m.notAsserted) return { n, text, status: 'asserted' as const, via: 'assertion' as const, check: m.check };
+    return { n, text, status: 'not-asserted' as const, reason: m?.notAsserted ?? 'the AI did not turn it into an assertion' };
   });
 }
 
@@ -444,7 +448,7 @@ export function finalizeSheetPlan(raw: Plan, endpoint: Endpoint, probe: ProbeRes
   const done = new Set<string>();
   const errors: string[] = [];
   const review = (c: SheetCase, reason: string) => {
-    needsReview.push({ caseId: c.id, title: sheetTitle(c.id, 'needs-review', c.title), reason: reason.replace(/\s+/g, ' ').trim().slice(0, 300) });
+    needsReview.push({ caseId: c.id, title: sheetTitle(c.id, 'needs-review', c.title), reason: reason.replace(/\s+/g, ' ').trim() });
     done.add(c.id.toLowerCase());
   };
   for (const r of raw.needsReview ?? []) {
@@ -485,6 +489,7 @@ export function finalizeSheetPlan(raw: Plan, endpoint: Endpoint, probe: ProbeRes
     const ruledOut = parseExpectedStatus(c.expected);
     const statusLine = statusCodes.length ? [`status is one of ${statusCodes.join(', ')} (from the sheet${ruledOut.forbids.length || ruledOut.forbidsRanges.length ? `; never ${[...ruledOut.forbids, ...ruledOut.forbidsRanges].join(' or ')}` : ''})`] : [];
     const assertions = pc.assertions.length ? pc.assertions : [`status is ${STATUS_FOR[pc.type](probe.status)}`];
+    const contentType = expectedContentType(c.expected);
     sheetPlanned.push({
       ...pc,
       id: pc.id || c.id.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
@@ -494,6 +499,7 @@ export function finalizeSheetPlan(raw: Plan, endpoint: Endpoint, probe: ProbeRes
       expectedStatus: STATUS_FOR[pc.type](probe.status),
       expectedResult: c.expected || undefined,
       ...(statusCodes.length ? { statusCodes } : {}),
+      ...(contentType ? { contentType } : {}),
       ...(pc.crossCall ? { crossCall: true } : {}),
       assertions: [...assertions, ...statusLine.filter((l) => !assertions.includes(l))],
       clauses: clausesFor(c.expected, pc.coverage),

@@ -100,7 +100,7 @@ function oneLine(text: string): string {
   return text.replace(/\s*\n\s*/g, ' ');
 }
 
-// Whether each endpoint's data stays put during the run (cross-call checks, serial tests): set in main.
+// Whether each endpoint's data stays put during the run (cross-call checks): set in main.
 const STABILITY = new Map<string, Stability>();
 const stabilityOf = (id: string): Stability | undefined => STABILITY.get(id);
 
@@ -685,7 +685,7 @@ async function main() {
       ...traceTotals(traceRows),
       warnings: sheetRun.sheet.warnings.map((w) => `${w.row ? `row ${w.row}: ` : ''}${w.message}`),
       traceability: { csv: TRACE_CSV, xlsx: TRACE_XLSX },
-      cases: traceRows.filter((r) => r.source === 'sheet').map((r) => ({ id: r.id, title: r.title, endpoint: r.endpoint || null, testFile: r.testFile || null, status: r.status, reason: r.reason })),
+      cases: traceRows.filter((r) => r.source === 'sheet').map((r) => ({ id: r.id, title: r.title, endpoint: r.endpoint || null, testFile: r.testFile || null, status: r.status, reason: r.reason, coverage: r.coverage || null, asserted: r.asserted ?? 0, clauses: r.clauses ?? 0, jira: r.jira ?? null, confluence: r.confluence ?? null })),
     };
   }
   const summaryInput = { status, inputFile, config, startedAt, states, outcomes, findings, allureReport, secrets, safety, requestsSent, testFramework: fw.name, redactionReplaced, cleanup, scope, failOn: flags.failOn, testCases };
@@ -778,7 +778,9 @@ function coverageLabels(states: EndpointState[]): Record<string, { name: string;
 }
 
 function testCasesLine(t: Record<string, unknown>): string {
-  return `Test cases: ${t.rows} in the sheet: ${t.passed} passed, ${t.partiallyCovered ?? 0} partially covered, ${t.failed} failed, ${t.needsReview} need review, ${t.notAutomated} not automated; ${t.agentSuggestions} agent suggestion(s); traceability in ${TRACE_CSV} and ${TRACE_XLSX}`;
+  const cov = t.assertionCoverage as { asserted: number; clauses: number; percent: number | null } | undefined;
+  const covText = cov && cov.percent !== null ? `; assertion coverage ${cov.percent}% (${cov.asserted} of ${cov.clauses} expected-result clauses asserted)` : '';
+  return `Test cases: ${t.rows} in the sheet: ${t.passed} passed, ${t.partiallyCovered ?? 0} partially covered, ${t.failed} failed, ${t.needsReview} need review, ${t.notAutomated} not automated; ${t.agentSuggestions} agent suggestion(s)${covText}; traceability in ${TRACE_CSV} and ${TRACE_XLSX}`;
 }
 
 main().catch((err) => {

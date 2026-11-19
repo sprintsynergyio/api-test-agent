@@ -186,6 +186,9 @@ await check('Jira Cloud: /rest/api/3/search/jql with nextPageToken paging, Basic
   assert.equal(sheet.cases[1].endpoint, 'list-products');
   assert.equal(sheet.cases[1].expected, '200 with a list');
   assert.equal(sheet.cases[1].priority, 'High');
+  // The traceability report's Jira column: each issue's browse link.
+  assert.deepEqual(sheet.cases.map((c) => c.jira), ['https://acme.atlassian.net/browse/QA-1', 'https://acme.atlassian.net/browse/QA-2', 'https://acme.atlassian.net/browse/QA-3']);
+  assert.equal(sheet.columns.jira, undefined, 'the link is derived, not a column of the source');
   assert.match(sheet.columns.expected ?? '', /Description.*Expected Result|Expected Result.*Description/);
   const pv = previewSheet(sheet, ENDPOINTS);
   assert.equal(pv.rows.find((r) => r.id === 'QA-2')?.endpoint, 'list-products');
@@ -327,6 +330,8 @@ await check('Confluence Cloud: /wiki/api/v2/pages/{id}?body-format=storage, the 
   assert.equal(sheet.source?.label, 'Confluence page "API test cases"');
   assert.equal(sheet.columns.id, 'Test Case ID');
   assert.deepEqual(sheet.cases.map((c) => [c.id, c.endpoint, c.expected]), [['TC-1', 'list-products', '200'], ['TC-2', '', '201']]);
+  // The traceability report's Confluence column: the page the case was read from.
+  assert.ok(sheet.cases.every((c) => c.confluence === 'https://acme.atlassian.net/wiki/spaces/QA/pages/98765/API+test+cases'));
   assert.ok(sheet.warnings.some((w) => /1 other table\(s\) on the page have no Title or Steps column/.test(w.message)));
   const pv = previewSheet(sheet, ENDPOINTS);
   assert.equal(pv.matched, 2);

@@ -395,7 +395,8 @@ traceability files and the UI card.
 - GENERATING may read `<id> OK written generated/<id>.spec.ts (<n> test(s) dropped by the static gate, the
   rest kept)`; each dropped sheet case is `not automated` with `static gate: <its own reasons>`.
 - Plans in the checkpoint and summary may carry, per case, `statusCodes` (the sheet's 4xx list),
-  `crossCall` (compares several calls; serial file), and `clauses: [{ n, text, status: asserted |
+  `crossCall` (compares several calls in one test; never a serial file), `contentType` (the response
+  format the sheet names, e.g. `application/json`, `text/plain`), and `clauses: [{ n, text, status: asserted |
   not-asserted | probe-disagrees, via?, check?, reason?, expected?, actual? }]`, and per plan
   `notAutomated: [{ caseId?, title, reason }]`.
 - Probe results (`out/probes/<id>.json`) may carry `binary: { bytes, signature, signatureHex }` for a body
@@ -440,13 +441,20 @@ did not pass.
 ```
 { file, mode, format, columns: { <field>: <header> }, rows, automated, passed, failed, needsReview,
   notAutomated, agentSuggestions, warnings: [string], traceability: { csv, xlsx },
-  cases: [{ id, title, endpoint|null, testFile|null, status, reason }] }
+  assertionCoverage: { asserted, clauses, percent|null },
+  cases: [{ id, title, endpoint|null, testFile|null, status, reason, coverage|null, asserted, clauses,
+            jira|null, confluence|null }] }
 ```
 
 `status` is `passed`, `failed`, `needs review` or `not automated`; `cases` lists every sheet row in sheet
 order. `out/traceability.csv` (CRLF, cells starting with `= + - @` prefixed with `'`) and
-`out/traceability.xlsx` have the columns ID, Title, Endpoint, Test file, Status, Reason, with agent
-suggestions after the sheet rows (ID `agent`). The exported framework holds `traceability.csv`.
+`out/traceability.xlsx` have the columns ID, Title, Endpoint, Test file, Status, Coverage, Reason, Jira,
+Confluence, with agent suggestions after the sheet rows (ID `agent`). `testFile` is null / blank unless a
+runnable test automates the case. Reasons are complete (never shortened). `coverage` is
+`<asserted>/<clauses> (<percent>%)` for a case with a test, else null. `assertionCoverage` (missing in older
+summaries) counts every clause of every sheet case; a case without a test counts as not asserted;
+`percent` is rounded to one decimal, null with no clauses. The SUMMARY line adds `; assertion coverage
+<p>% (<a> of <c> expected-result clauses asserted)` before `; traceability in ...` when there are clauses. The exported framework holds `traceability.csv`.
 
 UI server routes:
 - `POST /api/test-cases/preview` `{ name, content | base64, json? }`: the parsed sheet,

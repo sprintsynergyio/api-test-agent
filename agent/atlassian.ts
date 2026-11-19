@@ -445,7 +445,7 @@ export function splitExpected(text: string): { steps: string; expected: string }
 
 // ---------- Canonical rows ----------
 
-const CANON: CaseField[] = ['id', 'title', 'steps', 'expected', 'endpoint', 'method', 'priority', 'preconditions', 'testData'];
+const CANON: CaseField[] = ['id', 'title', 'steps', 'expected', 'endpoint', 'method', 'priority', 'preconditions', 'testData', 'jira', 'confluence'];
 type Canon = Partial<Record<CaseField, string>>;
 
 function rowsOf(items: Canon[]): string[][] {
@@ -455,10 +455,17 @@ function rowsOf(items: Canon[]): string[][] {
 function toSheet(items: Canon[], format: ParsedSheet['format'], source: CaseSource, columns: Partial<Record<CaseField, string>>, warnings: string[]): ParsedSheet {
   if (!items.length) throw new AtlassianError(`${source.label} has no test cases${format === 'jira' ? ' (the search found no issues)' : ''}`);
   if (items.length > MAX_SHEET_ROWS) throw new AtlassianError(`${source.label} has more than ${MAX_SHEET_ROWS} test cases; narrow it down (for Jira, add to the JQL, e.g. AND labels = api)`);
-  const sheet = casesFromRows(rowsOf(items), format);
+  // The traceability report links each case to where it lives: the Confluence page it was read from, or
+  // the Zephyr Scale key (Jira issues carry their own browse link, set in loadJira).
+  const linked = items.map((it) => ({
+    ...it,
+    ...(source.kind === 'confluence' && !it.confluence ? { confluence: source.link } : {}),
+    ...(source.kind === 'zephyr' && !it.jira && it.id ? { jira: it.id } : {}),
+  }));
+  const sheet = casesFromRows(rowsOf(linked), format);
   // Show where each field really came from instead of the canonical header names.
   const shown: Partial<Record<CaseField, string>> = {};
-  for (const f of Object.keys(sheet.columns) as CaseField[]) if (items.some((it) => it[f])) shown[f] = columns[f] ?? sheet.columns[f]!;
+  for (const f of Object.keys(sheet.columns) as CaseField[]) if (items.some((it) => it[f]) && (f !== 'jira' && f !== 'confluence' ? true : columns[f] !== undefined)) shown[f] = columns[f] ?? sheet.columns[f]!;
   const ws = [...sheet.warnings];
   if (!items.some((it) => it.expected)) ws.unshift({ row: null, caseId: null, message: `no expected result found in any case: write "Expected result: ..." in the ${format === 'jira' ? 'description (or add an Expected Result field)' : 'test case'}, or cases are marked needs review` });
   return { ...sheet, format, source, columns: shown, ignored: [], warnings: [...warnings.map((m) => ({ row: null, caseId: null, message: m })), ...ws] };
@@ -603,7 +610,7 @@ async function loadJira(ctx: Ctx, target: Extract<LinkTarget, { kind: 'jira' }>,
   const note = (f: CaseField, label: string) => (from[f] ??= new Set()).add(label);
   const items: Canon[] = issues.map((issue) => {
     const f = issue.fields ?? {};
-    const it: Canon = { id: issue.key, title: fieldText(f.summary), priority: fieldText(f.priority) };
+    const it: Canon = { id: issue.key, title: fieldText(f.summary), priority: fieldText(f.priority), jira: `${ctx.s.jiraBase}/browse/${issue.key}` };
     for (const [id, field, name] of custom) {
       const v = fieldText(f[id]);
       if (v && !it[field]) {
@@ -791,7 +798,9 @@ async function loadConfluence(ctx: Ctx, target: Extract<LinkTarget, { kind: 'con
   if (usable.length === 1) {
     const sheet = casesFromRows(usable[0], 'confluence');
     if (sheet.cases.length > MAX_SHEET_ROWS) throw new AtlassianError(`${label} has more than ${MAX_SHEET_ROWS} test cases`);
-    return { ...sheet, source: { kind: 'confluence', link, label, steps: null }, warnings: [...warnings.map((m) => ({ row: null, caseId: null, message: m })), ...sheet.warnings] };
+    // Each case links back to the page it was read from (unless the table has its own Confluence column).
+    const cases = sheet.cases.map((c) => (c.confluence ? c : { ...c, confluence: link }));
+    return { ...sheet, cases, source: { kind: 'confluence', link, label, steps: null }, warnings: [...warnings.map((m) => ({ row: null, caseId: null, message: m })), ...sheet.warnings] };
   }
   // Several case tables: one list, each table's columns matched on its own.
   warnings.push(`cases come from ${usable.length} tables on the page`);

@@ -15,7 +15,7 @@ API Test Agent is a SprintSynergy product, built and maintained by [SprintSynerg
 - Inputs for real APIs: nested paths with several ids, query parameters, per-endpoint headers, and a profile block for environments, brands and regions (`--select env=staging,brand=alpha,region=eu`), so one export serves every combination.
 - Auth: fixed header, API key in the query string, cookie, or a login call that fetches a token (cached, refreshed once on 401), plus extra roles for permission tests (`[authz]`).
 - Prompt safety: API responses, imported specs and ticket text go to the model inside marked untrusted-data blocks with an instruction to treat them as data only, and the test process never sees the model provider keys (`.env` is parsed into a private object, only the auth variables the input names are used).
-- Redaction before anything reaches the model: emails, phones, card numbers, tokens, IPs and secret-looking fields are replaced; optional field list and a strict mode that keeps only the shape.
+- Redaction before anything reaches the model: emails, phones, card numbers, tokens, IPs and secret-looking fields are replaced; optional field list and a strict mode that keeps only the shape. UUIDs are ids, not personal data: a fixed test value such as `00000000-0000-0000-0000-000000000000` reaches the plan and the tests unchanged (credential-named fields and headers are still hidden whatever they hold).
 - Test data cleanup: after each test (and after the probe), the records it made through `ctx.createResource` / `ctx.setup`, and its own 2xx POSTs, are deleted through the same guarded client, when the input has a DELETE for them (matched by path, or `setup.cleanup`). Without one they are counted as `no delete endpoint`, and a DELETE that fails is counted as `failed`, in `summary.json` `cleanup`; nothing is hidden, but nothing is retried either.
 - Production safety guard: production hosts are refused unless you say so, and then run read-only. Local, private and `staging`-style hosts run in full. Loopback (127/8), link-local (169.254/16), CGNAT (100.64/10) and private IPv6 count as local; a host name is also resolved, and one that points at a local address never gets looser rules by DNS.
 - Model providers: Claude (API key or your Claude Code login) or OpenAI. Set once from the UI on your own machine.
@@ -202,8 +202,15 @@ or put it in the input file: `"testCases": { "file": "local-shop-test-cases.csv"
   another role. A case of a type the endpoint does not allow is **needs review** with that rule and how to
   turn the type on. See [Test rules](#test-rules) for images, paging and cross-call checks.
 - **Traceability.** `out/traceability.csv` and `out/traceability.xlsx` list every row with ID, Title,
-  Endpoint, Test file, Status (passed, partially covered, failed, needs review, not automated) and Reason, followed by the agent
-  suggestions. The UI shows the same table with download buttons, `out/summary.json` has `testCases`, the
+  Endpoint, Test file, Status (passed, partially covered, failed, needs review, not automated), Coverage,
+  Reason, Jira and Confluence, followed by the agent suggestions. Test file is blank when no runnable test
+  automates the case (needs review, dropped by the static gate, not automated). Coverage is how many
+  clauses of the case's expected result a test assertion checks (`2/3 (66.7%)`). Reasons are never
+  shortened. Jira and Confluence come from sheet columns of that name (`Jira`, `Jira link`, `Story`,
+  `Confluence`, `Confluence page`, ...; a `Jira key` column stays the case ID), or from the import: each
+  Jira issue's browse link, the Confluence page a case was read from, the Zephyr Scale key. The summary and
+  the UI show the overall **assertion coverage**: of all the clauses in the sheet's expected results, how
+  many a test checks (cases without a test count as not checked). The UI shows the same table with download buttons, `out/summary.json` has `testCases`, the
   Allure report labels each test with its case ID (`caseId` and a tag), and the exported framework and zip
   include `traceability.csv`.
 - **Limits.** 5 MB, 1000 test cases, 100 columns and 4000 characters per cell. Excel files are read for
@@ -304,6 +311,11 @@ site with sample cases; it prints the `.env` lines to use).
 
 It never imports from this repo. Copy it anywhere, `npm install`, fill in `.env`, `npm test`.
 
+**Font.** The UI and the HTML reports from an agent run (the Playwright report in `reports/html` and the
+Allure report) use Calibri: `Calibri, Carlito, 'Segoe UI', Arial, sans-serif`. Calibri is not licensed for
+the web, so no font file is bundled; on machines without it, Carlito (the free font with Calibri's exact
+widths, `fonts-crosextra-carlito` on Linux) keeps the layout the same, then Segoe UI or Arial.
+
 ## Point it at another API
 
 Write an input file (or use the Build tab in the UI):
@@ -361,9 +373,10 @@ Every generated spec must pass the static gate (`agent/validate.ts`) before it i
 - Generated code is untrusted: the only import allowed is the ctx file, and the gate rejects `require`, dynamic `import()`, `eval`, `Function`, `process`, `globalThis`, `fetch`, Node built-in modules (`child_process`, `fs`, `net`, `http`, ...) and any Playwright fixture other than `ctx`. Every request goes through `ctx`, so the safety guard sees it.
 - Never expect a 5xx. A 5xx on bad input fails the test, and that is reported as a suspected API bug. Expectations are never changed to match a bug.
 - Every test title starts with its type (`[happy]`, `[schema]`, `[invalid-input]`, `[auth]`), records the real status before asserting, and the file must typecheck.
+- Response format: when a sheet case's expected result names one (`Content-Type application/json`, `a JSON error`, `plain text`, `image/png`), the test asserts the Content-Type header (`toContain('json')` for any JSON type, else the media type), and a test for a format that is not JSON never calls `response.json()` (it reads `response.text()` or `response.body()`). A format that is ruled out (`not JSON`) or describes the request (`send a JSON body`) is ignored.
 - Responses that are not JSON (images, PDFs, files): a happy or schema test checks headers (`Content-Type`, `Cache-Control`, `Content-Length`), the body size (`(await response.body()).length > 0`) or the file signature (PNG `89504E47`, JPEG `FFD8FF`, GIF, WebP, PDF), never `response.json()`. The probe reads such a body as bytes and records its type, size, signature and headers for the prompts.
 - invalid-input asserts the 4xx range, plus the sheet's own codes when it lists them (`expect([400, 404]).toContain(response.status())`).
-- Tests that compare several calls (a paging walk, totals across pages, no item on two pages) are allowed only when the endpoint's data is stable: a read-only GET with nothing in the run writing the same resource, or `stableData` on. Such a file runs serially (`test.describe.configure({ mode: 'serial' })` in Playwright; Mocha already runs a Pactum file's tests in order, one at a time). On an endpoint that changes data they are refused, and a sheet case that asks for one is **needs review** with how to turn Stable data on.
+- Tests that compare several calls (a paging walk, totals across pages, no item on two pages) are allowed only when the endpoint's data is stable: a read-only GET with nothing in the run writing the same resource, or `stableData` on. Each such case is one test that sends every call it compares, so no test depends on another or on the order tests run in. Serial mode (`test.describe.configure({ mode: 'serial' })`, `test.describe.serial`) is rejected by the gate: in serial mode one failure skips every later test in the file. On an endpoint that changes data they are refused, and a sheet case that asks for one is **needs review** with how to turn Stable data on.
 - Sheet cases mark each checked clause with `// covers clause N` before its assertion; the agent reads these to report coverage, so a clause with no comment and no `expect` is reported as not asserted.
 
 A failed test is a **suspected API finding** when the API returned a 5xx, or returned 2xx to an invalid-input or auth test. Anything else is marked **needs review**.

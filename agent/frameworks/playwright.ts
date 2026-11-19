@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { applyReportFont } from '../report-font';
 import { nodeBin } from '../node-bin';
 import { testEnv } from './test-env';
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
@@ -114,6 +115,7 @@ function generateAllure(reportName: string, secrets: string[], cleanError: (text
       }
     }
   }
+  applyReportFont(join(ALLURE_REPORT, 'index.html'));
   return { dir: ALLURE_REPORT };
 }
 
@@ -140,6 +142,7 @@ export const playwrightAdapter: FrameworkAdapter = {
     await runPlaywright(inputFile, specFiles, Math.max(1, workers ?? 1));
     if (!existsSync(RESULTS_FILE)) throw new Error(`Playwright did not write ${RESULTS_FILE}`);
     const read = readOutcomes(cleanError);
+    applyReportFont(join(HTML_REPORT, 'index.html'));
     const allure = generateAllure(reportName, secrets, cleanError, extraLabels);
     return { ...read, htmlReport: HTML_REPORT, allureReport: allure.dir, allureReason: allure.reason };
   },

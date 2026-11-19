@@ -74,3 +74,36 @@ export function splitClauses(text: string): string[] {
     .filter((p) => p.length > 0);
   return parts.slice(0, MAX_CLAUSES).map((p) => (p.length > 200 ? `${p.slice(0, 197)}...` : p));
 }
+
+// ---------- Expected response format ----------
+
+const MEDIA_TYPE = /\b((?:application|text|image|audio|video|multipart|font)\/[a-z0-9][a-z0-9.+-]*)/i;
+// Words that rule out a format named after them in the same clause: "not JSON", "non-JSON", "no HTML".
+const FORMAT_NEGATION = /\b(?:not|never|no|non|without|instead\s+of|rather\s+than|other\s+than)\b[\s-]*$/i;
+
+// The response format a sheet case's expected result asks for, as a media type, or null when it names
+// none: "Content-Type application/json" and "a JSON error" give application/json, "plain text" gives
+// text/plain, "Content-Type is image/png" gives image/png. A format that is ruled out ("not JSON") is
+// ignored. The test then asserts the Content-Type header, and a test for a format that is not JSON
+// never parses the body as JSON (agent/validate.ts).
+export function expectedContentType(text: string): string | null {
+  for (const clause of String(text ?? '').split(/[,;\n]|\bbut\b/i)) {
+    const media = MEDIA_TYPE.exec(clause);
+    if (media && !FORMAT_NEGATION.test(clause.slice(0, media.index))) return media[1].toLowerCase().replace(/[.+-]+$/, '');
+    const plain = /\bplain[\s-]+text\b|\btext\/plain\b/i.exec(clause);
+    if (plain && !FORMAT_NEGATION.test(clause.slice(0, plain.index))) return 'text/plain';
+    const json = /\bjson\b/i.exec(clause);
+    if (json && !FORMAT_NEGATION.test(clause.slice(0, json.index)) && !/\b(?:send|sends|sent|with|post|put|patch)\b[^.]*$/i.test(clause.slice(0, json.index))) return 'application/json';
+  }
+  return null;
+}
+
+// What a Content-Type assertion must contain for a media type: "json" for any JSON type
+// (application/json, application/problem+json), else the media type itself.
+export function contentTypeNeedle(mediaType: string): string {
+  return /(?:^|[/+])json$/i.test(mediaType) ? 'json' : mediaType.toLowerCase();
+}
+
+export function isJsonMediaType(mediaType: string): boolean {
+  return /(?:^|[/+])json$/i.test(mediaType);
+}

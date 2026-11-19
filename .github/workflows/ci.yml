@@ -58,7 +58,16 @@ jobs:
       - run: npm run test:ui
       - run: npm run test:ui-smoke
       # The page layout in headless Chromium at several widths and zoom levels (columns never overlap).
-      - run: npx playwright install --with-deps chromium
+      # Retried: the runner's apt mirrors sometimes time out while installing Chromium's system packages.
+      - name: Install Chromium (3 tries)
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            npx playwright install --with-deps chromium && exit 0
+            echo "playwright install failed (try $i), retrying in 20s"
+            sleep 20
+          done
+          exit 1
       - run: npm run test:ui-layout
       - run: npm run test:checkpoint
       - run: npm run test:test-cases

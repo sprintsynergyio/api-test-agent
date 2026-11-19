@@ -34,7 +34,9 @@
     --r-sm: 8px;
     --shadow: 0 1px 2px rgba(17, 24, 39, .04), 0 2px 8px rgba(17, 24, 39, .04);
     --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
-    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+    /* Calibri where installed (Windows, Office on macOS); Carlito is its metric-compatible open
+       font (same widths, so layouts match); then Segoe UI and Arial. No font files are bundled. */
+    --sans: Calibri, Carlito, "Segoe UI", Arial, sans-serif;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; }
@@ -238,13 +240,14 @@
   .hero .sub { color: var(--ink-2); margin-top: 2px; }
   .strip { display: flex; flex-wrap: wrap; gap: 8px 20px; padding: 12px 16px; margin-bottom: 16px; font-size: 13px; color: var(--muted); }
   .strip b { color: var(--ink); font-weight: 600; }
-  .tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
   @media (max-width: 800px) { .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   .tile { padding: 14px 16px; }
   .tile .k { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600; }
   .tile .v { font-size: 32px; font-weight: 800; letter-spacing: -.02em; line-height: 1.15; }
   .tile.pass .v { color: var(--ok); }
   .tile.fail .v { color: var(--bad); }
+  .tile.warn .v { color: var(--warn); }
   .bar { height: 6px; border-radius: 99px; background: #fee2e2; overflow: hidden; margin-top: 8px; }
   .bar > span { display: block; height: 100%; background: var(--ok); border-radius: 99px; transition: width .8s ease; }
   .res-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
@@ -342,8 +345,10 @@
   .tc-rows { margin-top: 10px; max-height: 220px; overflow: auto; font-size: 12.5px; }
   .tc-rows table { width: 100%; border-collapse: collapse; }
   .tc-rows td, .tc-rows th { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+  .tc-rows th { white-space: nowrap; }
   .tc-rows .w { color: var(--warn); font-size: 12px; margin-top: 2px; }
   .tc-rows td.id { white-space: nowrap; font-family: var(--mono); font-size: 12px; }
+  .tc-rows td.ref { max-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
   .atl-setup { margin-top: 10px; padding: 12px; border: 1px dashed var(--accent-line); border-radius: var(--r-sm); background: #fff; }
   .atl-grid { display: grid; grid-template-columns: 1fr; gap: 10px; }
   .atl-setup details { margin-top: 10px; font-size: 13px; }
@@ -731,6 +736,8 @@
       <div class="card tile"><div class="k">Tests generated</div><div id="tGen" class="v">0</div></div>
       <div class="card tile pass"><div class="k">Passed</div><div id="tPass" class="v">0</div><div class="bar"><span id="passBar" style="width:0"></span></div></div>
       <div class="card tile fail"><div class="k">Failed</div><div id="tFail" class="v">0</div></div>
+      <div id="tPartialTile" class="card tile warn hidden" title="Sheet cases whose test passed but does not assert every clause of the expected result. Never counted as passed."><div class="k">Partially covered</div><div id="tPartial" class="v">0</div></div>
+      <div id="tCovTile" class="card tile hidden" title="Of all the clauses in the sheet's expected results, how many a test assertion checks. Cases without a test count as not checked."><div class="k">Assertion coverage</div><div id="tCov" class="v">-</div><div class="bar"><span id="covBar" style="width:0"></span></div></div>
     </div>
     <div class="res-grid">
       <div class="card">
@@ -756,7 +763,7 @@
       <div class="card-h"><h2>Test case sheet</h2><span id="tcFileName" class="timer"></span></div>
       <div class="card-b">
         <div id="tcTiles" class="tc-tiles"></div>
-        <div class="tc-rows" style="max-height:480px"><table><thead><tr><th>ID</th><th>Title</th><th>Endpoint</th><th>Status</th><th>Reason</th></tr></thead><tbody id="tcTable"></tbody></table></div>
+        <div class="tc-rows" style="max-height:480px"><table><thead><tr><th>ID</th><th>Title</th><th>Endpoint</th><th>Status</th><th>Coverage</th><th>Reason</th><th>Jira</th><th>Confluence</th></tr></thead><tbody id="tcTable"></tbody></table></div>
         <div class="tc-actions" style="margin-top:12px">
           <button id="tcCsv" class="btn btn-primary" type="button">Download traceability (.csv)</button>
           <button id="tcXlsx" class="btn btn-ghost" type="button">Download traceability (.xlsx)</button>
@@ -1478,6 +1485,16 @@
     animateNum($("tFail"), t.failed ?? 0);
     const total = (t.passed ?? 0) + (t.failed ?? 0);
     requestAnimationFrame(() => { $("passBar").style.width = total ? Math.round(((t.passed ?? 0) / total) * 100) + "%" : "0"; });
+    // Sheet runs: partially covered cases (never counted as passed) and the assertion coverage.
+    const tc = s.testCases;
+    $("tPartialTile").classList.toggle("hidden", !tc);
+    $("tCovTile").classList.toggle("hidden", !tc);
+    if (tc) {
+      animateNum($("tPartial"), tc.partiallyCovered ?? 0);
+      const cv = tc.assertionCoverage;
+      $("tCov").textContent = cv && cv.percent !== null && cv.percent !== undefined ? `${cv.percent}%` : "-";
+      requestAnimationFrame(() => { $("covBar").style.width = cv && cv.percent ? `${Math.min(100, cv.percent)}%` : "0"; });
+    }
 
     // Findings, each with its evidence loaded on demand
     $("findCount").textContent = apiFindings.length ? `${apiFindings.length} suspected` : "";
@@ -1823,9 +1840,22 @@
     card.classList.remove("hidden");
     $("tcFileName").textContent = `${t.source ? t.source.label : String(t.file || "").split(/[\\/]/).pop()} · ${t.mode === "sheet-only" ? "only my test cases" : "my test cases + agent suggestions"}`;
     const tile = (label, n, cls) => `<span class="tag ${cls}">${esc(label)} ${esc(n ?? 0)}</span>`;
-    $("tcTiles").innerHTML = tile("Rows", t.rows, "") + tile("Passed", t.passed, "ok") + tile("Partially covered", t.partiallyCovered, "warn") + tile("Failed", t.failed, "bad") + tile("Needs review", t.needsReview, "warn") + tile("Not automated", t.notAutomated, "warn") + tile("Agent suggestions", t.agentSuggestions, "");
+    const cov = t.assertionCoverage;
+    const covTile = cov && cov.percent !== null && cov.percent !== undefined ? tile("Assertion coverage", `${cov.percent}% (${cov.asserted}/${cov.clauses} clauses)`, cov.percent >= 80 ? "ok" : "warn") : "";
+    $("tcTiles").innerHTML = tile("Rows", t.rows, "") + tile("Passed", t.passed, "ok") + tile("Partially covered", t.partiallyCovered, "warn") + tile("Failed", t.failed, "bad") + tile("Needs review", t.needsReview, "warn") + tile("Not automated", t.notAutomated, "warn") + covTile + tile("Agent suggestions", t.agentSuggestions, "");
     const cls = { passed: "ok", "partially covered": "warn", failed: "bad", "needs review": "warn", "not automated": "warn" };
-    $("tcTable").innerHTML = (t.cases || []).map((c) => `<tr><td class="id">${esc(c.id)}</td><td>${esc(c.title)}</td><td style="white-space:nowrap">${esc(c.endpoint || "")}</td><td style="white-space:nowrap"><span class="tag ${cls[c.status] || ""}">${esc(c.status)}</span></td><td class="hint">${esc(c.reason || "")}</td></tr>`).join("");
+    // Jira and Confluence cells: a link only for an http(s) address, else the text (a key such as QA-12).
+    // A link shows its Jira key (QA-12) or the last part of its path (the page name), full URL on hover.
+    const refLabel = (v) => {
+      const key = /\b[A-Z][A-Z0-9]+-\d+\b/.exec(v);
+      if (key) return key[0];
+      const seg = v.replace(/[?#].*$/, "").split("/").filter(Boolean).pop() || v;
+      let name = seg;
+      try { name = decodeURIComponent(seg.replace(/\+/g, " ")); } catch { /* keep it as written */ }
+      return name.length > 40 ? name.slice(0, 39) + "..." : name;
+    };
+    const ref = (v) => !v ? "" : /^https?:\/\//i.test(v) ? `<a href="${esc(v)}" title="${esc(v)}" target="_blank" rel="noopener noreferrer">${esc(refLabel(v))}</a>` : esc(v);
+    $("tcTable").innerHTML = (t.cases || []).map((c) => `<tr><td class="id">${esc(c.id)}</td><td>${esc(c.title)}</td><td style="white-space:nowrap">${esc(c.endpoint || "")}</td><td style="white-space:nowrap"><span class="tag ${cls[c.status] || ""}">${esc(c.status)}</span></td><td style="white-space:nowrap">${esc(c.coverage || "")}</td><td class="hint">${esc(c.reason || "")}</td><td class="ref">${ref(c.jira)}</td><td class="ref">${ref(c.confluence)}</td></tr>`).join("");
   }
   $("tcCsv").addEventListener("click", () => { window.location.href = "/api/traceability" + (runQuery() ? runQuery() + "&" : "?") + "format=csv"; });
   $("tcXlsx").addEventListener("click", () => { window.location.href = "/api/traceability" + (runQuery() ? runQuery() + "&" : "?") + "format=xlsx"; });

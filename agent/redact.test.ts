@@ -57,6 +57,34 @@ check('a price stays', () => stays('price 19.99 total 1299'));
 check('an IBAN goes', () => goes('iban GB82WEST12345698765432', '<iban>'));
 check('an IPv4 address goes', () => goes('from 10.0.0.12', '<ip>'));
 check('an IPv6 address goes', () => goes('from 2001:db8::1 and fe80::1', '<ip>'));
+check('the all-zeros (nil) UUID stays, in a path and alone', () => {
+  stays('/brand/00000000-0000-0000-0000-000000000000/badge');
+  stays('00000000-0000-0000-0000-000000000000');
+});
+check('a nil UUID in a request body is sent unchanged (no card stand-in)', () => {
+  const c = counter();
+  const out = redactValue({ badge_uuid: '00000000-0000-0000-0000-000000000000', other: 'ffffffff-ffff-ffff-ffff-ffffffffffff' }, undefined, c, 'request');
+  assert.deepEqual(out, { badge_uuid: '00000000-0000-0000-0000-000000000000', other: 'ffffffff-ffff-ffff-ffff-ffffffffffff' });
+  assert.equal(c.replaced, 0);
+});
+check('ordinary and digits-only UUIDs stay', () => {
+  stays('uuid 3f2a1b4c-1234-4abc-8def-1234567890ab');
+  stays('uuid 12345678-1234-1234-1234-123456789012');
+});
+check('a run of one repeated digit is not a card', () => stays('ref 0000000000000000'));
+check('a real card next to a UUID still goes', () => {
+  const out = redactText('id 00000000-0000-0000-0000-000000000000 card 4242424242424242', counter());
+  assert.equal(out, 'id 00000000-0000-0000-0000-000000000000 card <card>');
+});
+check('a credential-named field holding a UUID is still hidden', () => {
+  const out = redactValue({ sessionToken: '3f2a1b4c-1234-4abc-8def-1234567890ab', apiKey: '00000000-0000-0000-0000-000000000000' }, undefined, counter()) as Record<string, string>;
+  assert.equal(out.sessionToken, '<token>');
+  assert.equal(out.apiKey, '<token>');
+});
+check('a bearer token and a JWT are still hidden next to a UUID', () => {
+  const out = redactText('Authorization: Bearer abc123def456ghi uuid 00000000-0000-0000-0000-000000000000 jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.abcdefGHIJKLmnop', counter());
+  assert.ok(out.includes('Bearer <token>') && out.includes('jwt <token>') && out.includes('00000000-0000-0000-0000-000000000000'), out);
+});
 check('a JWT goes', () => goes('jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.abcdefGHIJKLmnop', '<token>'));
 check('a Bearer value goes and keeps the scheme', () => {
   const out = redactText('Authorization: Bearer abc123def456ghi', counter());

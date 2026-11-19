@@ -154,12 +154,15 @@ row into an automated test that keeps the case ID in its name.
 1. Export the sheet as `.csv` or `.xlsx` (from Jira: **Export > CSV**; from Confluence: export or copy the
    table), or skip the export and paste a link (next section). Or download the template from the UI (**Run options**, **Test cases**, **Download template CSV**).
    The columns that matter are ID, Title, Steps / Request and Expected Result; an Endpoint column (for
-   example `get-product` or `GET /products/{id}`) makes the matching exact.
+   example `get-product` or `GET /products/{id}`) makes the matching exact. Optional `Jira` and
+   `Confluence` columns (a key such as `QA-12` or a link) are copied to the traceability report.
 2. In **Run options**, **Test cases**, click **Upload CSV or Excel** (or **Paste instead**). Check the
    preview: how many cases were found, which column became which field, and any warnings per row.
 3. Pick **Only my test cases** or **My test cases + agent suggestions**, then **Generate tests**.
-4. After the run, the **Test case sheet** card lists every case as passed, failed, needs review or not
-   automated, with the reason. Download the traceability CSV or Excel file and attach it to your test cycle.
+4. After the run, the **Test case sheet** card lists every case as passed, partially covered, failed,
+   needs review or not automated, with the full reason, how many clauses of its expected result the test
+   checks (Coverage) and its Jira and Confluence links. The **Assertion coverage** tile shows that for the
+   whole sheet. Download the traceability CSV or Excel file and attach it to your test cycle.
    The exported framework includes the same `traceability.csv`.
 
 Cases marked **needs review** were too vague to automate safely, or what they expect contradicts what the

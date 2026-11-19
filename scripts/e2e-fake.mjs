@@ -46,7 +46,7 @@ function checkSheetRun(label, summary, mode, format) {
   for (const [id, status] of Object.entries(SHEET_STATUS)) check(got[id] === status, `${label}: ${id} is ${status} (got ${got[id]})`);
   check(mode === "sheet-only" ? t.agentSuggestions === 0 : t.agentSuggestions > 0, `${label}: agent suggestions ${mode === "sheet-only" ? "off" : "on"} (${t.agentSuggestions})`);
   const csv = fs.readFileSync(path.join(ROOT, "out", "traceability.csv"), "utf8");
-  check(csv.startsWith("ID,Title,Endpoint,Test file,Status,Reason\r\n") && csv.includes("TC-008,"), `${label}: out/traceability.csv written`);
+  check(csv.startsWith("ID,Title,Endpoint,Test file,Status,Coverage,Reason,Jira,Confluence\r\n") && csv.includes("TC-008,"), `${label}: out/traceability.csv written`);
   const xlsx = fs.readFileSync(path.join(ROOT, "out", "traceability.xlsx"));
   check(xlsx.readUInt32LE(0) === 0x04034b50, `${label}: out/traceability.xlsx written`);
   const spec = fs.readFileSync(path.join(ROOT, "generated", "get-product.spec.ts"), "utf8");

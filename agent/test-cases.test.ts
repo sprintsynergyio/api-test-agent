@@ -317,17 +317,73 @@ await check('traceability rows: passed, failed, needs review, not automated, age
   assert.deepEqual(rows.map((r) => [r.id, r.status]), [['TC-1', 'passed'], ['TC-2', 'failed'], ['TC-3', 'needs review'], ['TC-4', 'not automated'], ['agent', 'passed']]);
   assert.match(rows[1].reason, /^suspected API finding: expected 401\|403, got 200; endpoint matched by the AI/);
   assert.equal(rows[0].testFile, 'generated/get-product.spec.ts');
-  assert.deepEqual(traceTotals(rows), { rows: 4, automated: 2, passed: 1, failed: 1, partiallyCovered: 0, needsReview: 1, notAutomated: 1, agentSuggestions: 1 });
+  assert.deepEqual(traceTotals(rows), { rows: 4, automated: 2, passed: 1, failed: 1, partiallyCovered: 0, needsReview: 1, notAutomated: 1, agentSuggestions: 1, assertionCoverage: { asserted: 0, clauses: 0, percent: null } });
+  // A needs-review case only has a placeholder that never runs: its Test file cell is blank.
+  assert.equal(rows[2].testFile, '');
+  assert.equal(rows[3].testFile, '');
 });
 
-const ROWS: TraceRow[] = [{ id: 'TC-1', title: '=HYPERLINK("x")', endpoint: 'a', testFile: 'a.spec.ts', status: 'passed', reason: 'has, comma', source: 'sheet' }];
+await check('traceability: blank Test file when the gate dropped the case, full reasons, coverage, Jira and Confluence', () => {
+  const longReason = `the steps need a seeded file ${'and more detail '.repeat(40)}end of reason`;
+  const clauses = [
+    { n: 1, text: 'Status 200', status: 'asserted' as const, via: 'status' as const },
+    { n: 2, text: 'items is an array', status: 'asserted' as const, via: 'assertion' as const },
+    { n: 3, text: `every item has a png name ${'x'.repeat(150)}`, status: 'not-asserted' as const, reason: `needs a visual check ${'y'.repeat(120)}` },
+  ];
+  const plan: Plan = {
+    endpointId: 'list',
+    cases: [{ ...planCase({ caseId: 'TC-1', source: 'sheet', title: '[TC-1] [happy] a' }), clauses }],
+    needsReview: [{ caseId: 'TC-2', reason: longReason }],
+    notAutomated: [{ caseId: 'TC-3', title: '[TC-3] [happy] c', reason: 'static gate: must assert the body' }],
+  };
+  const rows = buildTraceRows({
+    cases: [
+      { id: 'TC-1', title: 'a', expected: '1. Status 200. 2. items is an array. 3. every item has a png name', jira: 'QA-11', confluence: 'https://team.atlassian.net/wiki/spaces/QA/pages/1' },
+      { id: 'TC-2', title: 'b', expected: '1. Status 200' },
+      { id: 'TC-3', title: 'c', expected: '1. Status 200\n2. body has id' },
+    ],
+    matches: new Map(['TC-1', 'TC-2', 'TC-3'].map((id) => [id, { endpointId: 'list', by: 'column', reason: '' }])),
+    endpoints: [{ endpointId: 'list', specFile: 'list.spec.ts', plan, failureReason: null, skippedReason: null }],
+    outcomes: [{ endpointId: 'list', title: '[TC-1] [happy] a', passed: true, actualStatus: 200, error: '' }],
+    findings: [],
+    ran: true,
+  });
+  assert.equal(rows[0].status, 'partially covered');
+  assert.equal(rows[0].coverage, '2/3 (66.7%)');
+  assert.ok(rows[0].reason.includes('x'.repeat(150)) && rows[0].reason.includes('y'.repeat(120)), 'clause text and reason are not clipped');
+  assert.equal(rows[0].jira, 'QA-11');
+  assert.equal(rows[0].confluence, 'https://team.atlassian.net/wiki/spaces/QA/pages/1');
+  assert.equal(rows[1].testFile, '', 'needs review: no test file');
+  assert.equal(rows[1].reason, longReason.replace(/\s+/g, ' ').trim(), 'the needs-review reason is complete');
+  assert.equal(rows[2].testFile, '', 'dropped by the gate: no test file');
+  assert.equal(rows[2].coverage, '');
+  const t = traceTotals(rows);
+  // 2 of TC-1's 3 clauses; TC-2 (1 clause) and TC-3 (2 clauses) have no test, so they count as not asserted.
+  assert.deepEqual(t.assertionCoverage, { asserted: 2, clauses: 6, percent: 33.3 });
+  const csv = traceCsv(rows);
+  assert.ok(csv.startsWith('ID,Title,Endpoint,Test file,Status,Coverage,Reason,Jira,Confluence\r\n'));
+  assert.ok(csv.includes(',QA-11,https://team.atlassian.net/wiki/spaces/QA/pages/1\r\n'));
+  assert.ok(csv.includes('end of reason'));
+});
+
+await check('sheet columns: Jira and Confluence reference columns are read; Jira key stays the ID', async () => {
+  const sheet = await parseSheet('ID,Title,Steps,Expected Result,Jira,Confluence Page\nTC-1,a,GET /x,200,QA-7,https://team.atlassian.net/wiki/x\nTC-2,b,GET /y,200,,\n', 's.csv');
+  assert.equal(sheet.cases[0].jira, 'QA-7');
+  assert.equal(sheet.cases[0].confluence, 'https://team.atlassian.net/wiki/x');
+  assert.equal(sheet.cases[1].jira, undefined, 'no empty reference fields (keeps the sheet hash of older sheets)');
+  const keyed = await parseSheet('Jira Key,Summary,Steps\nQA-1,a,GET /x\n', 's.csv');
+  assert.equal(keyed.cases[0].id, 'QA-1');
+  assert.equal(keyed.cases[0].jira, undefined);
+});
+
+const ROWS: TraceRow[] = [{ id: 'TC-1', title: '=HYPERLINK("x")', endpoint: 'a', testFile: 'a.spec.ts', status: 'passed', reason: 'has, comma', source: 'sheet', coverage: '1/1 (100%)', jira: '-QA-1' }];
 
 await check('traceability CSV: header, CRLF, quoting and formula escaping', () => {
   assert.equal(csvSafe('=1+1'), "'=1+1");
   assert.equal(csvSafe('-2'), "'-2");
   assert.equal(csvSafe('@x'), "'@x");
   const csv = traceCsv(ROWS);
-  assert.equal(csv, 'ID,Title,Endpoint,Test file,Status,Reason\r\nTC-1,"\'=HYPERLINK(""x"")",a,a.spec.ts,passed,"has, comma"\r\n');
+  assert.equal(csv, 'ID,Title,Endpoint,Test file,Status,Coverage,Reason,Jira,Confluence\r\nTC-1,"\'=HYPERLINK(""x"")",a,a.spec.ts,passed,1/1 (100%),"has, comma",\'-QA-1,\r\n');
 });
 
 await check('traceability XLSX: a valid zip with inline strings that our own parser reads back', async () => {
