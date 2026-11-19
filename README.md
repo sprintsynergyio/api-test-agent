@@ -155,6 +155,7 @@ npm run -s import postman < collection.json
 - **Nothing is dropped silently.** Every request becomes an endpoint or a skipped entry with a reason: another origin than the base URL (the most common origin), an unresolved variable in the URL (`{{baseUrl}}` with no value, `$VAR`), a non-JSON body, or a method other than GET, POST, PUT, PATCH, DELETE. In a HAR file, static assets, analytics and other origins are counted in one "filtered: not an API call" entry. From text, a base URL, path or body field that is not in the text is dropped.
 - **Auth.** Every credential is removed: Authorization, Cookie, any header whose name contains auth, token, key, secret or session, Postman auth blocks, curl `-u` and `-b`, credential query parameters, and `user:password@` in URLs. Those endpoints get `requiresAuth: true`, and the input gets `auth: { header, valueEnv: "CUSTOM_API_AUTH" }`. Enter the value in the auth field before running. Credential values never appear in the output, warnings or errors.
 - Ids are slugs of the method and path (`get-products-id`). Path params (`:id`, `{{id}}`, `{id}`) become `{id}`. A path with a placeholder gets `setup` from the POST on its parent path; check its `idField`.
+- **Grouped by route.** Requests to the same route with different values in the path become one endpoint: `/products/42` and `/products/7` become `/products/{productId}`, `/asset/fabletics/badge` and `/asset/savage/badge` become `/asset/{asset}/badge` (only a middle segment, never the first or last word). The first recorded value goes to `pathParams` (for example `{ "productId": "42" }`) so the probe can call it without a setup step, and the warnings say what was grouped. Sheet cases can still use their own ids. Paths with no value segment stay separate. Code that calls `buildInput` can pass `groupRoutes: false` to keep every literal path.
 - A missing or relative base URL leaves `baseUrl` empty, and Generate stays disabled until you fill it in.
 - **Big imports.** Every imported endpoint is selected. Each costs about 2 model calls of the 60-call budget; above 50 endpoints the preview shows the estimate. A run that stops at the budget is continued from the terminal with `--resume` (see Run it).
 - Acceptance criteria in a ticket are not turned into tests yet.
@@ -275,6 +276,34 @@ and never hidden. Every such case has a status and a **reason code**:
   gate, only from the sheet columns and the test data file.
 
 Try it: `npm run agent -- input/local-shop-statuses.json` (seven cases, one of each status).
+
+### The sheet decides the expected status
+
+The probe (one real call per endpoint before planning) only shows what a response looks like: its fields,
+types and headers. The status a test expects comes from your sheet:
+
+- **The sheet's status wins.** When a row says `201 Created` and the probe saw `200`, the test still
+  expects 201. The run shows who is right: if the API answers 200 the test fails as **needs review**, and
+  the console and dashboard list a **probe warning** before the run (`the sheet expects 201; the API
+  answered 200 when probed`). A row with no status code uses the probe's 2xx.
+- **A probe that does not work no longer blocks your cases.** When the probe of an endpoint fails (a 404
+  because the id in the config does not exist, a 503 maintenance page), the endpoint is still planned from
+  the sheet with the statuses it names, and the console prints `<endpoint> WARNING probe not usable (404):
+  planning the team's cases from the sheet, with the statuses it names`. Without sheet cases the endpoint
+  is skipped as before.
+- **Cases with their own ids get their own probe.** A row whose steps name a literal path
+  (`GET /products/1`, `GET /products/999999`) runs against exactly that path, and the agent sends one
+  extra GET for it before planning (`case probes: ...` in the console, `out/probes/<id>.cases.json`). At
+  most 20 per run (`--case-probes N`, 0 turns them off). Writes (POST, PUT, PATCH, DELETE) are never
+  probed, and neither is a case whose path needs a setup step.
+- **A 5xx only when you documented it.** A test never expects a 5xx unless the row says so: a
+  `Documented 5xx` column (any value except `no`, `-`, `n/a`; write where it is documented, for example
+  `ops runbook 3.1`) or the tag `@documented-5xx` anywhere in the row. Then the test expects exactly that
+  code and, when it passes, shows as **accepted 5xx** (not a finding). The same 503 without the column is
+  **needs review** with the reason.
+
+Try it: `npm run agent -- input/local-shop-probes.json` (a wrong 201, an unusable probe, cases with their
+own ids, a write that is not probed and a documented 503 from `GET /maintenance` on the local API).
 
 ### Test cases straight from Jira, Confluence, Xray or Zephyr Scale
 
@@ -403,6 +432,7 @@ Write an input file (or use the Build tab in the UI):
 - `query` is the sample query string (`{ "page": 1, "per_page": 10 }`).
 - `errorStatuses` (optional, 400-499): the 4xx codes the API documents for this endpoint. The OpenAPI importer fills it in. It turns on invalid-input tests.
 - `allowInvalidInput: true` (optional): invalid-input tests for an endpoint with nothing else to make invalid, such as a query-only GET (bad page or filter values). Same as `--allow-invalid-input <ids>` or **Run options > Test options > Invalid-input tests** in the UI.
+- `pathParams` (optional): fixed values for path placeholders no `setup` step fills, for example `"pathParams": { "id": "42" }` for `/products/{id}`. The importers write it for grouped routes. A setup value wins over it.
 - `stableData: true` (optional): the endpoint's data does not change during the run, so tests may compare several calls (paging, totals). Same as `--stable-data <ids>` or **Test options > Stable data** in the UI. Read-only GET endpoints get this automatically when nothing in the run writes the same resource.
 
 Then run `npm run agent path/to/my-api.json`.
@@ -426,6 +456,7 @@ The UI's setup card writes these lines for you. The prompts were tuned against C
 Every generated spec must pass the static gate (`agent/validate.ts`) before it is kept. The gate runs inside the GENERATING phase, right after the model returns a spec and before anything is written to `generated/`: it checks the rules below and runs a TypeScript typecheck on the candidate. If it fails, generation is retried once with the reasons. If it fails again, only the tests the gate rejected are dropped and the rest of the file is kept (`OK written ... (2 tests dropped by the static gate, the rest kept)`); each dropped case is **not automated** with its own reason. Only a problem with the file itself (a forbidden import, code outside the tests) rejects the whole spec, and then the console shows `FAILED static gate: <reasons>` for that endpoint, with each sheet case still getting its own reason. The same name is used in the code, the console output and this document.
 
 - No hardcoded hosts: paths are relative, and the base URL comes from the fixture.
+- Expected status: the sheet's code when it names one (a 5xx only when the row is a documented 5xx, then exactly that code), else the probe's 2xx; see The sheet decides the expected status.
 - No `process.env` in tests: everything comes from the `ctx` fixture.
 - Assert status codes, field presence and field types. Assert exact values only for data the test itself sent.
 - Nothing hides errors: no `test.only`, no `test.skip`, no empty or swallowing `catch`, no `.catch()`.
