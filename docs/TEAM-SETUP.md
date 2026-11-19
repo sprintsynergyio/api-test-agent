@@ -190,6 +190,23 @@ None of these ever count as passed. The dashboard shows them in the **Skipped** 
 tiles and lists each with its reason. In CI, skips do not fail the build by default; add
 `--fail-on skipped` to the pipeline that must prove everything ran.
 
+### Your sheet decides what status to expect
+
+Before writing tests the agent calls each endpoint once (the probe) to see what a response looks like.
+It no longer overrides your sheet:
+
+- If your row says `201 Created` and the API answered `200`, the test still expects 201. The dashboard
+  shows a **probe warning** before the results, and the test fails as **needs review** if the API keeps
+  answering 200. Then either fix the row or report the bug.
+- If the probe fails (for example the example id no longer exists), your cases for that endpoint are still
+  automated; the console says `WARNING probe not usable`.
+- Rows that name their own id (`GET /products/1`) run against that id, and the agent checks it with one GET
+  first (at most 20 per run, never a write).
+- A row that expects a 5xx is automated only when you say the 5xx is intended: add a **Documented 5xx**
+  column (write where it is documented, for example `ops runbook 3.1`) or put `@documented-5xx` in the
+  row. It then shows as **Accepted 5xx** when the API answers that code. Without it the row is **needs
+  review**.
+
 ## Test cases from a Jira or Confluence link
 
 No export needed: paste a link and the agent reads the cases itself, with your own Atlassian account. It

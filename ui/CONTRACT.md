@@ -547,3 +547,30 @@ known issues: <k>`, then when present `<k> known issue(s) (failed as expected, n
 UI: tiles **Skipped** (warning colour) and **Known issues** (purple) next to Passed and Failed; the pass
 bar's total includes them; the findings card lists known issues and skipped tests with their code and
 reason; the test case table has the Reason code column and a tile per status.
+
+## 17. Probe redesign: the sheet decides the status, case probes, documented 5xx (additive)
+
+- `testCases.cases[].status` may be `"accepted 5xx"`: a sheet case marked documented (`Documented 5xx`
+  column or `@documented-5xx`) whose test passed with exactly the sheet's 5xx. `testCases.accepted5xx` and
+  `totals.accepted5xx` count them (0 when none). An accepted 5xx is never a finding. Its test passed, so it
+  counts in `totals.passed` and in `totals.accepted5xx`; in `testCases` it counts in `accepted5xx`, not in
+  `passed`. The UI shows it in its own **Accepted 5xx** tile and list.
+- `accepted5xx`: array, `[{ endpointId, testTitle, status }]`, one per passing accepted case.
+- `probeWarnings`: array, `[{ endpointId, caseId | null, testTitle | null, message }]`. One per endpoint
+  whose probe was not usable but was planned from the sheet, and one per sheet case whose expected status
+  differs from what the probe saw. Shown before the results in the console and in the findings card.
+- `caseProbes`: `null` when no sheet case has its own path, else `{ cap, sent, results, notProbed }`.
+  `results[]`: `{ caseId, endpointId, request, status, usable }` where `request` is always `GET <path>`
+  (`sent <= cap`). `notProbed[]`: `{ caseId, endpointId, reason }` (a write, a path that needs setup, the
+  cap).
+- `endpoints[]` gain `probeUsable` (boolean) and `plannedFromSheet` (boolean; true only when the probe was
+  not usable and the endpoint was planned from sheet cases, `skipped` stays false).
+- Console lines (in this order, after `cleanup:`): `case probes: N sheet case(s) with their own request,
+  cap C (GET only, never setup or writes)`, then `  case <ID> (<endpoint>) OK <status>` /
+  `answered <status>` / `not probed: <reason>`, then `<endpoint> WARNING probe not usable (<status>):
+  planning the team's cases from the sheet, with the statuses it names`. In the summary block:
+  `N accepted 5xx (documented by the team, passed)` and `N probe warnings (...)`, each followed by
+  indented lines.
+- Traceability: the Status column may be `accepted 5xx`; a failed case's reason ends with
+  `probe warning before the run: <message>` when one applied.
+

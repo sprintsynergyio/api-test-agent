@@ -61,6 +61,7 @@ export type Config = {
     query?: Query;
     headers?: Record<string, string>;
     setup?: Setup | Setup[];
+    pathParams?: Record<string, string>;
   }[];
 };
 
@@ -478,6 +479,8 @@ async function runSetup(endpoint: Config['endpoints'][number], known: Record<str
     if (step.param! in params) continue;
     params[step.param!] = await createResource(step.endpointId, step.idField, params);
   }
+  // Placeholders no setup step fills take the endpoint's fixed values (route grouping).
+  for (const [name, value] of Object.entries(endpoint.pathParams ?? {})) if (!(name in params)) params[name] = value;
   return params;
 }
 

@@ -132,13 +132,16 @@ await check('plan: a Known issue and Required data come from the sheet onto the 
   assert.deepEqual(out.plan.cases[0].requiredData, ['a.png', 'b.png']);
 });
 
-await check('plan: a known issue whose probe shows the bug keeps the sheet status instead of needs review; a 5xx is still refused', () => {
+await check('plan: a known issue whose probe shows the bug keeps the sheet status; the sheet decides the status for every case; a 5xx is still refused', () => {
   const sheet = [sheetCase('TC-1', { expected: 'Status 200 with the badges', knownIssue: 'QA-8: 500 for this brand' })];
   const out = finalizeSheetPlan(rawPlan(), ep(), probe(500), [], sheet, 'sheet-only');
   assert.equal(out.plan.needsReview, undefined);
   assert.equal(out.plan.cases[0].expectedStatus, '200');
+  // PR 3: the sheet decides the status, so a plain case is planned too, with a probe note.
   const plain = finalizeSheetPlan(rawPlan(), ep(), probe(500), [], [sheetCase('TC-1', { expected: 'Status 200 with the badges' })], 'sheet-only');
-  assert.equal(plain.plan.needsReview?.length, 1);
+  assert.equal(plain.plan.needsReview, undefined);
+  assert.equal(plain.plan.cases[0].expectedStatus, '200');
+  assert.match(plain.plan.cases[0].probeNote ?? '', /the API answered 500 when probed/);
   const fivexx = finalizeSheetPlan(rawPlan(), ep(), probe(500), [], [sheetCase('TC-1', { expected: 'Status 500', knownIssue: 'QA-9' })], 'sheet-only');
   assert.equal(fivexx.plan.needsReview?.length, 1);
 });

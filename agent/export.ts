@@ -60,6 +60,7 @@ function httpSource(): string {
     query?: Query;
     headers?: Record<string, string>;
     setup?: Setup | Setup[];
+    pathParams?: Record<string, string>;
   }[];
 };`,
     )

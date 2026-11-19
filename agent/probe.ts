@@ -7,6 +7,7 @@ import { loadConfig, selectionLine, takeSelectFlag, type Config, type Endpoint }
 import { cleanupLine, cleanupResources, createClients, disposeClients, resolvePath, runSetup, type CleanupTotals, type Clients } from './http';
 import { fileSignature, isBinaryContentType, queryString, setupSteps } from './model';
 import { describeRedaction, redactHeaders, redactText, redactValue, type RedactionCounter } from './redact';
+import { CASE_PROBE_CAP } from './probe-cap';
 import { endpointAllowed } from './safety';
 
 const PROBE_DIR = 'out/probes';
@@ -73,7 +74,7 @@ async function probeEndpoint(config: Config, clients: Clients, endpoint: Endpoin
     usable: false,
   };
 
-  if (endpoint.setup) {
+  if (endpoint.setup || endpoint.pathParams) {
     try {
       const params = await runSetup(config, clients, endpoint);
       result.path = resolvePath(endpoint.path, params);
@@ -181,6 +182,74 @@ export async function probeAll(config: Config, authEnv: Record<string, string | 
     await disposeClients(clients);
   }
   return { results, requestsSent: clients.counter.sent, secrets: clients.secrets(), redaction, cleanup };
+}
+
+// Per-case probes: a sheet case whose own request puts other values in the path (GET /products/42 for
+// /products/{id}) gets one GET of exactly that request, so the plan sees what that case's response
+// looks like. Safe by default:
+// - GET only. Write cases (POST, PUT, PATCH, DELETE) are never probed; they use the endpoint's probe.
+// - No setup: a case whose path still needs a created resource is not probed (that would write).
+// - At most `cap` requests per run (--case-probes, default 20; 0 turns them off), DELAY_MS apart, all
+//   counted in requestsSent. Read-only mode and the production guard apply (createClients, endpointAllowed).
+// The sheet still decides the expected status (agent/plan.ts sheetStatusDecision); a probe that disagrees
+// is an early warning, and the test run is the evidence.
+export { CASE_PROBE_CAP };
+const CASE_PROBE_DELAY_MS = 200;
+
+export type CaseProbeRequest = { caseId: string; endpoint: Endpoint; pathValues: Record<string, string> };
+export type CaseProbeRun = { results: Map<string, ProbeResult>; notProbed: { caseId: string; endpointId: string; reason: string }[]; requestsSent: number; secrets: string[]; redaction: RedactionCounter };
+
+export function caseProbePlan(requests: CaseProbeRequest[], cap: number): { send: CaseProbeRequest[]; notProbed: CaseProbeRun['notProbed'] } {
+  const send: CaseProbeRequest[] = [];
+  const notProbed: CaseProbeRun['notProbed'] = [];
+  for (const r of requests) {
+    const why =
+      r.endpoint.method !== 'GET'
+        ? `a ${r.endpoint.method} request is never probed per case (it would write); the endpoint's probe shows the response shape`
+        : missingValues(r)
+          ? `its path still needs ${missingValues(r)}, which only a setup step (a write) can create`
+          : send.length >= cap
+            ? `the per-run cap of ${cap} case probes is reached (--case-probes)`
+            : null;
+    if (why) notProbed.push({ caseId: r.caseId, endpointId: r.endpoint.id, reason: why });
+    else send.push(r);
+  }
+  return { send, notProbed };
+}
+
+function missingValues(r: CaseProbeRequest): string {
+  const known = { ...(r.endpoint.pathParams ?? {}), ...r.pathValues };
+  return [...r.endpoint.path.matchAll(/\{([^}]+)\}/g)].map((m) => m[1]).filter((n) => !(n in known)).map((n) => `{${n}}`).join(', ');
+}
+
+export async function probeCases(config: Config, authEnv: Record<string, string | undefined>, requests: CaseProbeRequest[], opts: { cap?: number; forceProduction?: boolean } = {}): Promise<CaseProbeRun> {
+  const cap = opts.cap ?? CASE_PROBE_CAP;
+  const { send, notProbed } = caseProbePlan(requests, cap);
+  const results = new Map<string, ProbeResult>();
+  const redaction: RedactionCounter = { replaced: 0 };
+  if (!send.length) return { results, notProbed, requestsSent: 0, secrets: [], redaction };
+  mkdirSync(PROBE_DIR, { recursive: true });
+  const clients = await createClients(config, authEnv, { timeoutMs: REQUEST_TIMEOUT_MS, forceProduction: opts.forceProduction });
+  const byEndpoint = new Map<string, Record<string, ProbeResult>>();
+  try {
+    for (const [i, r] of send.entries()) {
+      if (!endpointAllowed(clients.safety, r.endpoint)) {
+        notProbed.push({ caseId: r.caseId, endpointId: r.endpoint.id, reason: 'read-only mode' });
+        continue;
+      }
+      if (i > 0) await new Promise((done) => setTimeout(done, CASE_PROBE_DELAY_MS));
+      const path = resolvePath(r.endpoint.path, { ...(r.endpoint.pathParams ?? {}), ...r.pathValues });
+      // The endpoint's own request with this case's path; never its setup.
+      const result = redactProbe(await probeEndpoint(config, clients, { ...r.endpoint, path, setup: undefined, pathParams: undefined }), config, redaction);
+      results.set(r.caseId, result);
+      byEndpoint.set(r.endpoint.id, { ...(byEndpoint.get(r.endpoint.id) ?? {}), [r.caseId]: result });
+      console.log(`  case ${r.caseId} (${r.endpoint.id}) ${result.status === null ? `FAILED ${result.error}` : `${result.usable ? 'OK' : 'answered'} ${result.status}`}`);
+    }
+    for (const [id, cases] of byEndpoint) writeFileSync(join(PROBE_DIR, `${id}.cases.json`), JSON.stringify(cases, null, 2) + '\n');
+  } finally {
+    await disposeClients(clients);
+  }
+  return { results, notProbed, requestsSent: clients.counter.sent, secrets: clients.secrets(), redaction };
 }
 
 async function main() {
