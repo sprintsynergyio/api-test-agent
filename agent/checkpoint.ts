@@ -22,6 +22,9 @@ export type EndpointCheckpoint = {
   hash: string;
   stage: Stage;
   probe?: ProbeResult;
+  // Per-case GET probes of this endpoint's sheet cases, by case ID (added later; older checkpoints have
+  // none, and a resume probes those cases again).
+  caseProbes?: Record<string, ProbeResult>;
   plan?: Plan;
   specFile?: string;
   failureReason?: string;

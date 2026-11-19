@@ -9,12 +9,13 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync,
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { allAuthEnvNames, describeAuth } from '../auth';
 import { apiName, type Config } from '../config';
-import { authSource } from '../export';
+import { authSource, testDataSource } from '../export';
 import { validateWithRules, type GateRules } from '../validate';
 import { addCleanup, emptyCleanup, reportLabels, type CleanupTotals } from '../http';
 import { ciFiles, ciReadmeSection, exportedConfig, modelSource, redactSource } from './shared-export';
 import { addAllureLabels, type ExtraLabels } from './allure-labels';
 import type { ExportEndpoint, ExportFinding, ExportOptions, FrameworkAdapter, FrameworkInfo, RunResult, TestOutcome } from './types';
+import { reasonCodeOf, RUNTIME_CODES } from '../test-data';
 
 // The Pactum adapter: Mocha + Pactum tests that import only from tests-pactum/setup/ctx.ts.
 // Shared with Playwright: probe, plan, status rules, finding classification, summary, safety guard.
@@ -54,6 +55,9 @@ const PACTUM_RULES: GateRules = {
     if (/\b(?:it|describe|context)\.only\b/.test(code)) reasons.push('contains .only');
     if (/\b(?:it|describe|context)\.skip\b|\bxit\(|\bxdescribe\(/.test(code)) reasons.push('contains .skip');
     if (/\bthis\.skip\(/.test(code)) reasons.push('contains this.skip()');
+    // Known issues and precondition checks are added by the agent from the sheet, never by the model.
+    if (/\bknownIssue\s*\(/.test(code)) reasons.push('calls knownIssue (known issues come only from the Known issue column of the sheet)');
+    if (/\brequireDataFor\s*\(/.test(code)) reasons.push('calls requireDataFor (precondition checks are added by the agent from the Required data column)');
     return reasons;
   },
 };
@@ -73,12 +77,20 @@ function runMocha(inputFile: string, specFiles?: string[]): Promise<number | nul
 }
 
 type MochaTest = { title: string; fullTitle: string; file?: string; duration?: number; err?: { message?: string; stack?: string } };
-type MochaJson = { stats?: { start?: string; end?: string }; tests?: MochaTest[]; passes?: MochaTest[]; failures?: MochaTest[]; pending?: MochaTest[] };
-type StatusEntry = { file: string; title: string; state: string; actualStatus: number | null; requestsSent: number; redactionReplaced?: number; cleanup?: Partial<CleanupTotals>; evidence?: string[] };
+export type MochaJson = { stats?: { start?: string; end?: string }; tests?: MochaTest[]; passes?: MochaTest[]; failures?: MochaTest[]; pending?: MochaTest[] };
+export type StatusEntry = { file: string; title: string; state: string; actualStatus: number | null; requestsSent: number; redactionReplaced?: number; cleanup?: Partial<CleanupTotals>; evidence?: string[]; skipReason?: string; knownIssue?: string; knownIssueError?: string };
 
 function readOutcomes(cleanError: (text: string) => string): { outcomes: TestOutcome[]; loadErrors: string[]; requestsSent: number; redactionReplaced: number; cleanup: CleanupTotals } {
   const report = JSON.parse(readFileSync(RESULTS_FILE, 'utf8')) as MochaJson;
   const statuses: StatusEntry[] = existsSync(STATUS_FILE) ? (JSON.parse(readFileSync(STATUS_FILE, 'utf8')) as StatusEntry[]) : [];
+  return pactumOutcomes(report, statuses, cleanError);
+}
+
+// The Mocha JSON report plus reports/pactum/status.json as outcomes. Pending tests are left out
+// (needs-review and declared-skip placeholders, read-only skips), except one the precondition check
+// skipped (status entry with skipReason), which is 'blocked'. A knownIssue() test that Mocha passed
+// failed as expected ('known-issue'); one that Mocha failed passed ('unexpected-pass'). Never passed.
+export function pactumOutcomes(report: MochaJson, statuses: StatusEntry[], cleanError: (text: string) => string): { outcomes: TestOutcome[]; loadErrors: string[]; requestsSent: number; redactionReplaced: number; cleanup: CleanupTotals } {
   const requestsSent = statuses.reduce((n, s) => n + (Number.isInteger(s.requestsSent) ? s.requestsSent : 0), 0);
   const redactionReplaced = statuses.reduce((n, s) => n + (Number.isInteger(s.redactionReplaced) ? s.redactionReplaced! : 0), 0);
   const cleanup = statuses.reduce((t, s) => addCleanup(t, s.cleanup), emptyCleanup());
@@ -88,14 +100,36 @@ function readOutcomes(cleanError: (text: string) => string): { outcomes: TestOut
   const loadErrors: string[] = [];
   for (const t of report.tests ?? []) {
     const key = `${t.file ?? ''}|${t.title}`;
-    if (pendingTitles.has(key)) continue;
     const file = basename(t.file ?? '');
+    if (pendingTitles.has(key)) {
+      const skipped = statuses.find((s) => s.file === file && s.title === t.title && s.skipReason && RUNTIME_CODES.includes(reasonCodeOf(s.skipReason)!));
+      if (skipped) {
+        const reason = cleanError(skipped.skipReason!);
+        outcomes.push({ endpointId: file.replace(/\.spec\.ts$/, ''), title: t.title, passed: false, actualStatus: null, error: '', kind: 'blocked', reasonCode: reasonCodeOf(reason) ?? undefined, reason });
+      }
+      continue;
+    }
     // A failure with no title and a load error message is Mocha reporting that a file could not load.
     if (!file.endsWith('.spec.ts')) {
       loadErrors.push(cleanError(t.err?.message ?? `could not load ${t.file ?? 'a spec file'}`).split('\n')[0]);
       continue;
     }
     const status = statuses.find((s) => s.file === file && s.title === t.title);
+    if (status?.knownIssue) {
+      const passedMocha = passedTitles.has(key);
+      const reason = cleanError(status.knownIssue);
+      outcomes.push({
+        endpointId: file.replace(/\.spec\.ts$/, ''),
+        title: t.title,
+        passed: false,
+        actualStatus: Number.isInteger(status.actualStatus) ? status.actualStatus : null,
+        error: cleanError(passedMocha ? (status.knownIssueError ?? '') : (t.err?.message ?? '')).slice(0, 300),
+        kind: passedMocha ? 'known-issue' : 'unexpected-pass',
+        reasonCode: 'KNOWN_ISSUE',
+        reason,
+      });
+      continue;
+    }
     outcomes.push({
       endpointId: file.replace(/\.spec\.ts$/, ''),
       title: t.title,
@@ -141,8 +175,9 @@ export function writeAllureResults(reportName: string): { tests: number } {
     if (!file.endsWith('.spec.ts')) continue;
     const key = `${t.file ?? ''}|${t.title}`;
     const uuid = randomUUID();
-    const status = pending.has(key) ? 'skipped' : passed.has(key) ? 'passed' : 'failed';
-    const entry = statuses.find((e) => e.file === file && e.title === t.title);
+    const entry = statuses.find((s) => s.file === file && s.title === t.title);
+    // A known issue is never shown as passed: "broken" when it failed as expected, "failed" when it passed.
+    const status = pending.has(key) ? 'skipped' : entry?.knownIssue ? (passed.has(key) ? 'broken' : 'failed') : passed.has(key) ? 'passed' : 'failed';
     const describe = t.fullTitle.endsWith(t.title) ? t.fullTitle.slice(0, t.fullTitle.length - t.title.length).trim() : '';
     const labels = [
       ...reportLabels(reportName, [file, describe, t.title].filter(Boolean), file),
@@ -168,7 +203,7 @@ export function writeAllureResults(reportName: string): { tests: number } {
       name: t.title,
       fullName: `${file}: ${t.fullTitle}`,
       status,
-      statusDetails: t.err?.message ? { message: t.err.message, trace: t.err.stack ?? '' } : {},
+      statusDetails: entry?.knownIssue && passed.has(key) ? { message: `${entry.knownIssue} (known issue, failed as expected): ${entry.knownIssueError ?? ''}` } : entry?.skipReason ? { message: entry.skipReason } : t.err?.message ? { message: t.err.message, trace: t.err.stack ?? '' } : {},
       stage: 'finished',
       start,
       stop,
@@ -244,6 +279,9 @@ function ctxSource(): string {
   const modelLine = "from '../../agent/model';";
   const authLine = "from '../../agent/auth';";
   const redactLine = "from '../../agent/redact';";
+  const testDataLine = "from '../../agent/test-data';";
+  const testDataFile = /^const TEST_DATA_FILE = .*\/\/ EXPORT-TEST-DATA$/m;
+  if (!src.includes(testDataLine) || !testDataFile.test(src)) throw new Error(`framework export: ${CTX_FILE} no longer has the expected test-data import and TEST_DATA_FILE lines`);
   if (!src.includes(modelLine)) throw new Error(`framework export: ${CTX_FILE} no longer imports agent/model as expected`);
   if (!src.includes(authLine)) throw new Error(`framework export: ${CTX_FILE} no longer imports agent/auth as expected`);
   if (!src.includes(redactLine)) throw new Error(`framework export: ${CTX_FILE} no longer imports agent/redact as expected`);
@@ -252,6 +290,8 @@ function ctxSource(): string {
     .replace(modelLine, "from './model';")
     .replace(authLine, "from './auth';")
     .replace(redactLine, "from './redact';")
+    .replace(testDataLine, "from './test-data';")
+    .replace(testDataFile, "const DEFAULT_TEST_DATA = fileURLToPath(new URL('../config/test-data.json', import.meta.url));\nconst TEST_DATA_FILE = process.env.TEST_DATA_FILE || (existsSync(DEFAULT_TEST_DATA) ? DEFAULT_TEST_DATA : '');")
     .replace(inputLine, "const INPUT_FILE = fileURLToPath(new URL('../config/api.json', import.meta.url));")
     .replace("import { join } from 'node:path';", "import { join } from 'node:path';\nimport { fileURLToPath } from 'node:url';")
     .replace(/^\/\/ The Pactum equivalent of tests\/fixtures\/ctx\.ts: the ONLY/m, '// The ONLY');
@@ -421,6 +461,8 @@ export function exportPactumFramework(opts: ExportOptions): FrameworkInfo {
   write('src/auth.ts', authSource());
   write('src/redact.ts', redactSource());
   write('src/safety.ts', safetySource());
+  write('src/test-data.ts', testDataSource());
+  if (opts.testData) write('config/test-data.json', JSON.stringify(opts.testData, null, 2) + '\n');
   write('src/ctx.ts', ctxSource());
   if (config.auth) write('.env.example', allAuthEnvNames(config.auth).map((n) => `${n}=\n`).join(''));
   write('.gitignore', 'node_modules/\n.env\nreports/\n');
@@ -473,7 +515,7 @@ export const pactumAdapter: FrameworkAdapter = {
     return [
       "Copy the template's structure: Mocha describe and it (both are globals, do not import them), every test title starts with its type tag ([happy], [schema], [invalid-input], [auth], [authz]), and every test calls recordStatus(response.status()) before its first expect.",
       'Requests: ctx.api.get(path, options?), ctx.api.post(path, body, options?), ctx.api.put(path, body, options?), ctx.api.patch(path, body, options?), ctx.api.delete(path, options?). options is { params?: query parameters, headers?: extra headers }. Each returns a response with status(), ok(), headers(), text(), json() and body() (the raw bytes as a Buffer, for images and other files). Never import pactum, node:assert or chai; expect comes from the setup file.',
-      `Status assertions, exactly in the template's style and no other form (the static gate rejects anything else): happy and schema expect(response.status()).toBe(${probe.status}); invalid-input expect(response.status()).toBeGreaterThanOrEqual(400) and expect(response.status()).toBeLessThanOrEqual(499); auth expect([401, 403]).toContain(response.status()); authz expect([403, 404]).toContain(response.status()). Never use .not on a status, and never assert a status from a different request than the one under test.`,
+      `Status assertions, exactly in the template's style and no other form (the static gate rejects anything else): happy and schema expect(response.status()).toBe(<the plan case's expectedStatus>) (usually ${probe.status}, the probe status; the sheet may name another); invalid-input expect(response.status()).toBeGreaterThanOrEqual(400) and expect(response.status()).toBeLessThanOrEqual(499); auth expect([401, 403]).toContain(response.status()); authz expect([403, 404]).toContain(response.status()). Never use .not on a status, and never assert a status from a different request than the one under test.`,
       'Auth tests send the request under test with ctx.noAuthApi and never mention ctx.api (resources they need come from ctx.createResource).',
       "Authz tests send the request under test with ctx.as('<role>') (the role named in the plan case; same methods as ctx.api) and never mention ctx.api or ctx.noAuthApi; resources they need come from ctx.createResource, which uses the default role.",
       'Response bodies may be empty or not JSON (see the probe). Only call response.json() when the probe shows a JSON body for that status; cast it, for example (await response.json()) as Record<string, unknown>.',

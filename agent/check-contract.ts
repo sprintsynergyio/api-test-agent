@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { REASON_CODES } from './test-data';
 
 // npm run check:contract [summary file]: checks out/summary.json against ui/CONTRACT.md (sections 2, 4,
 // 5 and 7) and the rules in CLAUDE.md. Lists every problem and exits 1 when there is any.
@@ -112,12 +113,19 @@ if (isObj(s.testCases)) {
   for (const c of cases) {
     if (!isObj(c)) continue;
     field('summary.testCases.cases[]', c, 'id', ['string']);
-    field('summary.testCases.cases[]', c, 'status', ['string'], ['passed', 'partially covered', 'failed', 'needs review', 'not automated']);
+    field('summary.testCases.cases[]', c, 'status', ['string'], ['passed', 'partially covered', 'failed', 'needs review', 'not automated', 'skipped', 'manual', 'blocked', 'known issue', 'unexpected pass', 'accepted 5xx']);
+    need(c.reasonCode === undefined || c.reasonCode === null || (typeof c.reasonCode === 'string' && (REASON_CODES as readonly string[]).includes(c.reasonCode)), `summary.testCases.cases[].reasonCode must be null or one of ${REASON_CODES.join(', ')}`);
+    // A case that did not pass or fail always says why with a code.
+    if (['skipped', 'manual', 'blocked', 'known issue', 'unexpected pass'].includes(String(c.status))) need(typeof c.reasonCode === 'string', `summary.testCases.cases[] ${String(c.id)} is ${String(c.status)} without a reasonCode`);
     field('summary.testCases.cases[]', c, 'reason', ['string']);
   }
   const by = (st: string) => cases.filter((c) => isObj(c) && c.status === st).length;
   need(by('passed') === tc.passed && by('failed') === tc.failed && by('needs review') === tc.needsReview && by('not automated') === tc.notAutomated, 'summary.testCases counts must match the case statuses');
   // partiallyCovered (added later): a test that passed without asserting every clause; never counted as passed.
+  // skipped, manual, blocked, knownIssues, unexpectedPasses (added later): never counted as passed.
+  for (const [k, st] of [['skipped', 'skipped'], ['manual', 'manual'], ['blocked', 'blocked'], ['knownIssues', 'known issue'], ['unexpectedPasses', 'unexpected pass'], ['accepted5xx', 'accepted 5xx']] as const) {
+    need(tc[k] === undefined ? by(st) === 0 : isInt(tc[k]) && by(st) === tc[k], `summary.testCases.${k} must match the "${st}" cases`);
+  }
   need(tc.partiallyCovered === undefined ? by('partially covered') === 0 : isInt(tc.partiallyCovered) && by('partially covered') === tc.partiallyCovered, 'summary.testCases.partiallyCovered must match the "partially covered" cases');
   // assertionCoverage (added later): asserted clauses of all sheet clauses, percent rounded to 0.1 (null with no clauses).
   if (tc.assertionCoverage !== undefined) {
@@ -137,6 +145,18 @@ if (isObj(s.testCases)) {
 }
 
 need(isObj(s.totals), 'summary.totals is missing');
+// Section 17 (added later): documented 5xx tests that passed, per-case probes, early warnings.
+need(s.accepted5xx === undefined || (Array.isArray(s.accepted5xx) && s.accepted5xx.every((a) => isObj(a) && typeof a.endpointId === 'string' && typeof a.testTitle === 'string')), 'summary.accepted5xx must be a list of { endpointId, testTitle, status }');
+need(totals.accepted5xx === undefined || (isInt(totals.accepted5xx) && totals.accepted5xx === (Array.isArray(s.accepted5xx) ? s.accepted5xx.length : 0) && (totals.accepted5xx as number) <= (totals.passed as number)), 'summary.totals.accepted5xx must count summary.accepted5xx (they are included in passed)');
+need(s.probeWarnings === undefined || (Array.isArray(s.probeWarnings) && s.probeWarnings.every((w) => isObj(w) && typeof w.endpointId === 'string' && typeof w.message === 'string')), 'summary.probeWarnings must be a list of { endpointId, caseId, testTitle, message }');
+if (s.caseProbes !== undefined && s.caseProbes !== null) {
+  const cp = s.caseProbes;
+  need(isObj(cp) && isInt(cp.cap) && isInt(cp.sent) && Array.isArray(cp.results) && Array.isArray(cp.notProbed), 'summary.caseProbes must be null or { cap, sent, results, notProbed }');
+  if (isObj(cp) && Array.isArray(cp.results)) {
+    need((cp.sent as number) <= (cp.cap as number) && cp.results.length === cp.sent, 'summary.caseProbes: sent must equal the results and stay within the cap');
+    need(cp.results.every((r) => isObj(r) && /^GET /.test(String(r.request))), 'summary.caseProbes: a case probe is always a GET');
+  }
+}
 for (const k of ['endpoints', 'testsGenerated', 'passed', 'failed']) need(isInt(totals[k]), `summary.totals.${k} is not a count`);
 
 // Safety (section 7)
@@ -188,7 +208,26 @@ for (const [i, e] of endpoints.entries()) {
 }
 need(sumPassed === totals.passed, `endpoints pass counts add up to ${sumPassed}, totals.passed is ${totals.passed}`);
 need(sumFailed === totals.failed, `endpoints fail counts add up to ${sumFailed}, totals.failed is ${totals.failed}`);
-need(Number(totals.passed) + Number(totals.failed) === totals.testsGenerated, 'totals.passed + totals.failed must equal totals.testsGenerated');
+// skippedTests and knownIssues (added later): tests that did not run, with reason codes, and known issues
+// that failed as expected. Neither is passed or failed; a test blocked while running and a known issue
+// are generated tests, so they count in testsGenerated.
+const skippedTests = Array.isArray(s.skippedTests) ? s.skippedTests.filter(isObj) : [];
+const knownIssues = Array.isArray(s.knownIssues) ? s.knownIssues.filter(isObj) : [];
+need(s.skippedTests === undefined || Array.isArray(s.skippedTests), 'summary.skippedTests must be a list');
+need(s.knownIssues === undefined || Array.isArray(s.knownIssues), 'summary.knownIssues must be a list');
+for (const [i, x] of skippedTests.entries()) {
+  for (const k of ['endpointId', 'testTitle', 'reason']) field(`skippedTests[${i}]`, x, k, ['string']);
+  field(`skippedTests[${i}]`, x, 'reasonCode', ['string'], [...REASON_CODES]);
+  field(`skippedTests[${i}]`, x, 'when', ['string'], ['run', 'plan']);
+}
+for (const [i, x] of knownIssues.entries()) {
+  for (const k of ['endpointId', 'testTitle', 'reason']) field(`knownIssues[${i}]`, x, k, ['string']);
+  need(/\b[A-Z][A-Z0-9]+-\d+\b/.test(String(x.reason)), `knownIssues[${i}].reason must carry the Jira key`);
+}
+if (totals.skipped !== undefined) need(isInt(totals.skipped) && totals.skipped === skippedTests.length, `totals.skipped is ${totals.skipped} but skippedTests lists ${skippedTests.length}`);
+if (totals.knownIssues !== undefined) need(isInt(totals.knownIssues) && totals.knownIssues === knownIssues.length, `totals.knownIssues is ${totals.knownIssues} but knownIssues lists ${knownIssues.length}`);
+const blockedRun = skippedTests.filter((x) => x.when === 'run').length;
+need(Number(totals.passed) + Number(totals.failed) + blockedRun + knownIssues.length === totals.testsGenerated, 'totals.passed + totals.failed + tests blocked while running + known issues must equal totals.testsGenerated');
 
 // Findings (rule 4 in CLAUDE.md)
 const findings = (Array.isArray(s.findings) ? s.findings : []).filter(isObj);

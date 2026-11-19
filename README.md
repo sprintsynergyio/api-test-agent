@@ -120,11 +120,21 @@ npm run ui            # then open http://localhost:3000
 
 | Code | Meaning |
 |---|---|
-| `0` | The run completed and nothing fails it: no failed tests, or `--fail-on none` |
-| `1` | Findings: at least one failed test (a suspected API finding or a failure that needs review), with `--fail-on finding` (the default) |
+| `0` | The run completed and nothing fails it: no failed tests, or `--fail-on none`. Skipped tests and known issues that failed as expected do not fail the run unless you ask for it (below) |
+| `1` | Findings: at least one failed test (a suspected API finding or a failure that needs review) or an unexpected pass (a known issue whose test passed), with `--fail-on finding` (the default). With `--fail-on skipped`, also any test or sheet case that did not run (skipped, blocked, manual) |
 | `2` | Tool or setup error: bad input or flags, a refused host, no model set up, no tests generated, a budget stop, an endpoint that could not be tested, a failed framework export, or a crash |
 
-`--fail-on none` still reports every finding in the console and `out/summary.json`; only the exit code changes. `out/summary.json` is written before the framework export and holds `exitCode`, `failOn` and, when the export failed, `frameworkError`, so a failed export never loses the results.
+`--fail-on none` still reports every finding in the console and `out/summary.json`; only the exit code changes.
+
+**CI policy for skips.** By default a skipped or blocked test does not fail the pipeline, but it is never
+counted as passed: the console, `out/summary.json` (`totals.skipped`, `skippedTests`), the traceability
+files and the dashboard show every one with its reason code. Use `--fail-on skipped` in the pipeline that
+must prove full coverage (for example the release gate), and the default `--fail-on finding` for nightly
+runs against shared environments where some data comes and goes. Known issues that fail as expected
+never fail the run; when one starts passing the run fails (exit 1), so someone closes the bug and removes
+the marker.
+
+`out/summary.json` is written before the framework export and holds `exitCode`, `failOn` and, when the export failed, `frameworkError`, so a failed export never loses the results.
 
 ## Importers
 
@@ -145,6 +155,7 @@ npm run -s import postman < collection.json
 - **Nothing is dropped silently.** Every request becomes an endpoint or a skipped entry with a reason: another origin than the base URL (the most common origin), an unresolved variable in the URL (`{{baseUrl}}` with no value, `$VAR`), a non-JSON body, or a method other than GET, POST, PUT, PATCH, DELETE. In a HAR file, static assets, analytics and other origins are counted in one "filtered: not an API call" entry. From text, a base URL, path or body field that is not in the text is dropped.
 - **Auth.** Every credential is removed: Authorization, Cookie, any header whose name contains auth, token, key, secret or session, Postman auth blocks, curl `-u` and `-b`, credential query parameters, and `user:password@` in URLs. Those endpoints get `requiresAuth: true`, and the input gets `auth: { header, valueEnv: "CUSTOM_API_AUTH" }`. Enter the value in the auth field before running. Credential values never appear in the output, warnings or errors.
 - Ids are slugs of the method and path (`get-products-id`). Path params (`:id`, `{{id}}`, `{id}`) become `{id}`. A path with a placeholder gets `setup` from the POST on its parent path; check its `idField`.
+- **Grouped by route.** Requests to the same route with different values in the path become one endpoint: `/products/42` and `/products/7` become `/products/{productId}`, `/asset/fabletics/badge` and `/asset/savage/badge` become `/asset/{asset}/badge` (only a middle segment, never the first or last word). The first recorded value goes to `pathParams` (for example `{ "productId": "42" }`) so the probe can call it without a setup step, and the warnings say what was grouped. Sheet cases can still use their own ids. Paths with no value segment stay separate. Code that calls `buildInput` can pass `groupRoutes: false` to keep every literal path.
 - A missing or relative base URL leaves `baseUrl` empty, and Generate stays disabled until you fill it in.
 - **Big imports.** Every imported endpoint is selected. Each costs about 2 model calls of the 60-call budget; above 50 endpoints the preview shows the estimate. A run that stops at the budget is continued from the terminal with `--resume` (see Run it).
 - Acceptance criteria in a ticket are not turned into tests yet.
@@ -171,7 +182,8 @@ or put it in the input file: `"testCases": { "file": "local-shop-test-cases.csv"
 - **Columns** are matched by name, ignoring case and punctuation: **ID** (`Test Case ID`, `TC ID`, `Key`,
   `Issue key`, ...), **Title** (`Summary`, `Name`, `Scenario`, ...), **Steps / Request** (`Steps`,
   `Request`, `Description`, `Action`, ...), **Expected Result** (`Expected`, `Expected Outcome`, ...), and
-  optional **Endpoint**, **Method**, **Priority**, **Preconditions**, **Test Data**. Other columns are
+  optional **Endpoint**, **Method**, **Priority**, **Preconditions**, **Test Data**, **Known issue**,
+  **Required data** and **Automation** (see [Statuses, skips and known issues](#statuses-skips-and-known-issues)). Other columns are
   ignored and listed. Step-per-row exports (Xray, Zephyr) work: a row with no ID and no title continues the
   case above.
 - **Endpoint matching.** The Endpoint column first (an endpoint id, `GET /products/{id}`, a path or a URL),
@@ -188,6 +200,7 @@ or put it in the input file: `"testCases": { "file": "local-shop-test-cases.csv"
   sheet says 201 and the API returns 200) is not guessed at: it becomes a test marked **needs review**
   (`test.fixme` in Playwright, a pending test in Pactum) with the reason. It never runs and never passes,
   and it does not change the exit code.
+- **Skipped, blocked, manual and known issues.** See [Statuses, skips and known issues](#statuses-skips-and-known-issues).
 - **Expected results are read clause by clause.** "Response is 400 or 404 JSON error, not 500 or 502"
   expects 400 or 404 (the test asserts the status is one of them) and rules out 500 and 502; codes after
   *not*, *never*, *must not be*, *instead of* or *other than* are never read as expected. Each clause
@@ -202,8 +215,8 @@ or put it in the input file: `"testCases": { "file": "local-shop-test-cases.csv"
   another role. A case of a type the endpoint does not allow is **needs review** with that rule and how to
   turn the type on. See [Test rules](#test-rules) for images, paging and cross-call checks.
 - **Traceability.** `out/traceability.csv` and `out/traceability.xlsx` list every row with ID, Title,
-  Endpoint, Test file, Status (passed, partially covered, failed, needs review, not automated), Coverage,
-  Reason, Jira and Confluence, followed by the agent suggestions. Test file is blank when no runnable test
+  Endpoint, Test file, Status (passed, partially covered, failed, needs review, not automated, skipped,
+  manual, blocked, known issue, unexpected pass), Reason code, Coverage, Reason, Jira and Confluence, followed by the agent suggestions. Test file is blank when no runnable test
   automates the case (needs review, dropped by the static gate, not automated). Coverage is how many
   clauses of the case's expected result a test assertion checks (`2/3 (66.7%)`). Reasons are never
   shortened. Jira and Confluence come from sheet columns of that name (`Jira`, `Jira link`, `Story`,
@@ -216,6 +229,81 @@ or put it in the input file: `"testCases": { "file": "local-shop-test-cases.csv"
 - **Limits.** 5 MB, 1000 test cases, 100 columns and 4000 characters per cell. Excel files are read for
   their stored values only: formulas are never run, links never followed.
 - **Jira and Confluence links.** See the next section: paste a link instead of exporting a file.
+
+### Statuses, skips and known issues
+
+A test that did not run, or that failed for a bug the team already knows about, is never shown as passed
+and never hidden. Every such case has a status and a **reason code**:
+
+| Status | Reason code | When |
+|---|---|---|
+| skipped | `MISSING_TEST_DATA` | The case uses a placeholder like `[OTHER_BRAND]` and the test data file has no value for it |
+| manual | `MANUAL` / `MANUAL_VISUAL` | The **Automation** column says manual (`Manual`, `Manual - visual check`, ...). Visual checks get `MANUAL_VISUAL` |
+| blocked | `DATA_NOT_ON_ENV` | The **Required data** is not on the environment: the test checked before it ran and skipped itself |
+| blocked | `ENV_UNAVAILABLE` | The data lookup could not answer (no connection, 401, 403, 429 or a 5xx) |
+| needs review | `SPEC_UNCLEAR` (or none) | Steps or expected result too vague, or they contradict the API |
+| known issue | `KNOWN_ISSUE` | The **Known issue** column names a Jira bug and the test failed as expected |
+| unexpected pass | `KNOWN_ISSUE` | The known issue's test passed: the bug may be fixed. This is a finding (needs review, exit 1) |
+
+- **Known issue column** (`Known issue`, `Known bug`, `Bug`, `Defect`, ...): a Jira key and an optional note,
+  for example `SHOP-8: delete does not check the token`. A cell without a Jira key is ignored with a
+  warning and the case runs as a normal test. The agent then writes the test with the correct expected
+  status (401 here) and marks it as expected to fail (`test.fail(...)` in Playwright, `knownIssue(...)` in
+  Pactum). Known issues come only from this column: the model can never mark a test as a known issue.
+- **Required data column** (`Required data`, `Required files`, ...): names separated by `;`, `,` or new
+  lines (`Summer Hat (seasonal); Classic Tee`). Before the test runs it asks the environment, with the
+  lookup endpoint from the test data file, and skips itself as **blocked** (`DATA_NOT_ON_ENV`) when a name
+  is not in the answer. The lookup is always a GET.
+- **Automation column**: a case marked manual is listed as **manual** and never generated.
+- **Test data file**, one per environment (`input/local-shop-test-data.json`):
+
+  ```json
+  { "environment": "local", "values": { "CATEGORY": "tops" }, "lookup": { "endpointId": "list-products" } }
+  ```
+
+  `values` fill the `[PLACEHOLDER]` names (upper case, 3 or more characters) in the steps and expected
+  results; `lookup` names a GET endpoint of the input (and an optional `query`) used for Required data.
+  Give it with `--test-data input/staging-test-data.json` or `"testData": "staging-test-data.json"` in the
+  input file. Keep no secrets in it. The exported framework includes it as `config/test-data.json`
+  (point `TEST_DATA_FILE` at another file to run the same tests against another environment).
+- **Where you see them.** The console lists each skipped test and known issue with its reason. The
+  dashboard has **Skipped** and **Known issues** tiles next to Passed and Failed, and lists each one with
+  its code and reason under the findings. `out/summary.json` has `totals.skipped`, `totals.knownIssues`,
+  `totals.skippedByCode`, `skippedTests` and `knownIssues` (see `ui/CONTRACT.md`). Allure tags known
+  issues `known issue` with a link to the Jira key.
+- **The model cannot skip.** The static gate still rejects `test.skip`, `test.fixme`, `test.fail`,
+  `this.skip()` and the markers above in model-written code. The agent adds the markers itself, after the
+  gate, only from the sheet columns and the test data file.
+
+Try it: `npm run agent -- input/local-shop-statuses.json` (seven cases, one of each status).
+
+### The sheet decides the expected status
+
+The probe (one real call per endpoint before planning) only shows what a response looks like: its fields,
+types and headers. The status a test expects comes from your sheet:
+
+- **The sheet's status wins.** When a row says `201 Created` and the probe saw `200`, the test still
+  expects 201. The run shows who is right: if the API answers 200 the test fails as **needs review**, and
+  the console and dashboard list a **probe warning** before the run (`the sheet expects 201; the API
+  answered 200 when probed`). A row with no status code uses the probe's 2xx.
+- **A probe that does not work no longer blocks your cases.** When the probe of an endpoint fails (a 404
+  because the id in the config does not exist, a 503 maintenance page), the endpoint is still planned from
+  the sheet with the statuses it names, and the console prints `<endpoint> WARNING probe not usable (404):
+  planning the team's cases from the sheet, with the statuses it names`. Without sheet cases the endpoint
+  is skipped as before.
+- **Cases with their own ids get their own probe.** A row whose steps name a literal path
+  (`GET /products/1`, `GET /products/999999`) runs against exactly that path, and the agent sends one
+  extra GET for it before planning (`case probes: ...` in the console, `out/probes/<id>.cases.json`). At
+  most 20 per run (`--case-probes N`, 0 turns them off). Writes (POST, PUT, PATCH, DELETE) are never
+  probed, and neither is a case whose path needs a setup step.
+- **A 5xx only when you documented it.** A test never expects a 5xx unless the row says so: a
+  `Documented 5xx` column (any value except `no`, `-`, `n/a`; write where it is documented, for example
+  `ops runbook 3.1`) or the tag `@documented-5xx` anywhere in the row. Then the test expects exactly that
+  code and, when it passes, shows as **accepted 5xx** (not a finding). The same 503 without the column is
+  **needs review** with the reason.
+
+Try it: `npm run agent -- input/local-shop-probes.json` (a wrong 201, an unusable probe, cases with their
+own ids, a write that is not probed and a documented 503 from `GET /maintenance` on the local API).
 
 ### Test cases straight from Jira, Confluence, Xray or Zephyr Scale
 
@@ -344,6 +432,7 @@ Write an input file (or use the Build tab in the UI):
 - `query` is the sample query string (`{ "page": 1, "per_page": 10 }`).
 - `errorStatuses` (optional, 400-499): the 4xx codes the API documents for this endpoint. The OpenAPI importer fills it in. It turns on invalid-input tests.
 - `allowInvalidInput: true` (optional): invalid-input tests for an endpoint with nothing else to make invalid, such as a query-only GET (bad page or filter values). Same as `--allow-invalid-input <ids>` or **Run options > Test options > Invalid-input tests** in the UI.
+- `pathParams` (optional): fixed values for path placeholders no `setup` step fills, for example `"pathParams": { "id": "42" }` for `/products/{id}`. The importers write it for grouped routes. A setup value wins over it.
 - `stableData: true` (optional): the endpoint's data does not change during the run, so tests may compare several calls (paging, totals). Same as `--stable-data <ids>` or **Test options > Stable data** in the UI. Read-only GET endpoints get this automatically when nothing in the run writes the same resource.
 
 Then run `npm run agent path/to/my-api.json`.
@@ -367,6 +456,7 @@ The UI's setup card writes these lines for you. The prompts were tuned against C
 Every generated spec must pass the static gate (`agent/validate.ts`) before it is kept. The gate runs inside the GENERATING phase, right after the model returns a spec and before anything is written to `generated/`: it checks the rules below and runs a TypeScript typecheck on the candidate. If it fails, generation is retried once with the reasons. If it fails again, only the tests the gate rejected are dropped and the rest of the file is kept (`OK written ... (2 tests dropped by the static gate, the rest kept)`); each dropped case is **not automated** with its own reason. Only a problem with the file itself (a forbidden import, code outside the tests) rejects the whole spec, and then the console shows `FAILED static gate: <reasons>` for that endpoint, with each sheet case still getting its own reason. The same name is used in the code, the console output and this document.
 
 - No hardcoded hosts: paths are relative, and the base URL comes from the fixture.
+- Expected status: the sheet's code when it names one (a 5xx only when the row is a documented 5xx, then exactly that code), else the probe's 2xx; see The sheet decides the expected status.
 - No `process.env` in tests: everything comes from the `ctx` fixture.
 - Assert status codes, field presence and field types. Assert exact values only for data the test itself sent.
 - Nothing hides errors: no `test.only`, no `test.skip`, no empty or swallowing `catch`, no `.catch()`.

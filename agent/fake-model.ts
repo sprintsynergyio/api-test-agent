@@ -186,6 +186,8 @@ export function fakeSheetType(c: { title: string; steps?: string; expected?: str
   const otherRole = /\b(viewer|another role|other role|other user|different user|lower role|read-only user)\b/.test(text);
   if (noAuth || (codes.includes(401) && !otherRole)) return allowed.includes('auth') ? 'auth' : 'auth';
   if (otherRole || codes.includes(403)) return 'authz';
+  // The prompt marks a documented 5xx: a happy case expecting that code.
+  if ((c as { documented5xx?: boolean }).documented5xx && codes.some((n) => n >= 500)) return 'happy';
   if (codes.some((n) => n >= 400 && n < 500) || /\b(invalid|missing|wrong|bad|not found|non-existent|nonexistent|does not exist|reject)/.test(text)) return 'invalid-input';
   if (codes.some((n) => n >= 200 && n < 300) || /\b(success|returns|created|updated|deleted|list)\b/.test(expected)) {
     return /\b(fields?|schema|shape|each (item|product|record) has|types?)\b/.test(expected) ? 'schema' : 'happy';
@@ -350,7 +352,7 @@ function titleFor(type: string, role: string): string {
 type SetupKind = { kind: 'none' } | { kind: 'single'; endpointId: string } | { kind: 'multi' };
 
 function setupKind(user: string): SetupKind {
-  if (/This endpoint's path has \d+ placeholders/.test(user)) return { kind: 'multi' };
+  if (/This endpoint's path has \d+ placeholders?/.test(user)) return { kind: 'multi' };
   // The setup rule line, not the template shown earlier in the prompt (which has its own createResource).
   const m = user.match(/This endpoint has setup\. Each test that needs an existing resource gets one with `const id = await ctx\.createResource\('([^']+)'\);`/);
   if (m) return { kind: 'single', endpointId: m[1] };
@@ -371,7 +373,7 @@ export function fakeSpec(user: string, pactum: boolean): string {
   const query = endpoint.query as Json | undefined;
   const headers = endpoint.headers as Json | undefined;
   type PlanClause = { n: number; text: string; status: string; via?: string };
-  const cases = (plan.cases as { type: string; title: string; id: string; requestDescription?: string; statusCodes?: number[]; crossCall?: boolean; clauses?: PlanClause[]; contentType?: string }[]) ?? [];
+  const cases = (plan.cases as { type: string; title: string; id: string; requestDescription?: string; statusCodes?: number[]; crossCall?: boolean; clauses?: PlanClause[]; contentType?: string; expectedStatus?: string; pathValues?: Record<string, string> }[]) ?? [];
   const binary = probe.binary as { signatureHex?: string } | undefined;
   const pageParam = pageParamOf(endpoint);
   const params = [...path.matchAll(/\{([^}]+)\}/g)].map((m) => m[1]);
@@ -445,7 +447,11 @@ export function fakeSpec(user: string, pactum: boolean): string {
     }
     return `\n    const item = (await response.json()) as Record<string, unknown>;\n${lines.map((l) => `    ${l}`).join('\n')}`;
   })();
-  const statusLines = (type: string) => {
+  // The sheet decides the status: a happy / schema case whose expectedStatus is not the probe's checks
+  // only that status (the probe did not show that response's body).
+  const statusLines = (type: string, expected?: string) => {
+    const want = expected && /^\d{3}$/.test(expected) ? Number(expected) : status;
+    if (want !== status) return `    expect(response.status()).toBe(${want});`;
     if (type === 'schema') return `    expect(response.status()).toBe(${status});${schemaCheck}`;
     if (type === 'happy') return `    expect(response.status()).toBe(${status});${bodyCheck}`;
     if (type === 'invalid-input') return `    expect(response.status()).toBeGreaterThanOrEqual(400);\n    expect(response.status()).toBeLessThanOrEqual(499);`;
@@ -460,7 +466,9 @@ export function fakeSpec(user: string, pactum: boolean): string {
       const invalid = c.type === 'invalid-input';
       // A sheet case that expects 404 (and not 400) asks for a missing resource: a valid-looking id that does not exist.
       const missing = invalid && c.statusCodes?.includes(404) && !c.statusCodes.includes(400) && params.length > 0;
-      const p = missing ? invalidPathExpr.replace('not-a-valid-id', '999999') : invalid && !hasBody ? invalidPathExpr : pathExpr;
+      // A case with its own path values (GET /products/42) sends exactly those.
+      const own = c.pathValues && params.every((x) => c.pathValues![x] !== undefined) ? `'${path.replace(/\{([^}]+)\}/g, (_m, x: string) => encodeURIComponent(c.pathValues![x]))}'` : null;
+      const p = own ?? (missing ? invalidPathExpr.replace('not-a-valid-id', '999999') : invalid && !hasBody ? invalidPathExpr : pathExpr);
       const b = invalid && hasBody ? invalidBody : null;
       const open = pactum ? `  it('${c.title.replace(/'/g, "\\'")}', async () => {` : `  test('${c.title.replace(/'/g, "\\'")}', async ({ ctx }) => {`;
       const q = invalid && invalidQuery ? invalidQuery : query;
@@ -478,7 +486,7 @@ export function fakeSpec(user: string, pactum: boolean): string {
       // A case that names its response format asserts the Content-Type ("json" for any JSON type).
       const ctNeedle = c.contentType ? contentTypeNeedle(c.contentType) : null;
       const ctLine = ctNeedle && !clauseLines.includes(`toContain(${asCode(ctNeedle)})`) ? `\n    expect(String(response.headers()['content-type'])).toContain(${asCode(ctNeedle)});` : '';
-      return `${open}\n${resourceLines('    ')}    const response = await ${call(client, p, b, q)};\n\n    recordStatus(response.status());\n${statusLines(c.type)}${codes}${ctLine}${cross}${clauseLines}\n  });`;
+      return `${open}\n${own ? '' : resourceLines('    ')}    const response = await ${call(client, p, b, q)};\n\n    recordStatus(response.status());\n${statusLines(c.type, c.expectedStatus)}${codes}${ctLine}${cross}${clauseLines}\n  });`;
     })
     .join('\n\n');
 

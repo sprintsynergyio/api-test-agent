@@ -35,7 +35,71 @@ const INPUTS = [
   // The sample sheet as a Confluence table, read live through a link (scripts/mock-atlassian.mjs). Its
   // export is not installed again: the two runs above already prove the exported projects.
   { input: "input/local-shop.json", framework: "playwright", sheet: "sheet-only", confluence: true, noExport: true },
+  // Statuses beyond passed / failed (input/local-shop-statuses-test-cases.csv with the test data file
+  // input/local-shop-test-data.json): a Known issue on the planted delete-no-auth bug, a Known issue on a
+  // bug that does not exist (unexpected pass), a placeholder with no test data, a manual case and Required
+  // data that is not on the API. Their exports run against the API with the planted bugs (below).
+  { input: "input/local-shop-statuses.json", framework: "playwright", statuses: true },
+  { input: "input/local-shop-pactum.json", framework: "pactum", statuses: true, args: ["--test-cases", path.join("input", "local-shop-statuses-test-cases.csv"), "--test-cases-mode", "sheet-only", "--test-data", path.join("input", "local-shop-test-data.json")] },
+  // Probe redesign (input/local-shop-probes-test-cases.csv): the sheet decides the expected status, cases
+  // with their own ids get their own GET probe (writes never), an endpoint whose probe is not usable is
+  // still planned from the sheet, and a documented 5xx is an accepted 5xx. Exports run against the API
+  // with the planted bugs (below): only the sheet's wrong 201 fails.
+  { input: "input/local-shop-probes.json", framework: "playwright", probes: true },
+  { input: "input/local-shop-probes-pactum.json", framework: "pactum", probes: true },
 ];
+
+const PROBE_CASES = {
+  "TC-301": "passed", "TC-302": "passed", "TC-303": "failed", "TC-304": "accepted 5xx", "TC-305": "needs review", "TC-306": "passed", "TC-307": "passed",
+};
+
+function checkProbesRun(label, summary) {
+  const t = summary.testCases;
+  check(Boolean(t) && t.rows === 7, `${label}: summary.testCases has the 7 rows of the probes sheet`);
+  if (!t) return;
+  const got = Object.fromEntries((t.cases || []).map((c) => [c.id, c]));
+  for (const [id, status] of Object.entries(PROBE_CASES)) check(got[id]?.status === status, `${label}: ${id} is ${status} (got ${got[id]?.status})`);
+  check(t.accepted5xx === 1 && summary.totals?.accepted5xx === 1, `${label}: one accepted 5xx in testCases and totals`);
+  check((summary.accepted5xx || []).length === 1 && summary.accepted5xx[0].status === 503 && /TC-304/.test(summary.accepted5xx[0].testTitle), `${label}: summary.accepted5xx lists TC-304 with 503`);
+  const findings = summary.findings || [];
+  check(findings.length === 1 && /TC-303/.test(findings[0].testTitle) && findings[0].classification === "needs review", `${label}: the sheet's wrong 201 is the only finding, needs review`);
+  const eps = Object.fromEntries((summary.endpoints || []).map((e) => [e.id, e]));
+  for (const id of ["get-product", "maintenance"]) check(eps[id]?.probeUsable === false && eps[id]?.plannedFromSheet === true && !eps[id]?.skipped, `${label}: ${id} probe not usable, planned from the sheet`);
+  const warn = summary.probeWarnings || [];
+  check(warn.some((w) => w.caseId === "TC-303" && /201/.test(w.message)) && warn.filter((w) => w.endpointId === "get-product" || w.endpointId === "maintenance").length >= 2, `${label}: probeWarnings name the 201 mismatch and both unusable probes`);
+  const cp = summary.caseProbes || {};
+  const probed = (cp.results || []).map((r) => r.caseId).sort().join(",");
+  check(cp.cap === 20 && cp.sent === 3 && probed === "TC-301,TC-302,TC-306" && (cp.results || []).every((r) => /^GET /.test(r.request)), `${label}: case probes sent 3 GETs (TC-301, TC-302, TC-306), got ${probed}`);
+  check((cp.notProbed || []).some((n) => n.caseId === "TC-307" && /PUT/.test(n.reason)), `${label}: the PUT case is never probed`);
+}
+
+const STATUS_CASES = {
+  "TC-201": ["passed", null], "TC-202": ["known issue", "KNOWN_ISSUE"], "TC-203": ["skipped", "MISSING_TEST_DATA"], "TC-204": ["manual", "MANUAL_VISUAL"],
+  "TC-205": ["blocked", "DATA_NOT_ON_ENV"], "TC-206": ["unexpected pass", "KNOWN_ISSUE"], "TC-207": ["passed", null],
+};
+
+function checkStatusesRun(label, summary) {
+  const t = summary.testCases;
+  check(Boolean(t) && t.rows === 7, `${label}: summary.testCases has the 7 rows of the statuses sheet`);
+  if (!t) return;
+  const got = Object.fromEntries((t.cases || []).map((c) => [c.id, c]));
+  for (const [id, [status, code]] of Object.entries(STATUS_CASES)) check(got[id]?.status === status && (got[id]?.reasonCode ?? null) === code, `${label}: ${id} is ${status}${code ? ` (${code})` : ""} (got ${got[id]?.status}, ${got[id]?.reasonCode})`);
+  check(t.passed === 2 && t.skipped === 1 && t.manual === 1 && t.blocked === 1 && t.knownIssues === 1 && t.unexpectedPasses === 1, `${label}: testCases counts 2 passed, 1 skipped, 1 manual, 1 blocked, 1 known issue, 1 unexpected pass`);
+  const totals = summary.totals || {};
+  check(totals.passed === 2 && totals.failed === 1 && totals.skipped === 3 && totals.knownIssues === 1, `${label}: totals never count skips or known issues as passed (passed ${totals.passed}, failed ${totals.failed}, skipped ${totals.skipped}, known ${totals.knownIssues})`);
+  check(JSON.stringify(totals.skippedByCode) === JSON.stringify({ DATA_NOT_ON_ENV: 1, MISSING_TEST_DATA: 1, MANUAL_VISUAL: 1 }), `${label}: totals.skippedByCode (${JSON.stringify(totals.skippedByCode)})`);
+  check((summary.findings || []).length === 1 && /^UNEXPECTED PASS/.test(summary.findings[0].error) && summary.findings[0].classification === "needs review", `${label}: the unexpected pass is the only finding, needs review`);
+  check((summary.knownIssues || []).length === 1 && /SHOP-8/.test(summary.knownIssues[0].reason), `${label}: summary.knownIssues lists SHOP-8`);
+  check(/^ID,Title,Endpoint,Test file,Status,Reason code,Coverage,Reason,Jira,Confluence\r\n/.test(fs.readFileSync(path.join(ROOT, "out", "traceability.csv"), "utf8")), `${label}: traceability.csv has the Reason code column`);
+  const specs = fs.readdirSync(path.join(ROOT, "generated")).filter((f) => f.endsWith(".spec.ts")).map((f) => fs.readFileSync(path.join(ROOT, "generated", f), "utf8")).join("\n");
+  const pactum = summary.testFramework === "pactum";
+  check(pactum ? /knownIssue\("KNOWN_ISSUE SHOP-8: delete does not check the token", async/.test(specs) : /test\.fail\(true, "KNOWN_ISSUE SHOP-8: delete does not check the token"\);/.test(specs), `${label}: the agent marked the known issue`);
+  check(pactum ? /requireDataFor\("\[TC-205\] \[[a-z-]+\] View one product", \["Summer Hat \(seasonal\)"\]\);/.test(specs) : /await ctx\.requireData\(\["Summer Hat \(seasonal\)"\]\);/.test(specs), `${label}: the agent added the required data check`);
+  check(/\[TC-203\] \[skipped\]/.test(specs) && /\[TC-204\] \[manual\]/.test(specs), `${label}: skipped and manual placeholders are in the spec`);
+  check(fs.existsSync(path.resolve(ROOT, summary.framework?.dir ?? "-", "config", "test-data.json")) && fs.existsSync(path.resolve(ROOT, summary.framework?.dir ?? "-", "src", "test-data.ts")), `${label}: the export has config/test-data.json and src/test-data.ts`);
+  const contract = spawnSync(process.execPath, [tsxEntry(), "agent/check-contract.ts"], { cwd: ROOT, encoding: "utf8" });
+  check(contract.status === 0, `${label}: contract check passes (${(contract.stdout + contract.stderr).trim().split("\n").pop()})`);
+}
 
 function checkSheetRun(label, summary, mode, format) {
   const t = summary.testCases;
@@ -46,7 +110,7 @@ function checkSheetRun(label, summary, mode, format) {
   for (const [id, status] of Object.entries(SHEET_STATUS)) check(got[id] === status, `${label}: ${id} is ${status} (got ${got[id]})`);
   check(mode === "sheet-only" ? t.agentSuggestions === 0 : t.agentSuggestions > 0, `${label}: agent suggestions ${mode === "sheet-only" ? "off" : "on"} (${t.agentSuggestions})`);
   const csv = fs.readFileSync(path.join(ROOT, "out", "traceability.csv"), "utf8");
-  check(csv.startsWith("ID,Title,Endpoint,Test file,Status,Coverage,Reason,Jira,Confluence\r\n") && csv.includes("TC-008,"), `${label}: out/traceability.csv written`);
+  check(csv.startsWith("ID,Title,Endpoint,Test file,Status,Reason code,Coverage,Reason,Jira,Confluence\r\n") && csv.includes("TC-008,"), `${label}: out/traceability.csv written`);
   const xlsx = fs.readFileSync(path.join(ROOT, "out", "traceability.xlsx"));
   check(xlsx.readUInt32LE(0) === 0x04034b50, `${label}: out/traceability.xlsx written`);
   const spec = fs.readFileSync(path.join(ROOT, "generated", "get-product.spec.ts"), "utf8");
@@ -128,7 +192,7 @@ const exported = [];
 try {
   api = await startApi(false);
   atlassian = await startAtlassian();
-  for (const { input, framework, sheet, args: given = [], confluence, noExport } of INPUTS) {
+  for (const { input, framework, sheet, args: given = [], confluence, noExport, statuses, probes } of INPUTS) {
     const env = { ...process.env, FAKE_MODEL: "1", LOCAL_API_AUTH_VALUE: TOKEN };
     const args = confluence ? ["--test-cases", `${atlassian.url}/wiki/spaces/QA/pages/${CONFLUENCE_PAGE_ID}/Local+shop+API+test+cases`, "--test-cases-mode", sheet] : given;
     if (confluence) Object.assign(env, atlassian.env);
@@ -144,7 +208,9 @@ try {
     check((summary.findings || []).length > 0, `${input}: summary.json lists findings (${(summary.findings || []).length})`);
     check(summary.testFramework === framework && Boolean(summary.framework?.dir), `${input}: ${framework} project exported (${summary.framework?.dir})`);
     check(Boolean(summary.framework?.zip) && fs.existsSync(path.resolve(ROOT, summary.framework.zip)), `${input}: framework zip written`);
-    if (sheet) checkSheetRun(`${input} (${confluence ? "Confluence link, " : ""}${sheet})`, summary, sheet, confluence ? "confluence" : null);
+    if (probes) checkProbesRun(`${input} (probes)`, summary);
+    else if (statuses) checkStatusesRun(`${input} (statuses)`, summary);
+    else if (sheet) checkSheetRun(`${input} (${confluence ? "Confluence link, " : ""}${sheet})`, summary, sheet, confluence ? "confluence" : null);
     else check(summary.testCases === null, `${input}: no test case sheet, summary.testCases is null`);
     if (confluence) {
       const text = fs.readFileSync(path.join(ROOT, "out", "summary.json"), "utf8");
@@ -152,7 +218,52 @@ try {
       const seen = await fetch(`${atlassian.url}/__seen`).then((r) => r.json()).catch(() => []);
       check(seen.some((s) => s.path === `/wiki/api/v2/pages/${CONFLUENCE_PAGE_ID}` && s.auth === "Basic"), `${input} (Confluence link): the page was read through the Confluence v2 API with Basic auth`);
     }
-    if (summary.framework?.dir && !noExport) {
+    if (statuses && summary.framework?.dir) {
+      // The export against the API with the planted bugs: the known issue fails as expected (not a
+      // failure), the missing data skips, and only the unexpected pass fails the suite.
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), `ata-e2e-${framework}-statuses-`));
+      fs.cpSync(path.resolve(ROOT, summary.framework.dir), dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, ".env"), `LOCAL_API_AUTH_VALUE=${TOKEN}\n`);
+      const xenv = { ...process.env };
+      delete xenv.FAKE_MODEL;
+      delete xenv.LOCAL_API_AUTH_VALUE;
+      delete xenv.TEST_DATA_FILE;
+      try {
+        const install = run(process.execPath, [NPM, "install", "--no-audit", "--no-fund"], { cwd: dir, env: xenv });
+        check(install === 0, `${framework} statuses export: npm install`);
+        if (install === 0) {
+          const r = spawnSync(process.execPath, [NPM, "test"], { cwd: dir, env: xenv, encoding: "utf8", windowsHide: true });
+          const out = `${r.stdout}${r.stderr}`;
+          const one = framework === "pactum" ? /\b3 passing\b/.test(out) && /\b3 pending\b/.test(out) && /\b1 failing\b/.test(out) && /UNEXPECTED PASS: KNOWN_ISSUE SHOP-10/.test(out) : /\b1 failed\b/.test(out) && /\b3 skipped\b/.test(out) && /Expected to fail, but passed/.test(out) && /TC-206/.test(out);
+          check(r.status !== 0 && one, `${framework} statuses export: npm test fails only on the unexpected pass (known issue expected, missing data skipped)${one ? "" : `\n${out.slice(-1500)}`}`);
+        }
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    }
+    if (probes && summary.framework?.dir) {
+      // The export: the accepted 5xx passes against the maintenance route, the own-id cases pass, and only
+      // the sheet's wrong 201 fails.
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), `ata-e2e-${framework}-probes-`));
+      fs.cpSync(path.resolve(ROOT, summary.framework.dir), dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, ".env"), `LOCAL_API_AUTH_VALUE=${TOKEN}\n`);
+      const xenv = { ...process.env };
+      delete xenv.FAKE_MODEL;
+      delete xenv.LOCAL_API_AUTH_VALUE;
+      try {
+        const install = run(process.execPath, [NPM, "install", "--no-audit", "--no-fund"], { cwd: dir, env: xenv });
+        check(install === 0, `${framework} probes export: npm install`);
+        if (install === 0) {
+          const r = spawnSync(process.execPath, [NPM, "test"], { cwd: dir, env: xenv, encoding: "utf8", windowsHide: true });
+          const out = `${r.stdout}${r.stderr}`;
+          const one = framework === "pactum" ? /\b5 passing\b/.test(out) && /\b1 failing\b/.test(out) && /TC-303/.test(out) : /\b1 failed\b/.test(out) && /\b5 passed\b/.test(out) && /TC-303/.test(out);
+          check(r.status !== 0 && one, `${framework} probes export: npm test fails only on the sheet's wrong 201${one ? "" : `\n${out.slice(-1500)}`}`);
+        }
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    }
+    if (summary.framework?.dir && !noExport && !statuses && !probes) {
       const copy = fs.mkdtempSync(path.join(os.tmpdir(), `ata-e2e-${framework}${sheet ? "-sheet" : ""}-`));
       fs.cpSync(path.resolve(ROOT, summary.framework.dir), copy, { recursive: true });
       exported.push({ input, framework, dir: copy });

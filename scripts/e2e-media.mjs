@@ -104,7 +104,7 @@ try {
     check(ac && Number.isInteger(ac.clauses) && ac.clauses > 0 && ac.asserted < ac.clauses && typeof ac.percent === "number", `${label}: summary.testCases.assertionCoverage counts the sheet's clauses (${JSON.stringify(ac)})`);
     check(got["TC-109"]?.coverage && /^\d+\/\d+ \([\d.]+%\)$/.test(got["TC-109"].coverage), `${label}: the partially covered case shows its coverage (${got["TC-109"]?.coverage})`);
     const csvText = read("out/traceability.csv");
-    check(/^ID,Title,Endpoint,Test file,Status,Coverage,Reason,Jira,Confluence\r\n/.test(csvText), `${label}: traceability.csv has the Coverage, Jira and Confluence columns`);
+    check(/^ID,Title,Endpoint,Test file,Status,Reason code,Coverage,Reason,Jira,Confluence\r\n/.test(csvText), `${label}: traceability.csv has the Coverage, Jira and Confluence columns`);
     check(/clause 2 "photos are sorted by title"/.test(got["TC-109"]?.reason ?? ""), `${label}: the partially covered case lists the clause that is not asserted`);
     check(/expected download_url contains \/cdn\/, actual download_url is \/media\/v1\/files\//.test(got["TC-105"]?.reason ?? ""), `${label}: the needs-review case shows expected vs actual`);
     check(t?.agentSuggestions === 0, `${label}: sheet-only adds no agent tests (${t?.agentSuggestions})`);

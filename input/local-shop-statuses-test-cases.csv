@@ -1,0 +1,8 @@
+Test Case ID,Title,Endpoint,Method,Steps / Request,Expected Result,Known issue,Required data,Automation,Priority
+TC-201,List all products,list-products,GET,Send GET /products,"200 with an array; each product has id, name, price, category, inStock and createdAt",,Classic Tee; Rain Jacket,,High
+TC-202,Delete a product without a token,delete-product,,DELETE /products/{id} without the Authorization header,401 Unauthorized,SHOP-8: delete does not check the token,,,High
+TC-203,View one product of another brand,get-product,GET,GET /products/{id} for a product of brand [OTHER_BRAND],200 with the product fields,,,,Medium
+TC-204,Product photo looks right,get-product,GET,Open the product photo,The photo is sharp and centred,,,Manual - visual check,Low
+TC-205,View one product,get-product,,GET /products/{id} for a product created first,200 with the product fields and their types,,Summer Hat (seasonal),,Medium
+TC-206,Get a product that does not exist,,GET,Send GET /products/999999,404 Not Found,SHOP-10: unknown ids answer 500,,,Medium
+TC-207,List the [CATEGORY] products,list-products,GET,Send GET /products and keep the [CATEGORY] products,200 with an array,,,,Low

@@ -3,6 +3,7 @@ import { readFileSync, statSync } from 'node:fs';
 import { extname } from 'node:path';
 import { readSheet } from 'read-excel-file/node';
 import { AGENT_CASE_PREFIX, TEST_TYPES } from './model';
+import { fillPlaceholders, type TestData } from './test-data';
 
 // The team's own test case sheet: CSV, TSV (what Excel and Google Sheets put on the clipboard) or XLSX,
 // including CSV exported from Jira, Xray, Zephyr, TestRail or a Confluence table. Each row becomes one
@@ -21,7 +22,7 @@ const MAX_XLSX_ENTRIES = 2000;
 const MAX_ID_CHARS = 40;
 const MAX_TITLE_CHARS = 150;
 
-export type CaseField = 'id' | 'title' | 'steps' | 'expected' | 'endpoint' | 'method' | 'priority' | 'preconditions' | 'testData' | 'jira' | 'confluence';
+export type CaseField = 'id' | 'title' | 'steps' | 'expected' | 'endpoint' | 'method' | 'priority' | 'preconditions' | 'testData' | 'jira' | 'confluence' | 'knownIssue' | 'requiredData' | 'automation' | 'documented5xx';
 
 // Header aliases, compared after lowercasing and turning every non-letter, non-digit run into one space.
 // Common Jira, Xray, Zephyr Scale, TestRail and Confluence export names are included.
@@ -39,6 +40,18 @@ const ALIASES: Record<CaseField, string[]> = {
   // "Jira key" / "Issue key" stay the case ID; these are extra reference columns.
   jira: ['jira', 'jira link', 'jira url', 'jira issue', 'jira ticket', 'jira story', 'jira ref', 'jira reference', 'story', 'user story', 'requirement', 'requirement id'],
   confluence: ['confluence', 'confluence link', 'confluence url', 'confluence page', 'confluence id', 'confluence ref', 'confluence reference', 'spec page', 'spec link'],
+  // A bug the team already knows about, with its Jira key ("QA-123" or "QA-123: 500 for an unknown
+  // brand"). The test still checks the right behaviour; it is expected to fail and is reported as a known
+  // issue, never as passed. A cell without a Jira key is ignored with a warning.
+  knownIssue: ['known issue', 'known issues', 'known bug', 'known bugs', 'known defect', 'known defects', 'open bug', 'open defect', 'linked bug', 'linked defect', 'bug', 'bugs', 'defect', 'defects', 'bug id', 'defect id'],
+  // Data the test needs on the environment ("Test_A.png; kk-coming-soon.png"), checked before it runs
+  // with the lookup in the test data file (agent/test-data.ts).
+  requiredData: ['required data', 'required files', 'required test data', 'data required', 'files required', 'needs data', 'data dependencies', 'data dependency', 'depends on data'],
+  // "Manual" (or "Manual - visual check"): never automated, listed as manual with its reason code.
+  automation: ['automation', 'automation status', 'automation type', 'automatable', 'automated', 'execution type', 'manual or automated'],
+  // The team's contract really answers with a 5xx here ("yes", or where it is documented). Only then may
+  // a test expect a 5xx; it is reported as "accepted 5xx", never hidden. Also the tag @documented-5xx.
+  documented5xx: ['documented 5xx', 'accepted 5xx', 'expected 5xx', 'documented server error', 'contract 5xx', '5xx documented', '5xx by design'],
 };
 // Looser rules for exports that wrap names, e.g. "Custom field (Expected Result)".
 const CONTAINS: [CaseField, RegExp][] = [
@@ -60,7 +73,13 @@ export const FIELD_LABELS: Record<CaseField, string> = {
   testData: 'Test Data',
   jira: 'Jira',
   confluence: 'Confluence',
+  knownIssue: 'Known issue',
+  requiredData: 'Required data',
+  automation: 'Automation',
+  documented5xx: 'Documented 5xx',
 };
+
+export const DOCUMENTED_5XX_TAG = /@documented-5xx\b/i;
 
 export type SheetCase = {
   id: string;
@@ -78,7 +97,58 @@ export type SheetCase = {
   // older sheets stays the same).
   jira?: string;
   confluence?: string;
+  // Known issue (with its Jira key), required data names and the automation cell, absent when empty.
+  knownIssue?: string;
+  requiredData?: string;
+  automation?: string;
+  // A documented 5xx (the Documented 5xx column says yes or names where, or the tag @documented-5xx in
+  // the title, steps or expected result): the text of that cell or "tag @documented-5xx".
+  documented5xx?: string;
+  // Set by the matching (agent/cli.ts), never read from the sheet: the concrete values this case's own
+  // request puts in the endpoint's path placeholders ("GET /products/42" gives { id: "42" }).
+  pathValues?: Record<string, string>;
+  // Set by prepareSheetCases, never read from the sheet: a case that will not run, with its reason code
+  // (missing test data, manual). The agent writes its placeholder; the model never plans it.
+  declaredSkip?: { code: 'MISSING_TEST_DATA' | 'MANUAL' | 'MANUAL_VISUAL'; reason: string };
 };
+
+// Before planning: fills [NAME] placeholders from the per-environment test data (agent/test-data.ts)
+// and marks the cases that will not run: a placeholder with no value (MISSING_TEST_DATA) or an
+// Automation cell that says manual (MANUAL, MANUAL_VISUAL). Returns new case objects.
+export function prepareSheetCases(cases: SheetCase[], data: TestData | null): { cases: SheetCase[]; notes: string[] } {
+  const values = data?.values ?? {};
+  const notes: string[] = [];
+  const out = cases.map((c) => {
+    const missing = new Set<string>();
+    const fill = (text: string) => {
+      const r = fillPlaceholders(text, values);
+      r.missing.forEach((m) => missing.add(m));
+      return r.text;
+    };
+    const next: SheetCase = { ...c, steps: fill(c.steps), expected: fill(c.expected), testData: fill(c.testData), preconditions: fill(c.preconditions) };
+    const manual = manualCodeOf(c.automation);
+    if (manual) {
+      next.declaredSkip = { code: manual, reason: `${manual}: the sheet marks this case as manual ("${(c.automation ?? '').replace(/\s+/g, ' ').slice(0, 80)}"), so it is not automated` };
+    } else if (missing.size) {
+      const names = [...missing].map((m) => `[${m}]`).join(', ');
+      next.declaredSkip = { code: 'MISSING_TEST_DATA', reason: `MISSING_TEST_DATA: needs ${names}; add ${missing.size === 1 ? 'it' : 'them'} to "values" in the test data file${data?.environment ? ` for ${data.environment}` : ''} (testData in the input, or --test-data)` };
+      notes.push(`${c.id}: no test data for ${names}, skipped (MISSING_TEST_DATA)`);
+    }
+    if (c.requiredData && !data?.lookup && !next.declaredSkip) notes.push(`${c.id}: Required data "${c.requiredData.slice(0, 60)}" is not checked: the test data file has no "lookup" endpoint`);
+    return next;
+  });
+  return { cases: out, notes };
+}
+
+// "Manual", "Manual - visual check", "Not automatable", "No": the case is checked by a person. Returns
+// the reason code, or null when the cell says nothing about manual testing.
+export function manualCodeOf(cell: string | undefined): 'MANUAL' | 'MANUAL_VISUAL' | null {
+  const v = String(cell ?? '').trim().toLowerCase();
+  if (!v) return null;
+  const manual = /\bmanual(?:ly)?\b|\bnot automat|\bcannot be automat|\bcan ?not automat|^(?:no|false|n)$/.test(v);
+  if (!manual) return null;
+  return /\bvisual|\blook|\blayout|\bscreenshot|\bimage quality/.test(v) ? 'MANUAL_VISUAL' : 'MANUAL';
+}
 
 export type SheetWarning = { row: number | null; caseId: string | null; message: string };
 
@@ -315,7 +385,7 @@ export function casesFromRows(rows: string[][], format: ParsedSheet['format']): 
     } else if (id !== rawId.trim()) {
       warnings.push({ row: rowNo, caseId: id, message: `ID "${rawId.trim().slice(0, 50)}" changed to "${id}" (brackets, quotes and line breaks are not allowed in a test name)` });
     }
-    if (id.toLowerCase() === AGENT_CASE_PREFIX || (TEST_TYPES as readonly string[]).includes(id.toLowerCase()) || id.toLowerCase() === 'needs-review') {
+    if (id.toLowerCase() === AGENT_CASE_PREFIX || (TEST_TYPES as readonly string[]).includes(id.toLowerCase()) || ['needs-review', 'skipped', 'manual'].includes(id.toLowerCase())) {
       const renamed = `ROW-${rowNo}`;
       warnings.push({ row: rowNo, caseId: renamed, message: `ID "${id}" is reserved for test types, using ${renamed}` });
       id = renamed;
@@ -345,6 +415,18 @@ export function casesFromRows(rows: string[][], format: ParsedSheet['format']): 
     const confluence = get('confluence');
     if (jira) c.jira = jira;
     if (confluence) c.confluence = confluence;
+    const knownIssue = get('knownIssue');
+    if (knownIssue) {
+      if (/\b[A-Z][A-Z0-9]+-\d+\b/.test(knownIssue)) c.knownIssue = knownIssue.replace(/\s+/g, ' ');
+      else warnings.push({ row: rowNo, caseId: id, message: `Known issue "${knownIssue.slice(0, 60)}" has no Jira key (like QA-123), so it is ignored and the case runs as a normal test` });
+    }
+    const requiredData = get('requiredData');
+    if (requiredData) c.requiredData = requiredData;
+    const automation = get('automation');
+    if (automation) c.automation = automation;
+    const documented = get('documented5xx');
+    if (documented && !/^(no|n|false|0|-|none|n\/a)$/i.test(documented.trim())) c.documented5xx = documented.replace(/\s+/g, ' ');
+    else if (DOCUMENTED_5XX_TAG.test(`${c.title}\n${c.steps}\n${c.expected}`)) c.documented5xx = 'tag @documented-5xx';
     if (!title) warnings.push({ row: rowNo, caseId: id, message: 'no title, using the first line of the steps' });
     if (!c.steps && !c.expected) warnings.push({ row: rowNo, caseId: id, message: 'no steps and no expected result: it will be marked needs review' });
     cases.push(c);
@@ -397,7 +479,29 @@ export async function loadSheetFile(file: string): Promise<ParsedSheet> {
 // segment; {id}, :id and {{id}} are placeholders, and a number or UUID matches a placeholder.
 
 export type EndpointRef = { id: string; method: string; path: string };
-export type MatchResult = { endpointId: string | null; by: 'column' | 'steps' | 'ai' | null; reason: string };
+export type MatchResult = { endpointId: string | null; by: 'column' | 'steps' | 'ai' | null; reason: string; pathValues?: Record<string, string> };
+
+// The concrete values a literal request path puts in an endpoint's placeholders: "/products/42" against
+// "/products/{id}" gives { id: "42" }. A placeholder token in the request ("{id}", ":id") gives nothing.
+export function pathValuesFor(literal: string, endpointPath: string): Record<string, string> | undefined {
+  const a = pathSegments(literal);
+  const b = pathSegments(endpointPath);
+  if (a.length !== b.length) return undefined;
+  const out: Record<string, string> = {};
+  b.forEach((want, i) => {
+    const name = /^\{([^}]+)\}$/.exec(want)?.[1];
+    if (name && !PLACEHOLDER.test(a[i])) out[name] = safeDecodeSegment(a[i]);
+  });
+  return Object.keys(out).length ? out : undefined;
+}
+
+function safeDecodeSegment(seg: string): string {
+  try {
+    return decodeURIComponent(seg);
+  } catch {
+    return seg;
+  }
+}
 
 function pathSegments(p: string): string[] {
   let path = p.trim();
@@ -435,6 +539,11 @@ function bestPathMatch(method: string, path: string, endpoints: EndpointRef[]): 
 
 const REQUEST_LINE = /\b(GET|POST|PUT|PATCH|DELETE)\s+((?:https?:\/\/[^\s/]+)?\/[^\s"'`,;)]*)/i;
 
+function withValues(m: MatchResult, literal: string, e: EndpointRef): MatchResult {
+  const values = pathValuesFor(literal, e.path);
+  return values ? { ...m, pathValues: values } : m;
+}
+
 export function matchExplicit(c: SheetCase, endpoints: EndpointRef[]): MatchResult {
   const ref = c.endpoint.trim();
   const method = /^(GET|POST|PUT|PATCH|DELETE)$/.test(c.method) ? c.method : '';
@@ -446,7 +555,7 @@ export function matchExplicit(c: SheetCase, endpoints: EndpointRef[]): MatchResu
     const p = line ? line[2] : ref;
     if (/^(https?:\/\/|\/)/i.test(p)) {
       const hits = bestPathMatch(m, p, endpoints);
-      if (hits.length === 1) return { endpointId: hits[0].id, by: 'column', reason: `Endpoint column "${ref}"` };
+      if (hits.length === 1) return withValues({ endpointId: hits[0].id, by: 'column', reason: `Endpoint column "${ref}"` }, p, hits[0]);
       if (hits.length > 1) return { endpointId: null, by: null, reason: `Endpoint column "${ref}" fits ${hits.map((h) => h.id).join(', ')}; add a Method column or use the endpoint id` };
     }
     return { endpointId: null, by: null, reason: `unknown endpoint "${ref}" (not an endpoint id, method and path of this API)` };
@@ -455,7 +564,7 @@ export function matchExplicit(c: SheetCase, endpoints: EndpointRef[]): MatchResu
   if (inSteps) inSteps[2] = inSteps[2].replace(/[.:]+$/, '');
   if (inSteps) {
     const hits = bestPathMatch(inSteps[1].toUpperCase(), inSteps[2], endpoints);
-    if (hits.length === 1) return { endpointId: hits[0].id, by: 'steps', reason: `request line "${inSteps[1].toUpperCase()} ${inSteps[2]}" in the steps` };
+    if (hits.length === 1) return withValues({ endpointId: hits[0].id, by: 'steps', reason: `request line "${inSteps[1].toUpperCase()} ${inSteps[2]}" in the steps` }, inSteps[2], hits[0]);
     if (!hits.length) return { endpointId: null, by: null, reason: `the request in the steps (${inSteps[1].toUpperCase()} ${inSteps[2]}) is not an endpoint of this API` };
   }
   return { endpointId: null, by: null, reason: 'no Endpoint column value and no "METHOD /path" in the steps' };

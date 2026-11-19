@@ -42,6 +42,15 @@ export type ValidateOptions = {
   // Sheet cases that name a response format (plan case contentType), by test title. Such a test must
   // assert the Content-Type header, and one for a format that is not JSON must never call .json().
   contentTypes?: Record<string, string>;
+  // Sheet cases whose expected status is the sheet's own, not the probe's (agent/plan.ts
+  // sheetStatusDecision), by test title: such a [happy] or [schema] test must assert exactly this status.
+  expectedStatuses?: Record<string, number>;
+  // Sheet cases the team documented as answering with a 5xx (Documented 5xx column or @documented-5xx),
+  // by test title: only that exact toBe(<code>) is allowed; every other 5xx assertion is still rejected.
+  accepted5xx?: Record<string, number>;
+  // Titles whose expected status differs from the probe's: the probe did not show that response's
+  // body, so the body-assertion rule is lifted for them (the status, schema and content-type rules stay).
+  bodyOptional?: string[];
 };
 
 const NO_BODY_STATUSES = [204, 205, 304];
@@ -90,7 +99,7 @@ function isNonJsonAssertion(call: ExpectCall, headerVars: string[], bytesVars: s
   return /\.headers\(\)/.test(call.arg) || /\.body\(\)/.test(call.arg) || uses(headerVars) || uses(bytesVars);
 }
 
-function matchingParen(code: string, open: number): number {
+export function matchingParen(code: string, open: number): number {
   let depth = 0;
   for (let i = open; i < code.length; i++) {
     if (code[i] === '(') depth++;
@@ -164,7 +173,8 @@ function statusAssertion(call: ExpectCall, statusVars: string[]): StatusAssertio
 
 // Per test type, the only status assertions allowed and the ones that must be there.
 // A test that checks something weaker, or the wrong thing, would pass against a broken API.
-function checkTypeRules(type: CaseType, title: string, body: string, code: string, probeStatus: number | null, reasons: string[], probeHasBody = true, requiredFields: string[] = [], probeContentType: string | null = null) {
+function checkTypeRules(type: CaseType, title: string, body: string, code: string, probeStatus: number | null, reasons: string[], probeHasBody = true, requiredFields: string[] = [], probeContentType: string | null = null, fromSheet = false) {
+  const whose = fromSheet ? "the sheet's expected status" : 'the probe status';
   const statusVars = statusVariables(code);
   const found = expectCalls(body)
     .map((call) => ({ call, a: statusAssertion(call, statusVars) }))
@@ -177,7 +187,7 @@ function checkTypeRules(type: CaseType, title: string, body: string, code: strin
       return;
     }
     for (const { call, a } of found) {
-      if (a.kind !== 'exact' || a.code !== probeStatus) bad(call, `status assertion must be exactly toBe(${probeStatus}), the probe status`);
+      if (a.kind !== 'exact' || a.code !== probeStatus) bad(call, `status assertion must be exactly toBe(${probeStatus}), ${whose}`);
     }
     if (!found.some(({ a }) => a.kind === 'exact' && a.code === probeStatus)) {
       reasons.push(`[${type}] test "${title}": must assert expect(response.status()).toBe(${probeStatus})`);
@@ -309,7 +319,7 @@ function annotationHelpers(code: string): string[] {
   return names;
 }
 
-function checkStatusExpectations(code: string, reasons: string[]) {
+function checkStatusExpectations(code: string, reasons: string[], accepted: number | null = null) {
   for (const stmt of code.split(';')) {
     if (!/expect\s*\(/.test(stmt) || !/status/.test(stmt)) continue;
     const flat = stmt.replace(/\s+/g, ' ').trim();
@@ -324,6 +334,7 @@ function checkStatusExpectations(code: string, reasons: string[]) {
     const lt = num(/\.toBeLessThan\(\s*(\d{3})\s*\)/);
     const list = flat.match(/expect\(\s*\[([^\]]*)\]\s*\)\.toContain/);
     const listHas5xx = list ? list[1].split(',').some((n) => Number(n.trim()) >= 500) : false;
+    if (accepted !== null && exact === accepted && gte === null && gt === null && lte === null && lt === null && !list) continue;
     if (
       (exact !== null && exact >= 500) ||
       (gte !== null && gte >= 500) ||
@@ -379,6 +390,12 @@ const PLAYWRIGHT_RULES: GateRules = {
     if (/@playwright\/test/.test(code)) reasons.push('imports from @playwright/test directly instead of the ctx fixture');
     if (/\btest(?:\.describe)?\.only\b/.test(code)) reasons.push('contains test.only');
     if (/\btest(?:\.describe)?\.skip\b/.test(code)) reasons.push('contains test.skip');
+    // Skips, expected failures and precondition checks are added by the agent itself from the sheet and
+    // the test data file (reason codes, Known issue, Required data), never by the model.
+    if (/\btest(?:\.describe)?\.fixme\b/.test(code)) reasons.push('contains test.fixme (cases that cannot be automated go to needsReview in the plan)');
+    if (/\btest\.fail\b/.test(code)) reasons.push('contains test.fail (known issues come only from the Known issue column of the sheet)');
+    if (/(?:\btestInfo|\btest\.info\s*\(\s*\))\s*\.\s*(?:skip|fail|fixme|slow)\b/.test(code)) reasons.push('skips or marks a test as failing through test.info() (skips and expected failures are added by the agent)');
+    if (/\.requireData\s*\(/.test(code)) reasons.push('calls ctx.requireData (precondition checks are added by the agent from the Required data column)');
     // Serial mode skips every later test in the file after one failure, so one API bug would hide the
     // results of unrelated cases. A case that compares calls is one test that sends them all itself.
     if (/\btest\.describe\.serial\b/.test(code) || /\bdescribe\.configure\s*\(\s*\{[^}]*\bmode\s*:\s*['"`]serial['"`]/.test(code)) {
@@ -476,7 +493,11 @@ export function validateWithRules(code: string, opts: ValidateOptions, rules: Ga
     if (!type) own.push(`test title does not start with a type tag: "${t.title}"`);
     if (type) {
       testsPerType.set(type, (testsPerType.get(type) ?? 0) + 1);
-      checkTypeRules(type, t.title, body, code, opts.probeStatus, own, opts.probeHasBody ?? true, opts.requiredFields ?? [], opts.probeContentType ?? null);
+      const plain = t.title.replace(/\\(.)/g, '$1');
+      const sheetStatus = opts.expectedStatuses?.[plain] ?? opts.accepted5xx?.[plain];
+      const status = sheetStatus ?? opts.probeStatus;
+      const hasBody = (opts.probeHasBody ?? true) && !opts.bodyOptional?.includes(plain);
+      checkTypeRules(type, t.title, body, code, status, own, hasBody, sheetStatus !== undefined && sheetStatus !== opts.probeStatus ? [] : opts.requiredFields ?? [], opts.probeContentType ?? null, sheetStatus !== undefined);
     }
     const wantType = opts.contentTypes?.[t.title.replace(/\\(.)/g, '$1')];
     if (wantType) checkContentType(t.title, body, wantType, own);
@@ -488,7 +509,7 @@ export function validateWithRules(code: string, opts: ValidateOptions, rules: Ga
     else if (firstExpect >= 0 && annotationAt > firstExpect) {
       own.push(`test records actual-status after its first assertion: "${t.title}"`);
     }
-    for (const why of codeRules(body, rules.allowedImport, false)) own.push(`test "${t.title}": ${why}`);
+    for (const why of codeRules(body, rules.allowedImport, false, opts.accepted5xx?.[t.title.replace(/\\(.)/g, '$1')] ?? null)) own.push(`test "${t.title}": ${why}`);
     if (required && !required.has(t.title.replace(/\\(.)/g, '$1'))) {
       own.push(`test "${t.title}" is not one of the plan's cases; write exactly one test per plan case and no others`);
     }
@@ -557,14 +578,14 @@ function lineOf(code: string, index: number): number {
 }
 
 // The code rules that apply wherever the code is (a test or the rest of the file).
-function codeRules(part: string, allowedImport: RegExp, withImports: boolean): string[] {
+function codeRules(part: string, allowedImport: RegExp, withImports: boolean, accepted5xx: number | null = null): string[] {
   const reasons: string[] = [];
   if (/process\.env/.test(part)) reasons.push('contains process.env');
   const unsafe = unsafeCodeReasons(part, allowedImport);
   reasons.push(...(withImports ? unsafe : unsafe.filter((r) => !r.startsWith('imports '))));
   if (/https?:\/\//.test(part)) reasons.push('contains http:// or https://');
   checkCatches(part, reasons);
-  checkStatusExpectations(part, reasons);
+  checkStatusExpectations(part, reasons, accepted5xx);
   return reasons;
 }
 

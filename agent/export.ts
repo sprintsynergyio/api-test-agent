@@ -60,6 +60,7 @@ function httpSource(): string {
     query?: Query;
     headers?: Record<string, string>;
     setup?: Setup | Setup[];
+    pathParams?: Record<string, string>;
   }[];
 };`,
     )
@@ -73,6 +74,14 @@ function httpSource(): string {
 export function authSource(): string {
   const src = readFileSync('agent/auth.ts', 'utf8');
   if (/^\s*import\s/m.test(src)) throw new Error('framework export: agent/auth.ts must not import anything');
+  return src;
+}
+
+// agent/test-data.ts imports only node:fs, so it is copied as it is (the fixture imports ./test-data).
+export function testDataSource(): string {
+  const src = readFileSync('agent/test-data.ts', 'utf8');
+  const imports = src.match(/^import .*$/gm) ?? [];
+  if (imports.some((l) => !/from 'node:fs';$/.test(l))) throw new Error('framework export: agent/test-data.ts must import only node:fs');
   return src;
 }
 
@@ -120,6 +129,8 @@ import {
 import { pickAuthEnv } from '../../src/auth';
 import { applyProfile } from '../../src/model';
 import { endpointAllowed, READ_ONLY_SKIP } from '../../src/safety';
+import { existsSync } from 'node:fs';
+import { loadTestData, requiredDataVerdict, type TestData } from '../../src/test-data';
 
 // The only test-side file that reads process.env (src/global-setup.ts checks the host once before
 // the run). The API config comes from config/api.json.
@@ -133,9 +144,14 @@ export type Ctx = {
   createResource: (endpointId: string) => Promise<string>;
   // Runs this spec's endpoint setup steps and returns every path placeholder value.
   setup: () => Promise<Record<string, string>>;
+  // Skips the test with DATA_NOT_ON_ENV when data it needs is not on this environment (README).
+  requireData: (names: string[]) => Promise<void>;
 };
 
 const configFile = fileURLToPath(new URL('../../config/api.json', import.meta.url));
+// Test data for this environment: TEST_DATA_FILE, else config/test-data.json when it exists.
+const defaultTestData = fileURLToPath(new URL('../../config/test-data.json', import.meta.url));
+let testData: TestData | null | undefined;
 
 export const test = base.extend<{ ctx: Ctx }>({
   ctx: async ({}, use, testInfo) => {
@@ -176,6 +192,28 @@ export const test = base.extend<{ ctx: Ctx }>({
       setup: async () => {
         if (!endpoint) throw new Error('ctx.setup: no endpoint in config/api.json is named after this spec file');
         return runSetup(config, recordedClients, endpoint);
+      },
+      requireData: async (names) => {
+        if (testData === undefined) {
+          const file = process.env.TEST_DATA_FILE || (existsSync(defaultTestData) ? defaultTestData : '');
+          testData = file ? loadTestData(file) : null;
+        }
+        const lookup = testData?.lookup;
+        if (!lookup || !names.length) return;
+        const e = config.endpoints.find((x) => x.id === lookup.endpointId);
+        let verdict: string | null;
+        if (!e || e.method !== 'GET' || /\\{[^}]+\\}/.test(e.path)) {
+          verdict = 'ENV_UNAVAILABLE: the data lookup ' + lookup.endpointId + ' must be a GET endpoint in config/api.json without path parameters';
+        } else {
+          try {
+            const client = e.requiresAuth ? recordedClients.api : recordedClients.noAuthApi;
+            const res = await client.fetch(e.path, { method: 'GET', params: { ...(e.query ?? {}), ...(lookup.query ?? {}) } as Record<string, string | number | boolean>, headers: e.headers });
+            verdict = requiredDataVerdict(names, e.id, testData?.environment, { status: res.status(), text: await res.text() });
+          } catch (err) {
+            verdict = requiredDataVerdict(names, e.id, testData?.environment, { status: null, text: '', error: String((err as Error).message ?? err).split('\\n')[0] });
+          }
+        }
+        testInfo.skip(verdict !== null, verdict ?? '');
       },
     });
 
@@ -376,6 +414,8 @@ export function exportFramework(opts: ExportOptions): FrameworkInfo {
   write('src/redact.ts', redactSource());
   write('src/http.ts', httpSource());
   write('src/safety.ts', safetySource());
+  write('src/test-data.ts', testDataSource());
+  if (opts.testData) write('config/test-data.json', JSON.stringify(opts.testData, null, 2) + '\n');
   write('src/global-setup.ts', GLOBAL_SETUP_SOURCE);
   write('tests/fixtures/ctx.ts', CTX_SOURCE);
   if (config.auth) write('.env.example', allAuthEnvNames(config.auth).map((n) => `${n}=\n`).join(''));

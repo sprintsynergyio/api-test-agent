@@ -16,12 +16,17 @@ export type AgentFlags = {
   concurrency: number;
   // Test workers (Playwright --workers; Pactum runs one at a time and says so).
   testWorkers: number;
-  // What makes the exit code 1: any finding (default) or nothing (findings are reported, exit 0).
+  // Per-case GET probes allowed in this run (agent/probe.ts probeCases); 0 turns them off.
+  caseProbes: number;
+  // What makes the exit code 1: any finding (default), any finding or test that did not run (skipped,
+  // blocked, manual), or nothing (everything is reported, exit 0).
   failOn: FailOn;
   // A test case sheet, or a Jira / Confluence link or JQL, to automate (overrides the input file's
   // testCases), and the mode.
   testCases: string | null;
   testCasesMode: TestCaseMode | null;
+  // The per-environment test data file (overrides the input file's testData).
+  testData: string | null;
   // Test options per endpoint (agent/config.ts allowInvalidInput and stableData): a list of endpoint
   // ids, 'all', or null to keep what the input file says.
   allowInvalidInput: EndpointList;
@@ -40,6 +45,7 @@ function endpointList(name: string, raw: string): string[] | 'all' {
 
 import { FAIL_ON_VALUES, type FailOn } from './exit-codes';
 import { TEST_CASE_MODES, type TestCaseMode } from './config';
+import { CASE_PROBE_CAP } from './probe-cap';
 
 export const DEFAULT_CONCURRENCY = 3;
 export const MAX_CONCURRENCY = 8;
@@ -62,9 +68,11 @@ export function parseAgentFlags(argv: string[], defaultInput = 'input/endpoints.
     budget: null,
     concurrency: DEFAULT_CONCURRENCY,
     testWorkers: 1,
+    caseProbes: CASE_PROBE_CAP,
     failOn: 'finding',
     testCases: null,
     testCasesMode: null,
+    testData: null,
     allowInvalidInput: null,
     stableData: null,
   };
@@ -101,10 +109,19 @@ export function parseAgentFlags(argv: string[], defaultInput = 'input/endpoints.
       case '--test-workers':
         flags.testWorkers = intFlag('--test-workers', value(), 1, MAX_TEST_WORKERS);
         break;
+      case '--case-probes':
+        flags.caseProbes = intFlag('--case-probes', value(), 0, 200);
+        break;
       case '--fail-on': {
         const v = value();
         if (!(FAIL_ON_VALUES as string[]).includes(v)) throw new Error(`--fail-on must be one of ${FAIL_ON_VALUES.join(', ')}, got "${v}"`);
         flags.failOn = v as FailOn;
+        break;
+      }
+      case '--test-data': {
+        const v = value().trim();
+        if (!v) throw new Error('--test-data needs a test data .json file');
+        flags.testData = v;
         break;
       }
       case '--test-cases': {
@@ -130,7 +147,7 @@ export function parseAgentFlags(argv: string[], defaultInput = 'input/endpoints.
         break;
       }
       default:
-        if (arg.startsWith('--')) throw new Error(`unknown flag ${arg}. Known flags: --resume, --only-new, --endpoints a,b, --budget N, --concurrency N, --test-workers N, --fail-on none|finding, --test-cases <sheet|link>, --test-cases-mode sheet-only|sheet-plus-agent, --select k=v`);
+        if (arg.startsWith('--')) throw new Error(`unknown flag ${arg}. Known flags: --resume, --only-new, --endpoints a,b, --budget N, --concurrency N, --test-workers N, --case-probes N, --fail-on none|finding|skipped, --test-cases <sheet|link>, --test-cases-mode sheet-only|sheet-plus-agent, --test-data <file>, --select k=v`);
         positional.push(arg);
     }
   }

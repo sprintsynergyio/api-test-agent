@@ -6,6 +6,7 @@ import { pickAuthEnv } from '../../agent/auth';
 import { apiName, loadConfig } from '../../agent/config';
 import { cleanupResources, createClients, createResource, disposeClients, formatExchange, recordClients, reportLabels, runSetup } from '../../agent/http';
 import { endpointAllowed, READ_ONLY_SKIP } from '../../agent/safety';
+import { loadTestData, requiredDataVerdict, type TestData } from '../../agent/test-data';
 
 export type Ctx = {
   baseUrl: string;
@@ -17,6 +18,10 @@ export type Ctx = {
   // Runs this spec's endpoint setup steps in order and returns every path placeholder value, for
   // example { id: '4', reviewId: '7' } for /products/{id}/reviews/{reviewId}.
   setup: () => Promise<Record<string, string>>;
+  // Precondition check the agent adds (never the model) for a sheet case with Required data: looks the
+  // names up with the test data file's lookup endpoint and skips the test with DATA_NOT_ON_ENV (or
+  // ENV_UNAVAILABLE) when one is missing. Skipped, never passed.
+  requireData: (names: string[]) => Promise<void>;
 };
 
 // .env is parsed into this private object and never copied into process.env, so the model provider keys
@@ -24,6 +29,9 @@ export type Ctx = {
 // the auth variables the input names are read from it (pickAuthEnv below); the shell environment wins.
 const fileEnv: Record<string, string> = existsSync('.env') ? parseDotenv(readFileSync('.env')) : {};
 const inputFile = process.env.INPUT_FILE || 'input/endpoints.json';
+// The per-environment test data file the agent run uses (agent/test-data.ts), when it has one.
+const testDataFile = process.env.TEST_DATA_FILE || '';
+let testData: TestData | null | undefined;
 
 export const test = base.extend<{ ctx: Ctx }>({
   ctx: async ({}, use, testInfo) => {
@@ -63,6 +71,25 @@ export const test = base.extend<{ ctx: Ctx }>({
       setup: async () => {
         if (!endpoint) throw new Error(`ctx.setup: no endpoint in ${inputFile} is named after this spec file`);
         return runSetup(config, recordedClients, endpoint);
+      },
+      requireData: async (names) => {
+        if (testData === undefined) testData = testDataFile ? loadTestData(testDataFile) : null;
+        const lookup = testData?.lookup;
+        if (!lookup || !names.length) return;
+        const e = config.endpoints.find((x) => x.id === lookup.endpointId);
+        let verdict: string | null;
+        if (!e || e.method !== 'GET' || /\{[^}]+\}/.test(e.path)) {
+          verdict = `ENV_UNAVAILABLE: the data lookup ${lookup.endpointId} must be a GET endpoint of the input without path parameters`;
+        } else {
+          try {
+            const client = e.requiresAuth ? recordedClients.api : recordedClients.noAuthApi;
+            const res = await client.fetch(e.path, { method: 'GET', params: { ...(e.query ?? {}), ...(lookup.query ?? {}) } as Record<string, string | number | boolean>, headers: e.headers });
+            verdict = requiredDataVerdict(names, e.id, testData?.environment, { status: res.status(), text: await res.text() });
+          } catch (err) {
+            verdict = requiredDataVerdict(names, e.id, testData?.environment, { status: null, text: '', error: String((err as Error).message ?? err).split('\n')[0] });
+          }
+        }
+        testInfo.skip(verdict !== null, verdict ?? '');
       },
     });
 

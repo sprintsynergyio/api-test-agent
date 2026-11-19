@@ -22,6 +22,7 @@ import {
   type AuthRequest,
 } from '../../agent/auth';
 import { redactHeaders, redactText, redactValue, type RedactionConfig } from '../../agent/redact';
+import { loadTestData, requiredDataVerdict, type TestData } from '../../agent/test-data';
 
 // The Pactum equivalent of tests/fixtures/ctx.ts: the ONLY Pactum test-side file that reads process.env
 // or the input file. Tests import { ctx, expect, recordStatus } from here and nothing from pactum.
@@ -38,6 +39,8 @@ const INPUT_FILE = process.env.INPUT_FILE || 'input/endpoints.json'; // EXPORT-I
 const REPORT_DIR = 'reports/pactum';
 const STATUS_FILE = join(REPORT_DIR, 'status.json');
 const EVIDENCE_DIR = join(REPORT_DIR, 'evidence');
+// The per-environment test data file (README "Test data per environment"), for the Required data check.
+const TEST_DATA_FILE = process.env.TEST_DATA_FILE || ''; // EXPORT-TEST-DATA
 const MAX_BODY_CHARS = 5 * 1024;
 export type Config = {
   name?: string;
@@ -58,6 +61,7 @@ export type Config = {
     query?: Query;
     headers?: Record<string, string>;
     setup?: Setup | Setup[];
+    pathParams?: Record<string, string>;
   }[];
 };
 
@@ -157,7 +161,7 @@ const redaction = { replaced: 0 };
 type CreatedResource = { endpointId: string; id: string; params: Record<string, string>; source: 'setup' | 'test' };
 const created: CreatedResource[] = [];
 
-type Current = { file: string; title: string; actualStatus: number | null; sentBefore: number; redactedBefore: number; evidence: string[] } | null;
+type Current = { file: string; title: string; actualStatus: number | null; sentBefore: number; redactedBefore: number; evidence: string[]; knownIssue?: string; knownIssueError?: string } | null;
 let current: Current = null;
 let evidenceIndex = 0;
 
@@ -475,6 +479,8 @@ async function runSetup(endpoint: Config['endpoints'][number], known: Record<str
     if (step.param! in params) continue;
     params[step.param!] = await createResource(step.endpointId, step.idField, params);
   }
+  // Placeholders no setup step fills take the endpoint's fixed values (route grouping).
+  for (const [name, value] of Object.entries(endpoint.pathParams ?? {})) if (!(name in params)) params[name] = value;
   return params;
 }
 
@@ -491,6 +497,48 @@ export const ctx: Ctx = { baseUrl: config.baseUrl, api, noAuthApi, as, createRes
 export function recordStatus(status: number): void {
   if (!current) throw new Error('recordStatus called outside a test');
   current.actualStatus = status;
+}
+
+// Known issues and precondition checks. The agent adds these to a spec after the static gate, never the
+// model (the gate rejects them in model code).
+//
+// knownIssue: the test of a sheet case with a Known issue (Jira key). It still checks the right
+// behaviour; a failure is the known bug (reported as a known issue, never passed) and Mocha sees a pass,
+// so the suite stays green. A pass means the bug may be fixed: the test fails with UNEXPECTED PASS.
+export function knownIssue(description: string, body: () => Promise<void>): () => Promise<void> {
+  return async () => {
+    if (current) current.knownIssue = description;
+    try {
+      await body();
+    } catch (err) {
+      if (current) current.knownIssueError = String((err as Error)?.message ?? err).split('\n')[0].slice(0, 300);
+      return;
+    }
+    throw new Error(`UNEXPECTED PASS: ${description}; the test passed, so the bug may be fixed: check it and remove the Known issue from the sheet`);
+  };
+}
+
+// requireDataFor: the names a test needs on the environment (Required data column). The root
+// beforeEach looks them up with the test data file's lookup endpoint and skips the test with
+// DATA_NOT_ON_ENV (or ENV_UNAVAILABLE) when one is missing.
+const requiredData = new Map<string, string[]>();
+export function requireDataFor(title: string, names: string[]): void {
+  requiredData.set(title, names);
+}
+
+let testData: TestData | null | undefined;
+async function requiredDataSkip(names: string[]): Promise<string | null> {
+  if (testData === undefined) testData = TEST_DATA_FILE ? loadTestData(TEST_DATA_FILE) : null;
+  const lookup = testData?.lookup;
+  if (!lookup || !names.length) return null;
+  const e = config.endpoints.find((x) => x.id === lookup.endpointId);
+  if (!e || e.method !== 'GET' || /\{[^}]+\}/.test(e.path)) return `ENV_UNAVAILABLE: the data lookup ${lookup.endpointId} must be a GET endpoint of the input without path parameters`;
+  try {
+    const res = await (e.requiresAuth ? api : noAuthApi).get(e.path, { params: { ...(e.query ?? {}), ...(lookup.query ?? {}) } as Query, headers: e.headers });
+    return requiredDataVerdict(names, e.id, testData?.environment, { status: res.status(), text: await res.text() });
+  } catch (err) {
+    return requiredDataVerdict(names, e.id, testData?.environment, { status: null, text: '', error: String((err as Error)?.message ?? err).split('\n')[0] });
+  }
 }
 
 // A small expect with the matchers the template uses, so the tests read like the Playwright ones and
@@ -588,6 +636,11 @@ type StatusEntry = {
   redactionReplaced: number;
   cleanup: CleanupTotals;
   evidence: string[];
+  // A test the precondition check skipped ("DATA_NOT_ON_ENV: ..."), and a known issue's description and
+  // the failure it produced (absent when the test passed: an unexpected pass).
+  skipReason?: string;
+  knownIssue?: string;
+  knownIssueError?: string;
 };
 
 function appendStatus(entry: StatusEntry) {
@@ -600,7 +653,7 @@ function appendStatus(entry: StatusEntry) {
 type MochaContext = { currentTest?: { file?: string; title: string; state?: string }; skip(): void };
 
 export const mochaHooks = {
-  beforeEach(this: MochaContext) {
+  async beforeEach(this: MochaContext) {
     const file = (this.currentTest?.file ?? '').split(/[\\/]/).pop() ?? '';
     const endpoint = config.endpoints.find((e) => `${e.id}.spec.ts` === file);
     if (endpoint && !endpointAllowed(safety, endpoint)) {
@@ -609,6 +662,14 @@ export const mochaHooks = {
       return;
     }
     current = { file, title: this.currentTest?.title ?? '', actualStatus: null, sentBefore: counter.sent, redactedBefore: redaction.replaced, evidence: [] };
+    const names = requiredData.get(current.title);
+    const skip = names ? await requiredDataSkip(names) : null;
+    if (skip) {
+      const cleanup: CleanupTotals = { created: 0, createdByTests: 0, deleted: 0, failed: 0, skippedNoDeleteEndpoint: 0, failures: [] };
+      appendStatus({ file, title: current.title, state: 'pending', actualStatus: null, requestsSent: counter.sent - current.sentBefore, redactionReplaced: redaction.replaced - current.redactedBefore, cleanup, evidence: current.evidence, skipReason: skip });
+      current = null;
+      this.skip();
+    }
   },
   async afterEach(this: MochaContext) {
     if (!current) return;
@@ -624,6 +685,7 @@ export const mochaHooks = {
       redactionReplaced: redaction.replaced - current.redactedBefore,
       cleanup,
       evidence: current.evidence,
+      ...(current.knownIssue ? { knownIssue: current.knownIssue, ...(current.knownIssueError ? { knownIssueError: current.knownIssueError } : {}) } : {}),
     });
     current = null;
   },

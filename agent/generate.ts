@@ -4,7 +4,7 @@ import { BudgetExceeded, callClaude } from './claude';
 import type { Endpoint } from './config';
 import { pathParams, setupSteps } from './model';
 import { binaryRule, promptEndpoint, type Plan, type Stability } from './plan';
-import { removeTests, testRanges, type ValidateOptions, type ValidationResult } from './validate';
+import { matchingParen, removeTests, testRanges, type ValidateOptions, type ValidationResult } from './validate';
 import { isBinaryContentType, isJsonContentType, testTypeOf } from './model';
 import type { ProbeResult } from './probe';
 import type { FrameworkAdapter } from './frameworks/types';
@@ -32,9 +32,11 @@ export function buildPrompt(fw: FrameworkAdapter, endpoint: Endpoint, plan: Plan
   const { responseSchema: _documented, ...shown } = promptEndpoint(endpoint);
   const steps = setupSteps(endpoint);
   const params = pathParams(endpoint.path);
+  const fixed = Object.keys(endpoint.pathParams ?? {}).filter((p) => !steps.some((s) => s.param === p));
+  const fillers = [...steps.map((s) => `${s.endpointId} fills {${s.param}}`), ...fixed.map((p) => `{${p}} has the fixed value ${JSON.stringify(endpoint.pathParams![p])}`)];
   const setupLine =
-    steps.length > 1 || params.length > 1
-      ? `- This endpoint's path has ${params.length} placeholders (${params.map((p) => `{${p}}`).join(', ')}) filled by setup (${steps.map((s) => `${s.endpointId} fills {${s.param}}`).join('; ')}). Each test that needs an existing resource calls \`const p = await ctx.setup();\` and builds the path as \`${endpoint.path.replace(/\{([^}]+)\}/g, '${p.$1}')}\`. Do not call ctx.createResource for these placeholders.`
+    steps.length > 1 || params.length > 1 || fixed.length
+      ? `- This endpoint's path has ${params.length} placeholder${params.length === 1 ? '' : 's'} (${params.map((p) => `{${p}}`).join(', ')}) filled by setup (${fillers.join('; ')}). Each test that needs an existing resource calls \`const p = await ctx.setup();\` and builds the path as \`${endpoint.path.replace(/\{([^}]+)\}/g, '${p.$1}')}\`. Do not call ctx.createResource for these placeholders.`
       : steps.length === 1
         ? `- This endpoint has setup. Each test that needs an existing resource gets one with \`const id = await ctx.createResource('${steps[0].endpointId}');\` (returns the id as a string) and puts it in the path.`
         : '- This endpoint has no setup. Do not call ctx.createResource unless a test needs a resource.';
@@ -92,7 +94,9 @@ RULES:
 ${setupLine}${queryLine ? `\n${queryLine}` : ''}${headersLine ? `\n${headersLine}` : ''}
 - Paths are relative, for example \`${params.length > 1 ? endpoint.path.replace(/\{([^}]+)\}/g, '${p.$1}') : endpoint.path.replace(/\{[^}]+\}/, '${id}')}\`. The base URL comes from ctx.api. Never write http:// or https://.
 - Use ctx.api for normal requests and ctx.noAuthApi for auth cases (the same valid request without the auth header).
-- Never expect a 5xx. Assert status codes, field presence and field types. Every [happy] and [schema] test must assert at least one field value or type of the response body${probeHasBody(probe) && ![204, 205, 304].includes(probe.status ?? 0) ? '' : ' (this endpoint answered without a body, so here the status is enough)'}. Assert exact values only for values the test itself sent.
+- Never expect a 5xx, except a plan case with "accepted5xx": true: the team documented that 5xx, so that one test asserts exactly expect(response.status()).toBe(<its expectedStatus>) and nothing else about the status.
+- Every [happy] and [schema] test asserts exactly its plan case's "expectedStatus" (the team's sheet decides it; it may differ from the probe status, and then the probe does not show that response's body: assert only what the case's expected result says).
+- A plan case with "pathValues" sends its own values in the path placeholders (for example { "id": "42" } means the path uses 42), instead of creating a resource or calling ctx.setup() for those placeholders. Assert status codes, field presence and field types. Every [happy] and [schema] test must assert at least one field value or type of the response body${probeHasBody(probe) && ![204, 205, 304].includes(probe.status ?? 0) ? '' : ' (this endpoint answered without a body, so here the status is enough)'}. Assert exact values only for values the test itself sent.
 - Tests run against a shared live API while other tests create, update and delete data. Never assert a list length or item count, never compare the results of two calls, and never assume a list is unchanged or contains (or lacks) a specific item you did not create in the same test${opts.stability?.stable ? ' (except in the plan cases marked "crossCall": true, see below)' : ''}. For lists, assert the array type and the shape of its items only.
 ${fw.generatorRules(endpoint, plan, probe).map((r) => `- ${r}`).join('\n')}${binaryLines}${crossCallLine}${sheetRules}
 
@@ -122,7 +126,29 @@ function extractCode(text: string): string | null {
 // Sheet cases the agent will not guess at, written by the agent itself (not the model) after the gate:
 // a Playwright test.fixme or a pending Mocha test, titled "[<ID>] [needs-review] <Title>", with the
 // reason. They never run and never count as passed; the traceability file lists them as needs review.
-export function needsReviewBlock(fw: FrameworkAdapter, items: NonNullable<Plan['needsReview']>): string {
+//
+// Cases with a reason code that does not run (MISSING_TEST_DATA: skipped; MANUAL, MANUAL_VISUAL: manual)
+// go in a second block, "[<ID>] [skipped] ..." / "[<ID>] [manual] ...", with a skip-reason annotation
+// ("<CODE>: <reason>") or a "// skipped: <CODE>: <reason>" comment for Pactum. Never run, never passed.
+export function needsReviewBlock(fw: FrameworkAdapter, all: NonNullable<Plan['needsReview']>): string {
+  const coded = all.filter((n) => n.code && n.code !== 'SPEC_UNCLEAR');
+  const items = all.filter((n) => !n.code || n.code === 'SPEC_UNCLEAR');
+  return reviewBlock(fw, items) + skippedBlock(fw, coded);
+}
+
+function skippedBlock(fw: FrameworkAdapter, items: NonNullable<Plan['needsReview']>): string {
+  if (!items.length) return '';
+  const lines = items.map((n) => {
+    const title = JSON.stringify(n.title ?? `[${n.caseId}] [skipped]`);
+    const why = n.reason.replace(/\s+/g, ' ');
+    const text = why.startsWith(`${n.code}:`) ? why : `${n.code}: ${why}`;
+    return fw.name === 'pactum' ? `  // skipped: ${text}\n  it(${title});` : `  test.fixme(${title}, { annotation: { type: 'skip-reason', description: ${JSON.stringify(text)} } }, async () => {});`;
+  });
+  const open = fw.name === 'pactum' ? `describe('skipped', () => {` : `test.describe('skipped', () => {`;
+  return `\n// From the team's test case sheet: cases that do not run here, each with its reason code (missing test\n// data, manual). Written by the agent, never by the model. They never run and never pass.\n${open}\n${lines.join('\n')}\n});\n`;
+}
+
+function reviewBlock(fw: FrameworkAdapter, items: NonNullable<Plan['needsReview']>): string {
   if (!items.length) return '';
   const lines = items.map((n) => {
     const title = JSON.stringify(n.title ?? `[${n.caseId}] [needs-review]`);
@@ -137,6 +163,21 @@ export function needsReviewBlock(fw: FrameworkAdapter, items: NonNullable<Plan['
 
 function emptySpecHeader(fw: FrameworkAdapter): string {
   return fw.name === 'pactum' ? `import { expect } from '../tests-pactum/setup/ctx';\n\nvoid expect;\n` : `import { test } from '../tests/fixtures/ctx';\n`;
+}
+
+// The sheet decides the expected status (agent/plan.ts sheetStatusDecision): [happy] / [schema] cases
+// whose status is not the probe's, and documented 5xx cases, get their own status rule in the gate.
+export function sheetStatusGate(plan: Plan, probe: ProbeResult): Pick<ValidateOptions, 'expectedStatuses' | 'accepted5xx' | 'bodyOptional'> {
+  const exact = plan.cases.filter((c) => (c.type === 'happy' || c.type === 'schema') && /^\d{3}$/.test(c.expectedStatus));
+  const own = exact.filter((c) => Number(c.expectedStatus) !== probe.status || !probe.usable);
+  const expectedStatuses = Object.fromEntries(own.filter((c) => !c.accepted5xx).map((c) => [c.title, Number(c.expectedStatus)]));
+  const accepted5xx = Object.fromEntries(exact.filter((c) => c.accepted5xx && Number(c.expectedStatus) >= 500).map((c) => [c.title, Number(c.expectedStatus)]));
+  const bodyOptional = own.map((c) => c.title);
+  return {
+    ...(Object.keys(expectedStatuses).length ? { expectedStatuses } : {}),
+    ...(Object.keys(accepted5xx).length ? { accepted5xx } : {}),
+    ...(bodyOptional.length ? { bodyOptional } : {}),
+  };
 }
 
 export async function generateEndpoint(fw: FrameworkAdapter, endpoint: Endpoint, plan: Plan, probe: ProbeResult, genOpts: GenerateOptions = {}): Promise<GenerateResult> {
@@ -160,6 +201,7 @@ export async function generateEndpoint(fw: FrameworkAdapter, endpoint: Endpoint,
     requiredTitles: plan.cases.some((c) => c.source) ? plan.cases.map((c) => c.title) : undefined,
     contentTypes: contentTypesOf(plan),
     probeContentType: probeContentType(probe),
+    ...sheetStatusGate(plan, probe),
   };
 
   let reasons: string[] = [];
@@ -247,16 +289,85 @@ function shortReason(title: string, reason: string): string {
 
 // Writes the spec (needs-review placeholders after it) and returns
 // the plan with the gate's dropped tests and each sheet case's clause coverage as written.
-function writeSpec(fw: FrameworkAdapter, finalFile: string, code: string, plan: Plan, dropped: DroppedTest[], genOpts: GenerateOptions, review: string): GenerateResult {
+function writeSpec(fw: FrameworkAdapter, finalFile: string, code: string, plan: Plan, gateDropped: DroppedTest[], genOpts: GenerateOptions, review: string): GenerateResult {
+  // Known issues and precondition checks from the sheet, added by the agent after the gate. A test the
+  // marker cannot be added to is dropped (never run unmarked: a known bug would show as a plain failure).
+  const marked = addCaseMarkers(fw, code, plan);
+  const dropped = [...gateDropped, ...marked.failed.map((f) => ({ title: f.title, reasons: [f.reason] }))];
   const droppedTitles = new Set(dropped.map((d) => d.title));
-  let out = code;
+  let out = marked.failed.length ? removeTests(marked.code, marked.failed.map((f) => f.title), fw.name === 'pactum' ? 'it' : 'test') : marked.code;
   writeFileSync(finalFile, out + review);
   const notAutomated = dropped.map((d) => {
     const pc = plan.cases.find((c) => c.title === d.title);
-    return { ...(pc?.caseId ? { caseId: pc.caseId } : {}), title: d.title, reason: `static gate: ${d.reasons.map((r) => shortReason(d.title, r)).join(' | ')}` };
+    const marker = marked.failed.some((f) => f.title === d.title);
+    return { ...(pc?.caseId ? { caseId: pc.caseId } : {}), title: d.title, reason: marker ? d.reasons.join(' | ') : `static gate: ${d.reasons.map((r) => shortReason(d.title, r)).join(' | ')}` };
   });
   const cases = plan.cases.filter((c) => !droppedTitles.has(c.title)).map((c) => withWrittenCoverage(fw, out, c));
   return { ok: true, specFile: finalFile, plan: { ...plan, cases, ...(notAutomated.length ? { notAutomated: [...(plan.notAutomated ?? []), ...notAutomated] } : {}) } };
+}
+
+// Adds the sheet's markers to the tests that need them, by the agent (never the model):
+//   Known issue   Playwright: test.fail(true, "KNOWN_ISSUE QA-1: ...") as the test's first line.
+//                 Pactum: it(title, knownIssue("KNOWN_ISSUE QA-1: ...", async () => { ... })).
+//   Required data Playwright: await ctx.requireData([...]) as the test's first line.
+//                 Pactum: requireDataFor(title, [...]) before the it(...) (the root hook checks it).
+// failed: tests the marker could not be added to (an unusual test shape), with the reason.
+export function addCaseMarkers(fw: FrameworkAdapter, code: string, plan: Plan): { code: string; failed: { title: string; reason: string }[] } {
+  const wanted = plan.cases.filter((c) => c.knownIssue || c.requiredData?.length);
+  if (!wanted.length) return { code, failed: [] };
+  const pactum = fw.name === 'pactum';
+  const ranges = testRanges(code, pactum ? 'it' : 'test');
+  const failed: { title: string; reason: string }[] = [];
+  const edits: { at: number; text: string }[] = [];
+  for (const c of wanted) {
+    const r = ranges.find((t) => t.title.replace(/\\(.)/g, '$1') === c.title);
+    if (!r) continue;
+    const open = code.indexOf('(', r.start);
+    const close = matchingParen(code, open);
+    if (close < 0) {
+      failed.push({ title: c.title, reason: 'could not add the known-issue or required-data marker to this test' });
+      continue;
+    }
+    const call = code.slice(open, close);
+    if (pactum) {
+      if (c.requiredData?.length) {
+        const lineStart = code.lastIndexOf('\n', r.start - 1) + 1;
+        const indent = /^[ \t]*/.exec(code.slice(lineStart))![0];
+        edits.push({ at: lineStart, text: `${indent}requireDataFor(${JSON.stringify(c.title)}, ${JSON.stringify(c.requiredData)});\n` });
+      }
+      if (c.knownIssue) {
+        const head = /^\(\s*(['"`])(?:\\.|(?!\1)[\s\S])*?\1\s*,\s*/.exec(call);
+        if (!head) {
+          failed.push({ title: c.title, reason: 'could not add the known-issue marker to this test (unusual test shape)' });
+          continue;
+        }
+        edits.push({ at: open + head[0].length, text: `knownIssue(${JSON.stringify(c.knownIssue)}, ` }, { at: close, text: ')' });
+      }
+    } else {
+      const fn = /async\s*\(\s*\{([^}]*)\}\s*\)\s*=>\s*\{/.exec(call);
+      if (!fn || !fn[1].split(',').some((n) => n.trim().split(':')[0].trim() === 'ctx')) {
+        failed.push({ title: c.title, reason: 'could not add the known-issue or required-data marker to this test (it does not take { ctx })' });
+        continue;
+      }
+      const body = open + fn.index + fn[0].length;
+      const lines = [
+        ...(c.requiredData?.length ? [`    await ctx.requireData(${JSON.stringify(c.requiredData)});`] : []),
+        ...(c.knownIssue ? [`    test.fail(true, ${JSON.stringify(c.knownIssue)});`] : []),
+      ];
+      edits.push({ at: body, text: `\n${lines.join('\n')}` });
+    }
+  }
+  let out = code;
+  for (const e of [...edits].sort((a, b) => b.at - a.at)) out = out.slice(0, e.at) + e.text + out.slice(e.at);
+  if (pactum && edits.length) {
+    const need = [...(wanted.some((c) => c.knownIssue) ? ['knownIssue'] : []), ...(wanted.some((c) => c.requiredData?.length) ? ['requireDataFor'] : [])];
+    out = out.replace(/import\s*\{([^}]*)\}\s*from\s*(['"](?:\.\.?\/)+(?:tests-pactum\/)?setup\/ctx(?:\.ts)?['"])/, (whole, names: string, from: string) => {
+      const have = names.split(',').map((n) => n.trim()).filter(Boolean);
+      const all = [...have, ...need.filter((n) => !have.includes(n))];
+      return `import { ${all.join(', ')} } from ${from}`;
+    });
+  }
+  return { code: out, failed };
 }
 
 // Which of a sheet case's clauses the written test really checks: a clause marked asserted needs its

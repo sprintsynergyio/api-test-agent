@@ -1,0 +1,8 @@
+Test Case ID,Title,Endpoint,Method,Steps / Request,Expected Result,Documented 5xx,Priority
+TC-301,View product 1,,GET,Send GET /products/1,Status 200,,High
+TC-302,View product 2,,GET,Send GET /products/2,200 OK,,Medium
+TC-303,List products answers 201,list-products,GET,Send GET /products,201 Created,,Medium
+TC-304,Maintenance window,maintenance,GET,Send GET /maintenance while maintenance mode is on,503 Service Unavailable,yes - ops runbook 3.1,High
+TC-305,Maintenance without the contract,maintenance,GET,Send GET /maintenance and read the answer,returns 503 Service Unavailable,,Low
+TC-306,View a product that does not exist,,GET,Send GET /products/999999,404 Not Found,,Medium
+TC-307,Rename product 1,,PUT,Send PUT /products/1 with a new name and price,200 OK,,Medium

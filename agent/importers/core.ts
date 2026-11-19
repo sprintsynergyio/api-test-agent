@@ -42,7 +42,94 @@ export type BuildOptions = {
   // OpenAPI: the token URL of an oauth2 clientCredentials flow. When the chosen credential is the
   // oauth2 Authorization header, the input gets the oauth2_client auth type instead of a fixed header.
   oauth2TokenUrl?: string;
+  // false keeps every literal path as its own endpoint (no route grouping). Default true.
+  groupRoutes?: boolean;
 };
+
+// A path segment that is a value, not a name: a number, a UUID, a 24-character hex id, or a long token
+// with both letters and digits.
+const VALUE_SEGMENT = /^(\d+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{24}|(?=[^/]*\d)(?=[^/]*[a-z])[a-z0-9_.~-]{12,})$/i;
+
+function paramName(previous: string | undefined, taken: Set<string>, suffix: string): string {
+  const word = (previous && !/^\{/.test(previous) ? previous : 'param').replace(/[^A-Za-z0-9]+(.)?/g, (_m, c: string | undefined) => (c ? c.toUpperCase() : '')).replace(/^[A-Z]/, (c) => c.toLowerCase());
+  const singular = word.length > 3 && /s$/.test(word) && !/ss$/.test(word) ? word.slice(0, -1) : word;
+  const base = `${singular || 'param'}${suffix}`;
+  let name = base;
+  for (let n = 2; taken.has(name); n++) name = `${base}${n}`;
+  taken.add(name);
+  return name;
+}
+
+// Groups literal request paths into routes:
+// 1. a value segment (number, UUID, long hex or token) becomes a placeholder: /products/42 ->
+//    /products/{productId} with pathParams { productId: "42" };
+// 2. requests with the same method whose paths differ in exactly one word that is neither the first nor
+//    the last segment become one route: /asset/fabletics/badge + /asset/savage/badge ->
+//    /asset/{asset}/badge. The last segment never merges (/products/import and /products/export stay apart).
+// The first request of a route keeps its query, body and headers; the others are dropped with a warning
+// naming how many literal paths the route covers.
+export function groupRoutes<T extends { method: string; pathname: string }>(requests: T[], warnings: string[]): (T & { pathParams?: Record<string, string> })[] {
+  type Row = { req: T; segs: string[]; values: Record<string, string> };
+  const rows: Row[] = requests.map((req) => {
+    const raw = req.pathname.split('/');
+    const taken = new Set(raw.map((s) => /^\{([^}]+)\}$/.exec(s)?.[1]).filter((x): x is string => Boolean(x)));
+    const values: Record<string, string> = {};
+    const segs = raw.map((seg, i) => {
+      if (!seg || /^\{[^}]+\}$/.test(seg) || !VALUE_SEGMENT.test(seg)) return seg;
+      const name = paramName(raw[i - 1], taken, 'Id');
+      values[name] = safeDecode(seg);
+      return `{${name}}`;
+    });
+    return { req, segs, values };
+  });
+  // Step 2: one differing middle word.
+  for (let changed = true; changed; ) {
+    changed = false;
+    const buckets = new Map<string, Row[]>();
+    for (const r of rows) {
+      for (let i = 2; i < r.segs.length - 1; i++) {
+        if (!r.segs[i] || /^\{/.test(r.segs[i])) continue;
+        const key = `${r.req.method} ${r.segs.map((s, j) => (j === i ? '*' : s)).join('/')} @${i}`;
+        buckets.set(key, [...(buckets.get(key) ?? []), r]);
+      }
+    }
+    for (const [key, list] of buckets) {
+      const i = Number(key.slice(key.lastIndexOf('@') + 1));
+      const words = new Set(list.map((r) => r.segs[i]));
+      if (words.size < 2 || list.some((r) => /^\{/.test(r.segs[i]))) continue;
+      const taken = new Set(list[0].segs.map((s) => /^\{([^}]+)\}$/.exec(s)?.[1]).filter((x): x is string => Boolean(x)));
+      const name = paramName(list[0].segs[i - 1], taken, '');
+      for (const r of list) {
+        r.values[name] = safeDecode(r.segs[i]);
+        r.segs[i] = `{${name}}`;
+      }
+      changed = true;
+      break;
+    }
+  }
+  const out: (T & { pathParams?: Record<string, string> })[] = [];
+  const seen = new Map<string, { index: number; count: number }>();
+  for (const r of rows) {
+    const pathname = r.segs.join('/');
+    // A path that was not templated stays as it was (the same path with another query is its own endpoint).
+    if (pathname === r.req.pathname) {
+      out.push({ ...r.req });
+      continue;
+    }
+    const key = `${r.req.method} ${pathname}`;
+    const hit = seen.get(key);
+    if (hit) {
+      hit.count++;
+      continue;
+    }
+    seen.set(key, { index: out.length, count: 1 });
+    out.push({ ...r.req, pathname, ...(Object.keys(r.values).length ? { pathParams: r.values } : {}) });
+  }
+  for (const [key, { index, count }] of seen) {
+    if (count > 1) warnings.push(`Grouped ${count} requests into one route ${key}; kept the first one's values (${Object.entries(out[index].pathParams ?? {}).map(([k, v]) => `${k}=${v}`).join(', ')}), test cases can use their own.`);
+  }
+  return out;
+}
 
 export const CLIENT_ID_ENV = 'CUSTOM_API_CLIENT_ID';
 export const CLIENT_SECRET_ENV = 'CUSTOM_API_CLIENT_SECRET';
@@ -436,9 +523,14 @@ export function buildInput(requests: RawRequest[], opts: BuildOptions = {}): Imp
   });
   if (!baseUrl && onBase.length) warnings.push(opts.noBaseUrlWarning ?? NO_BASE_URL);
 
+  // Routes: literal paths that differ only in a value (/asset/fabletics/badge and /asset/savage/badge,
+  // /products/42) become one endpoint with a {param} (agent/importers/core.ts groupRoutes). The first
+  // literal value is kept in pathParams; sheet cases may still use their own values.
+  const grouped = opts.groupRoutes === false ? onBase.map((k) => ({ ...k, pathParams: undefined as Record<string, string> | undefined })) : groupRoutes(onBase, warnings);
+
   // Ids: lowercase slug of method and path, unique with -2, -3 on collision.
   const used = new Set<string>();
-  const endpoints: Endpoint[] = onBase.map((k) => {
+  const endpoints: Endpoint[] = grouped.map((k) => {
     const base = slugId(k.method, k.pathname) || k.method.toLowerCase();
     let id = base;
     for (let n = 2; used.has(id); n++) id = `${base}-${n}`;
@@ -455,21 +547,24 @@ export function buildInput(requests: RawRequest[], opts: BuildOptions = {}): Imp
       ...(k.body ? { body: k.body } : {}),
       ...(k.responseSchema ? { responseSchema: k.responseSchema } : {}),
       ...(k.errorStatuses?.length ? { errorStatuses: k.errorStatuses } : {}),
+      ...(k.pathParams ? { pathParams: k.pathParams } : {}),
     };
   });
 
   // Setup: each path placeholder gets a resource from the POST on its parent collection path
   // (POST /products for {id} in /products/{id}, POST /products/{id}/reviews for {reviewId}).
   const setupUsers = new Map<string, string[]>();
-  onBase.forEach((k, i) => {
+  grouped.forEach((k, i) => {
     const segments = k.pathname.split('/');
     const ep = endpoints[i];
     const steps: Setup[] = [];
     segments.forEach((seg, index) => {
       const param = seg.match(/^\{([^}]+)\}$/)?.[1];
       if (!param) return;
+      // A value the recorded request used (route grouping): no resource needs to be created for it.
+      if (k.pathParams?.[param] !== undefined) return;
       const parent = segments.slice(0, index).join('/') || '/';
-      const creator = onBase.findIndex((c, j) => j !== i && c.method === 'POST' && c.pathname === parent);
+      const creator = grouped.findIndex((c, j) => j !== i && c.method === 'POST' && c.pathname === parent);
       if (creator < 0) {
         warnings.push(`${ep.id} needs setup for {${param}}: there is no POST ${parent} to create the resource first.`);
         return;
