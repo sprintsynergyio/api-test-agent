@@ -2,7 +2,7 @@
 // Windows). It covers what a sheet-only run against a real API needs beyond JSON CRUD:
 //   - a base URL with a path (http://localhost:4000/media/v1) and endpoint paths with a leading slash
 //   - an image endpoint (Content-Type, Cache-Control, body size and the PNG signature, never json())
-//   - a paged read-only list whose tests compare two pages (stable data, serial mode)
+//   - a paged read-only list whose tests compare two pages (stable data, each test independent)
 //   - 400 validation errors on query-only and body endpoints ("400 or 404, not 500" negation)
 //   - per-case coverage: needs review when the API disagrees with the sheet, partially covered when a
 //     clause has no assertion; sheet-only mode adds no agent tests
@@ -100,13 +100,20 @@ try {
     const got = Object.fromEntries((t?.cases || []).map((c) => [c.id, c]));
     for (const [id, status] of Object.entries(EXPECTED)) check(got[id]?.status === status, `${label}: ${id} is ${status} (got ${got[id]?.status}: ${got[id]?.reason})`);
     check(t?.passed === 7 && t?.partiallyCovered === 1 && t?.needsReview === 1, `${label}: totals 7 passed, 1 partially covered, 1 needs review (got ${t?.passed}, ${t?.partiallyCovered}, ${t?.needsReview})`);
+    const ac = t?.assertionCoverage;
+    check(ac && Number.isInteger(ac.clauses) && ac.clauses > 0 && ac.asserted < ac.clauses && typeof ac.percent === "number", `${label}: summary.testCases.assertionCoverage counts the sheet's clauses (${JSON.stringify(ac)})`);
+    check(got["TC-109"]?.coverage && /^\d+\/\d+ \([\d.]+%\)$/.test(got["TC-109"].coverage), `${label}: the partially covered case shows its coverage (${got["TC-109"]?.coverage})`);
+    const csvText = read("out/traceability.csv");
+    check(/^ID,Title,Endpoint,Test file,Status,Coverage,Reason,Jira,Confluence\r\n/.test(csvText), `${label}: traceability.csv has the Coverage, Jira and Confluence columns`);
     check(/clause 2 "photos are sorted by title"/.test(got["TC-109"]?.reason ?? ""), `${label}: the partially covered case lists the clause that is not asserted`);
     check(/expected download_url contains \/cdn\/, actual download_url is \/media\/v1\/files\//.test(got["TC-105"]?.reason ?? ""), `${label}: the needs-review case shows expected vs actual`);
     check(t?.agentSuggestions === 0, `${label}: sheet-only adds no agent tests (${t?.agentSuggestions})`);
     const list = read("generated/list-photos.spec.ts");
+    const allSpecs = fs.readdirSync(path.join(ROOT, "generated")).filter((f) => f.endsWith(".spec.ts")).map((f) => read(`generated/${f}`)).join("\n");
+    check(/expect\(String\(response\.headers\(\)\['content-type'\]\)\)\.toContain\(["']json["']\)/.test(allSpecs), `${label}: a case whose expected result names JSON asserts the Content-Type header`);
     const thumb = read("generated/get-thumbnail.spec.ts");
     check(!/\[agent\]/.test(list + thumb + read("generated/resize-photo.spec.ts")), `${label}: no [agent] tests in a sheet-only run`);
-    if (label === "playwright") check(list.includes("test.describe.configure({ mode: 'serial' });"), `${label}: the spec that compares pages runs serially`);
+    check(!/mode:\s*['"]serial['"]|describe\.serial/.test(list), `${label}: the spec that compares pages never uses serial mode (each test is independent)`);
     check(/"page":2/.test(list) && /\/\/ covers clause 2/.test(list), `${label}: the paging case compares page 1 and page 2 with clause markers`);
     check(thumb.includes("toString('hex')).toBe(\"89504e47\")") && !/thumbnail[\s\S]*Download[\s\S]*response\.json\(\)/.test(thumb), `${label}: the image test checks the PNG signature and never parses JSON`);
     check(thumb.includes("expect([400,404]).toContain(response.status())"), `${label}: "400 or 404, not 500 or 502" asserts the 4xx list`);

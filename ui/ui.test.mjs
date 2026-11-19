@@ -142,6 +142,17 @@ async function main() {
       assert.ok(!/@import|fonts\.googleapis|cdn\./.test(html), "external font or CDN");
       assert.ok(!/—|–/.test(html), "em or en dash in the page");
     });
+    await check("index.html uses the Calibri font stack (Carlito fallback) and bundles no font files", () => {
+      const html = read("ui/index.html");
+      assert.match(html, /--sans: Calibri, Carlito, "Segoe UI", Arial, sans-serif;/);
+      assert.ok(!/@font-face|\.woff2?\b|\.ttf\b|\.otf\b/i.test(html), "no font file is bundled or linked");
+    });
+    await check("result tiles: Partially covered and Assertion coverage tiles for sheet runs; sheet table has Coverage, Jira and Confluence", () => {
+      const html = read("ui/index.html");
+      for (const id of ["tPartialTile", "tPartial", "tCovTile", "tCov", "covBar"]) assert.ok(html.includes(`id="${id}"`), `missing id ${id}`);
+      assert.match(html, /<th>Coverage<\/th><th>Reason<\/th><th>Jira<\/th><th>Confluence<\/th>/);
+      assert.match(html, /Assertion coverage/);
+    });
     await check("GET / serves the page", async () => {
       const res = await fetch(`http://127.0.0.1:${UI_PORT}/`);
       assert.equal(res.status, 200);

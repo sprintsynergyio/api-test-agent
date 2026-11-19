@@ -4,19 +4,20 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Config, Endpoint } from './config';
-import { describeExpectedStatus, parseExpectedStatus, splitClauses } from './expected';
+import { contentTypeNeedle, describeExpectedStatus, expectedContentType, parseExpectedStatus, splitClauses } from './expected';
 import { parseAgentFlags } from './flags';
 import { addAllureLabels } from './frameworks/allure-labels';
 import { pactumAdapter } from './frameworks/pactum';
 import { playwrightAdapter } from './frameworks/playwright';
-import { coveredClauses, pruneFailingTests, serialMode, withWrittenCoverage } from './generate';
+import { coveredClauses, pruneFailingTests, withWrittenCoverage } from './generate';
 import { createClients, disposeClients } from './http';
 import { importOpenApi } from './importers/openapi';
 import { fileSignature, isBinaryContentType, joinUrl } from './model';
 import { buildSheetPrompt, clausesFor, dataStability, finalizeSheetPlan, invalidInputSource, isStatusOnlyClause, type Plan } from './plan';
 import type { ProbeResult } from './probe';
 import type { SheetCase } from './test-cases';
-import { buildTraceRows, passedStatus, traceTotals } from './traceability';
+import { buildTraceRows, passedStatus, traceTotals, traceXlsx } from './traceability';
+import { applyReportFont, REPORT_FONT_STACK } from './report-font';
 import { validateSpec, type ValidateOptions } from './validate';
 
 // npm run test:sheet-feedback: what a sheet-only run against a real API needs beyond JSON CRUD.
@@ -213,6 +214,67 @@ await check('the sheet prompt says why invalid-input is on, how negation reads, 
   assert.match(off, /invalid-input is off for this endpoint \(invalid-input tests are on when/);
 });
 
+// ---------- response format (Content-Type) ----------
+
+await check('expectedContentType: media types, "JSON error", plain text; ruled-out and request formats ignored', () => {
+  assert.equal(expectedContentType('1. Status 200 OK and Content-Type application/json.'), 'application/json');
+  assert.equal(expectedContentType('Response is 400 JSON error, never 500'), 'application/json');
+  assert.equal(expectedContentType('Status 200; Content-Type is image/png; body is not empty'), 'image/png');
+  assert.equal(expectedContentType('Status 404 and the body is plain text'), 'text/plain');
+  assert.equal(expectedContentType('returns application/problem+json'), 'application/problem+json');
+  assert.equal(expectedContentType('Status 404, not JSON'), null);
+  assert.equal(expectedContentType('400 with a non-JSON body'), null);
+  assert.equal(expectedContentType('Send POST /resize with an empty JSON body'), null);
+  assert.equal(expectedContentType('200 with the product'), null);
+  assert.equal(contentTypeNeedle('application/problem+json'), 'json');
+  assert.equal(contentTypeNeedle('text/plain'), 'text/plain');
+});
+
+await check('finalizeSheetPlan: a case that names its format gets contentType', () => {
+  const raw = { endpointId: 'list-photos', cases: [{ caseId: 'TC-3', id: 'txt', type: 'invalid-input', title: 'x', requestDescription: 'GET /photos?page=abc', expectedStatus: '4xx', assertions: ['status is 4xx'] }] } as Plan;
+  const out = finalizeSheetPlan(raw, ep({ allowInvalidInput: true }), jsonProbe, [], [sheetCase('TC-3', 'Status 400 and a plain text body')], 'sheet-only');
+  assert.equal(out.plan.cases[0].contentType, 'text/plain');
+  const none = finalizeSheetPlan({ ...raw, cases: [{ ...raw.cases[0], caseId: 'TC-4' }] } as Plan, ep({ allowInvalidInput: true }), jsonProbe, [], [sheetCase('TC-4', 'Status 400')], 'sheet-only');
+  assert.equal(none.plan.cases[0].contentType, undefined);
+});
+
+await check('gate: a case with contentType must assert Content-Type; a non-JSON one must never call response.json()', () => {
+  const title = '[TC-20d] [invalid-input] plain text error';
+  const head = "import { test, expect } from '../tests/fixtures/ctx';\n\ntest.describe('x', () => {\n";
+  const test = (lines: string) => `${head}  test('${title}', async ({ ctx }) => {\n    const response = await ctx.api.get('/photos', { params: { page: 'abc' } });\n    test.info().annotations.push({ type: 'actual-status', description: String(response.status()) });\n    expect(response.status()).toBeGreaterThanOrEqual(400);\n    expect(response.status()).toBeLessThanOrEqual(499);\n${lines}  });\n});\n`;
+  const opts: ValidateOptions = { name: 'ct', planTypes: ['invalid-input'], probeStatus: 200, requiredTitles: [title], contentTypes: { [title]: 'text/plain' } };
+  const missing = validateSpec(test(''), opts);
+  assert.ok((missing.byTest[title] ?? []).some((r) => /expects a text\/plain response: assert/.test(r)), JSON.stringify(missing.byTest));
+  const parsesJson = validateSpec(test("    expect(String(response.headers()['content-type'])).toContain('text/plain');\n    const body = await response.json();\n    expect(body.error).toBe('x');\n"), opts);
+  assert.ok((parsesJson.byTest[title] ?? []).some((r) => /never call response\.json\(\)/.test(r)));
+  const good = validateSpec(test("    expect(String(response.headers()['content-type'])).toContain('text/plain');\n    const text = await response.text();\n    expect(text.length).toBeGreaterThan(0);\n"), opts);
+  assert.deepEqual(good.byTest[title] ?? [], []);
+  const viaVar = validateSpec(test("    const ct = response.headers()['content-type'];\n    expect(ct).toContain('text/plain');\n"), opts);
+  assert.deepEqual(viaVar.byTest[title] ?? [], [], 'a header variable counts');
+  const json = validateSpec(test("    expect(String(response.headers()['content-type'])).toContain('json');\n    const body = await response.json();\n    expect(typeof body.error).toBe('string');\n"), { ...opts, contentTypes: { [title]: 'application/json' } });
+  assert.deepEqual(json.byTest[title] ?? [], [], 'JSON cases may parse the body');
+});
+
+await check('report font: the HTML reports get the Calibri stack once, before </head>; the traceability XLSX uses Calibri', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'font-'));
+  try {
+    const file = join(dir, 'index.html');
+    writeFileSync(file, '<!doctype html><html><head><title>r</title></head><body>x</body></html>');
+    assert.equal(applyReportFont(file), true);
+    assert.equal(applyReportFont(file), false, 'idempotent');
+    const html = readFileSync(file, 'utf8');
+    assert.equal(REPORT_FONT_STACK, "Calibri, Carlito, 'Segoe UI', Arial, sans-serif");
+    assert.equal(html.split('data-sprintsynergy-font').length, 2);
+    assert.ok(html.indexOf('data-sprintsynergy-font') < html.indexOf('</head>'));
+    assert.ok(!/@font-face|url\(/.test(html), 'no font file is loaded');
+    assert.equal(applyReportFont(join(dir, 'missing.html')), false, 'a missing report is not an error');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  const xlsx = traceXlsx([]);
+  assert.ok(xlsx.length > 0);
+});
+
 // ---------- cross-call checks and stable data ----------
 
 await check('dataStability: GET is stable unless the run writes the same resource; stableData always is', () => {
@@ -244,12 +306,16 @@ await check('a case that compares calls: planned on stable data, needs review (w
   assert.match(unstable.plan.needsReview![0].reason, /Stable data.*--stable-data list-photos/);
 });
 
-await check('serial mode: Playwright gets test.describe.configure after the imports, once; Pactum runs in order already', () => {
-  const code = "import { test, expect } from '../tests/fixtures/ctx';\n\ntest.describe('x', () => {});\n";
-  const out = serialMode(playwrightAdapter, code);
-  assert.match(out, /from '\.\.\/tests\/fixtures\/ctx';\n\n\/\/ Some tests compare several calls[^\n]*\ntest\.describe\.configure\(\{ mode: 'serial' \}\);/);
-  assert.equal(serialMode(playwrightAdapter, out), out);
-  assert.equal(serialMode(pactumAdapter, code), code);
+await check('no serial mode: the gate rejects test.describe.configure({ mode: serial }) and test.describe.serial (one failure would skip later tests)', () => {
+  const body = "test('[happy] list', async ({ ctx }) => {\n  const response = await ctx.api.get('/photos');\n  test.info().annotations.push({ type: 'actual-status', description: String(response.status()) });\n  expect(response.status()).toBe(200);\n  const body = await response.json();\n  expect(Array.isArray(body.items)).toBe(true);\n});\n";
+  const head = "import { test, expect } from '../tests/fixtures/ctx';\n\n";
+  const opts = { name: 'serial-check', planTypes: ['happy' as const], probeStatus: 200 };
+  for (const serial of ["test.describe.configure({ mode: 'serial' });\n", 'test.describe.configure({ mode: "serial", retries: 0 });\n', "test.describe.serial('x', () => {});\n"]) {
+    const r = playwrightAdapter.validate(head + serial + body, opts);
+    assert.ok(r.fileReasons.some((x) => /serial mode/.test(x)), `serial mode must be rejected: ${serial}`);
+  }
+  const ok = playwrightAdapter.validate(head + "test.describe.configure({ mode: 'parallel' });\n" + body, opts);
+  assert.ok(!ok.fileReasons.some((x) => /serial mode/.test(x)), 'parallel mode is fine');
 });
 
 // ---------- the static gate: images, per-test reasons, dropping one test ----------

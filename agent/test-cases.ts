@@ -21,7 +21,7 @@ const MAX_XLSX_ENTRIES = 2000;
 const MAX_ID_CHARS = 40;
 const MAX_TITLE_CHARS = 150;
 
-export type CaseField = 'id' | 'title' | 'steps' | 'expected' | 'endpoint' | 'method' | 'priority' | 'preconditions' | 'testData';
+export type CaseField = 'id' | 'title' | 'steps' | 'expected' | 'endpoint' | 'method' | 'priority' | 'preconditions' | 'testData' | 'jira' | 'confluence';
 
 // Header aliases, compared after lowercasing and turning every non-letter, non-digit run into one space.
 // Common Jira, Xray, Zephyr Scale, TestRail and Confluence export names are included.
@@ -35,6 +35,10 @@ const ALIASES: Record<CaseField, string[]> = {
   priority: ['priority', 'severity', 'importance'],
   preconditions: ['preconditions', 'precondition', 'pre condition', 'pre conditions', 'prerequisites', 'prerequisite', 'setup', 'given'],
   testData: ['test data', 'data', 'input', 'input data', 'payload', 'body', 'request body', 'step data', 'test script step by step test data'],
+  // Where the case is tracked, copied to the traceability report as it is (a key such as QA-12 or a link).
+  // "Jira key" / "Issue key" stay the case ID; these are extra reference columns.
+  jira: ['jira', 'jira link', 'jira url', 'jira issue', 'jira ticket', 'jira story', 'jira ref', 'jira reference', 'story', 'user story', 'requirement', 'requirement id'],
+  confluence: ['confluence', 'confluence link', 'confluence url', 'confluence page', 'confluence id', 'confluence ref', 'confluence reference', 'spec page', 'spec link'],
 };
 // Looser rules for exports that wrap names, e.g. "Custom field (Expected Result)".
 const CONTAINS: [CaseField, RegExp][] = [
@@ -54,6 +58,8 @@ export const FIELD_LABELS: Record<CaseField, string> = {
   priority: 'Priority',
   preconditions: 'Preconditions',
   testData: 'Test Data',
+  jira: 'Jira',
+  confluence: 'Confluence',
 };
 
 export type SheetCase = {
@@ -68,6 +74,10 @@ export type SheetCase = {
   priority: string;
   preconditions: string;
   testData: string;
+  // Reference columns for the traceability report (absent when the sheet has none, so the sheet hash of
+  // older sheets stays the same).
+  jira?: string;
+  confluence?: string;
 };
 
 export type SheetWarning = { row: number | null; caseId: string | null; message: string };
@@ -331,6 +341,10 @@ export function casesFromRows(rows: string[][], format: ParsedSheet['format']): 
       preconditions: get('preconditions'),
       testData: get('testData'),
     };
+    const jira = get('jira');
+    const confluence = get('confluence');
+    if (jira) c.jira = jira;
+    if (confluence) c.confluence = confluence;
     if (!title) warnings.push({ row: rowNo, caseId: id, message: 'no title, using the first line of the steps' });
     if (!c.steps && !c.expected) warnings.push({ row: rowNo, caseId: id, message: 'no steps and no expected result: it will be marked needs review' });
     cases.push(c);

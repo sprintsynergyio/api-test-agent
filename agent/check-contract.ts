@@ -119,6 +119,21 @@ if (isObj(s.testCases)) {
   need(by('passed') === tc.passed && by('failed') === tc.failed && by('needs review') === tc.needsReview && by('not automated') === tc.notAutomated, 'summary.testCases counts must match the case statuses');
   // partiallyCovered (added later): a test that passed without asserting every clause; never counted as passed.
   need(tc.partiallyCovered === undefined ? by('partially covered') === 0 : isInt(tc.partiallyCovered) && by('partially covered') === tc.partiallyCovered, 'summary.testCases.partiallyCovered must match the "partially covered" cases');
+  // assertionCoverage (added later): asserted clauses of all sheet clauses, percent rounded to 0.1 (null with no clauses).
+  if (tc.assertionCoverage !== undefined) {
+    const ac = tc.assertionCoverage as Record<string, unknown>;
+    need(isObj(ac) && isInt(ac.asserted) && isInt(ac.clauses) && (ac.asserted as number) <= (ac.clauses as number), 'summary.testCases.assertionCoverage must be { asserted, clauses, percent } with asserted <= clauses');
+    if (isObj(ac)) {
+      const sum = (k: string) => cases.reduce((n: number, c) => n + (isObj(c) && isInt(c[k]) ? (c[k] as number) : 0), 0);
+      need(ac.asserted === sum('asserted') && ac.clauses === sum('clauses'), 'summary.testCases.assertionCoverage must add up the cases');
+      const want = (ac.clauses as number) > 0 ? Math.round(((ac.asserted as number) / (ac.clauses as number)) * 1000) / 10 : null;
+      need(ac.percent === want, `summary.testCases.assertionCoverage.percent must be ${want}`);
+    }
+  }
+  for (const c of cases) {
+    if (!isObj(c)) continue;
+    for (const k of ['coverage', 'jira', 'confluence']) need(c[k] === undefined || c[k] === null || typeof c[k] === 'string', `summary.testCases.cases[].${k} must be a string or null`);
+  }
 }
 
 need(isObj(s.totals), 'summary.totals is missing');

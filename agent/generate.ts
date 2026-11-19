@@ -57,14 +57,14 @@ export function buildPrompt(fw: FrameworkAdapter, endpoint: Endpoint, plan: Plan
     : '';
   const sheetRun = plan.cases.some((c) => c.source);
   const sheetRules = sheetRun
-    ? `\n- This plan comes from the team's test case sheet. Use every plan case's title exactly as written, character for character, including the leading [ID] or [agent] part: it maps each result back to the sheet. The type tag after it decides the status rules below. Write exactly one test per plan case and no other tests.\n- A case with "expectedResult" is the team's agreed expectation: turn it into assertions on the response wherever the response allows (field presence, types, and values the test itself sent), on top of the status rule for its type. Never change the expected status to match the sheet.\n- A case with "clauses": for every clause with status "asserted" and via "assertion", put the comment \`// covers clause <n>\` on the line right before the expect(...) that checks it (\`// covers clauses 2, 3\` when one assertion checks several). The agent reads these comments to report which clauses the test really checks; a clause without its comment and assertion is reported as not covered. Never write the comment for a clause the test does not check.\n- A case with "statusCodes" also asserts that list after the range checks: \`expect([${'${codes}'}]).toContain(response.status())\` with the case's codes, for example \`expect([400, 404]).toContain(response.status())\`.`
+    ? `\n- This plan comes from the team's test case sheet. Use every plan case's title exactly as written, character for character, including the leading [ID] or [agent] part: it maps each result back to the sheet. The type tag after it decides the status rules below. Write exactly one test per plan case and no other tests.\n- A case with "expectedResult" is the team's agreed expectation: turn it into assertions on the response wherever the response allows (field presence, types, and values the test itself sent), on top of the status rule for its type. Never change the expected status to match the sheet.\n- A case with "clauses": for every clause with status "asserted" and via "assertion", put the comment \`// covers clause <n>\` on the line right before the expect(...) that checks it (\`// covers clauses 2, 3\` when one assertion checks several). The agent reads these comments to report which clauses the test really checks; a clause without its comment and assertion is reported as not covered. Never write the comment for a clause the test does not check.\n- A case with "statusCodes" also asserts that list after the range checks: \`expect([${'${codes}'}]).toContain(response.status())\` with the case's codes, for example \`expect([400, 404]).toContain(response.status())\`.\n- A case with "contentType" also asserts the response format: \`expect(String(response.headers()['content-type'])).toContain('<text>')\` where <text> is "json" for any JSON type and the case's contentType otherwise (for example 'text/plain' or 'image/png'). When contentType is not JSON, never call response.json() in that test: read response.text() for text or response.body() for files.`
     : '';
   const binary = binaryRule(probe);
   const binaryLines = binary
     ? `\n${binary}\n- For this endpoint never call response.json() on the success response. Assert the content type (\`expect(response.headers()['content-type']).toContain('${probe.contentType?.split(';')[0] ?? 'image/'}')\`), the body size (\`const bytes = await response.body(); expect(bytes.length).toBeGreaterThan(0);\`)${probe.binary?.signatureHex ? ` and the file signature (\`expect(bytes.subarray(0, ${probe.binary.signatureHex.length / 2}).toString('hex')).toBe('${probe.binary.signatureHex}');\`)` : ''}${probe.responseHeaders?.['cache-control'] ? ', and Cache-Control when the case asks for it (`expect(response.headers()[\'cache-control\']).toBeTruthy()` is not enough on its own; check its value, for example `.toContain(\'max-age\')`)' : ''}. Error responses (4xx) may still be JSON: only call json() in a test whose response is JSON.`
     : '';
   const crossCallLine = opts.stability?.stable
-    ? `\n- This endpoint's data is stable during the run (${opts.stability.why}). A plan case with "crossCall": true may send several requests and compare them (paging walks, totals across filters, no item repeated across pages); the agent runs this file's tests serially. Other tests stay independent.`
+    ? `\n- This endpoint's data is stable during the run (${opts.stability.why}). A plan case with "crossCall": true may send several requests and compare them (paging walks, totals across filters, no item repeated across pages); each such case is one test that sends all its requests itself, so it never depends on another test or on the order tests run in. Never use serial mode (test.describe.configure({ mode: 'serial' })): one failure there skips every later test in the file.`
     : '';
   return `Write the test file generated/${endpoint.id}.spec.ts (${fw.label}) for this endpoint, implementing every case in the plan as one test.
 
@@ -158,6 +158,7 @@ export async function generateEndpoint(fw: FrameworkAdapter, endpoint: Endpoint,
     probeHasBody: probeHasBody(probe),
     requiredFields: documentedFields(endpoint, probe),
     requiredTitles: plan.cases.some((c) => c.source) ? plan.cases.map((c) => c.title) : undefined,
+    contentTypes: contentTypesOf(plan),
     probeContentType: probeContentType(probe),
   };
 
@@ -203,6 +204,12 @@ export async function generateEndpoint(fw: FrameworkAdapter, endpoint: Endpoint,
   return { ok: false, reasons };
 }
 
+// Sheet cases that name a response format: title -> media type, for the gate's Content-Type rule.
+export function contentTypesOf(plan: Plan): Record<string, string> | undefined {
+  const pairs = plan.cases.filter((c) => c.contentType).map((c) => [c.title, c.contentType!] as [string, string]);
+  return pairs.length ? Object.fromEntries(pairs) : undefined;
+}
+
 // The probe's content type when it matters to the gate (a response that is not JSON), else null.
 function probeContentType(probe: ProbeResult): string | null {
   if (probe.binary) return probe.contentType ?? 'application/octet-stream';
@@ -238,13 +245,11 @@ function shortReason(title: string, reason: string): string {
   return reason.replace(/^\[[a-z-]+\] test "[^"]*": /, '').replace(/^test "[^"]*":? /, '').replace(`"${title}"`, 'this test');
 }
 
-// Writes the spec (needs-review placeholders after it, serial mode when it compares calls) and returns
+// Writes the spec (needs-review placeholders after it) and returns
 // the plan with the gate's dropped tests and each sheet case's clause coverage as written.
 function writeSpec(fw: FrameworkAdapter, finalFile: string, code: string, plan: Plan, dropped: DroppedTest[], genOpts: GenerateOptions, review: string): GenerateResult {
   const droppedTitles = new Set(dropped.map((d) => d.title));
   let out = code;
-  const crossCall = plan.cases.some((c) => c.crossCall && !droppedTitles.has(c.title));
-  if (crossCall && genOpts.stability?.stable) out = serialMode(fw, out);
   writeFileSync(finalFile, out + review);
   const notAutomated = dropped.map((d) => {
     const pc = plan.cases.find((c) => c.title === d.title);
@@ -252,20 +257,6 @@ function writeSpec(fw: FrameworkAdapter, finalFile: string, code: string, plan: 
   });
   const cases = plan.cases.filter((c) => !droppedTitles.has(c.title)).map((c) => withWrittenCoverage(fw, out, c));
   return { ok: true, specFile: finalFile, plan: { ...plan, cases, ...(notAutomated.length ? { notAutomated: [...(plan.notAutomated ?? []), ...notAutomated] } : {}) } };
-}
-
-// Tests that compare several calls run one after another, in order, in one worker: Playwright's
-// serial mode. Mocha runs a file's tests in order already (the Pactum adapter never runs in parallel).
-export function serialMode(fw: FrameworkAdapter, code: string): string {
-  if (fw.name === 'pactum') return code;
-  if (/test\.describe\.configure\(\s*\{\s*mode:\s*['"]serial['"]/.test(code)) return code;
-  const lines = code.split('\n');
-  let lastImport = -1;
-  lines.forEach((l, i) => {
-    if (/^\s*import\b/.test(l)) lastImport = i;
-  });
-  lines.splice(lastImport + 1, 0, '', "// Some tests compare several calls to the API, so this file's tests run one after another (serial).", "test.describe.configure({ mode: 'serial' });");
-  return lines.join('\n');
 }
 
 // Which of a sheet case's clauses the written test really checks: a clause marked asserted needs its

@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { applyReportFont } from '../report-font';
 import { nodeBin } from '../node-bin';
 import { zipFolder } from '../zip';
 import { randomUUID } from 'node:crypto';
@@ -209,6 +210,7 @@ function generateAllure(reportName: string, secrets: string[], cleanError: (text
       }
     }
   }
+  applyReportFont(join(ALLURE_REPORT, 'index.html'));
   return { dir: ALLURE_REPORT };
 }
 

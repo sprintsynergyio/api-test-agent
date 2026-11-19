@@ -41,6 +41,11 @@ const IPV6 = /\b(?=[0-9a-fA-F:]*(?:[a-fA-F]|[0-9a-fA-F]{4}|::))(?:[0-9a-fA-F]{1,
 const CARD = /\b(?:\d[ -]?){12,18}\d\b/g;
 // A phone number needs a + prefix or separators between its groups: a bare run of digits is an id.
 const PHONE = /(?<![\w.:/-])(?:\+\d{1,3}[\s.-]?)?(?:\(\d{2,4}\)[\s.-]?|\d{2,4}[\s.-])\d{2,4}[\s.-]?\d{3,5}(?![\w:/-])/g;
+// A UUID (8-4-4-4-12 hex digits, any version, the all-zeros "nil" UUID included). A UUID is an id, not
+// personal data: it is never redacted as a card, phone or IP, so a fixed test value such as
+// 00000000-0000-0000-0000-000000000000 reaches the plan and the tests exactly as the team wrote it.
+// Credential-named fields and headers still hide whatever they hold, UUID or not.
+const UUID = /\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b/g;
 
 function luhn(digits: string): boolean {
   let sum = 0;
@@ -91,6 +96,13 @@ export function redactText(text: string, counter: RedactionCounter, context: Red
   swap(BEARER, 'bearer');
   swap(KEY_PREFIX, 'token');
   swap(JWT, 'token');
+  // Then UUIDs are set aside (private-use placeholders no rule matches) and put back at the end, after
+  // the token rules, so a token that happens to contain a UUID-shaped run is still hidden whole.
+  const uuids: string[] = [];
+  out = out.replace(UUID, (m) => {
+    uuids.push(m);
+    return `\uE000${uuids.length - 1}\uE001`;
+  });
   // The request stand-ins are kept, so redacting twice changes nothing.
   swap(EMAIL, 'email', (m) => m !== 'redacted@example.com');
   swap(IBAN, 'iban', (m) => m !== 'GB00REDACTED00000000000000');
@@ -98,12 +110,14 @@ export function redactText(text: string, counter: RedactionCounter, context: Red
   swap(IPV6, 'ip', (m) => (m.match(/:/g) ?? []).length >= 2);
   swap(CARD, 'card', (m) => {
     const digits = m.replace(/[ -]/g, '');
-    return digits.length >= 13 && digits.length <= 19 && luhn(digits) && digits !== '4111111111111111';
+    // A run of one repeated digit (0000 0000 0000 0000) passes Luhn but is a placeholder, not a card.
+    return digits.length >= 13 && digits.length <= 19 && luhn(digits) && digits !== '4111111111111111' && !/^(\d)\1+$/.test(digits);
   });
   swap(PHONE, 'phone', (m) => {
     const digits = m.replace(/\D/g, '').length;
     return digits >= 8 && digits <= 15 && m.trim() !== '+10000000000' && !/^\d{4}[\s.-]\d{2}[\s.-]\d{2}$/.test(m.trim());
   });
+  if (uuids.length) out = out.replace(/\uE000(\d+)\uE001/g, (_m, i: string) => uuids[Number(i)] ?? _m);
   return out;
 }
 

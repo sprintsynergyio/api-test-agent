@@ -1,5 +1,5 @@
 import { writeFileSync } from 'node:fs';
-import { parseExpectedStatus } from './expected';
+import { contentTypeNeedle, parseExpectedStatus } from './expected';
 
 // FAKE_MODEL=1: a deterministic stand-in for the model, for tests of the pipeline itself (checkpoint,
 // resume, budget, concurrency, parallel test runs). It reads the same prompts the real model gets and
@@ -371,7 +371,7 @@ export function fakeSpec(user: string, pactum: boolean): string {
   const query = endpoint.query as Json | undefined;
   const headers = endpoint.headers as Json | undefined;
   type PlanClause = { n: number; text: string; status: string; via?: string };
-  const cases = (plan.cases as { type: string; title: string; id: string; requestDescription?: string; statusCodes?: number[]; crossCall?: boolean; clauses?: PlanClause[] }[]) ?? [];
+  const cases = (plan.cases as { type: string; title: string; id: string; requestDescription?: string; statusCodes?: number[]; crossCall?: boolean; clauses?: PlanClause[]; contentType?: string }[]) ?? [];
   const binary = probe.binary as { signatureHex?: string } | undefined;
   const pageParam = pageParamOf(endpoint);
   const params = [...path.matchAll(/\{([^}]+)\}/g)].map((m) => m[1]);
@@ -475,7 +475,10 @@ export function fakeSpec(user: string, pactum: boolean): string {
           return r.kind === 'check' && r.code('response') ? `\n    // covers clause ${cl.n}\n    ${r.code('response')}` : '';
         })
         .join('');
-      return `${open}\n${resourceLines('    ')}    const response = await ${call(client, p, b, q)};\n\n    recordStatus(response.status());\n${statusLines(c.type)}${codes}${cross}${clauseLines}\n  });`;
+      // A case that names its response format asserts the Content-Type ("json" for any JSON type).
+      const ctNeedle = c.contentType ? contentTypeNeedle(c.contentType) : null;
+      const ctLine = ctNeedle && !clauseLines.includes(`toContain(${asCode(ctNeedle)})`) ? `\n    expect(String(response.headers()['content-type'])).toContain(${asCode(ctNeedle)});` : '';
+      return `${open}\n${resourceLines('    ')}    const response = await ${call(client, p, b, q)};\n\n    recordStatus(response.status());\n${statusLines(c.type)}${codes}${ctLine}${cross}${clauseLines}\n  });`;
     })
     .join('\n\n');
 

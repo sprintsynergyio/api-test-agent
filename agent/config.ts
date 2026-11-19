@@ -37,7 +37,7 @@ const EndpointSchema = z.object({
   allowInvalidInput: z.boolean().optional(),
   // The team confirms this endpoint's data does not change while the run is going, so tests may
   // compare several calls (paging walks, totals across filters). Read-only endpoints (GET with no
-  // write endpoint on the same resource in the run) get this on their own. Such tests run serially.
+  // write endpoint on the same resource in the run) get this on their own. Each such case is one test that sends all its calls; no test depends on another.
   // Also --stable-data <ids|all> and the UI's "Stable data" option.
   stableData: z.boolean().optional(),
 });

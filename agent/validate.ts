@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { nodeBin } from './node-bin';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { contentTypeNeedle, isJsonMediaType } from './expected';
 import { isJsonContentType, testTypeOf } from './model';
 
 // Static gate for a generated spec. No Claude call. Returns every reason, not just the first.
@@ -38,9 +39,26 @@ export type ValidateOptions = {
   // [happy] and [schema] tests check the headers, the body size or the file signature instead of a
   // JSON field.
   probeContentType?: string | null;
+  // Sheet cases that name a response format (plan case contentType), by test title. Such a test must
+  // assert the Content-Type header, and one for a format that is not JSON must never call .json().
+  contentTypes?: Record<string, string>;
 };
 
 const NO_BODY_STATUSES = [204, 205, 304];
+
+// A test for a sheet case that names its response format: an expect(...) that reads the Content-Type
+// header (directly or through a variable) and checks it contains the format; for a format that is not
+// JSON, no response.json() anywhere in the test.
+export function checkContentType(title: string, body: string, mediaType: string, reasons: string[]) {
+  const needle = contentTypeNeedle(mediaType);
+  const ctVars = [...body.matchAll(/\b(?:const|let|var)\s+(\w+)(?:\s*:\s*[^=]+)?\s*=\s*[^;\n]*content-type/gi)].map((m) => m[1]);
+  const checks = expectCalls(body).some((c) => {
+    const readsHeader = /content-type/i.test(c.arg) || ctVars.some((v) => new RegExp(`(?<![.\\w$])${v}\\b`).test(c.arg));
+    return readsHeader && c.text.toLowerCase().includes(needle);
+  });
+  if (!checks) reasons.push(`test "${title}": the sheet expects a ${mediaType} response: assert expect(String(response.headers()['content-type'])).toContain('${needle}')`);
+  if (!isJsonMediaType(mediaType) && /\.json\s*\(\s*\)/.test(body)) reasons.push(`test "${title}": the sheet expects a ${mediaType} response, not JSON: never call response.json() here; use response.text() or response.body()`);
+}
 
 // Names of variables that hold a parsed response body, e.g. const body = (await response.json()) as X;
 function bodyVariables(code: string): string[] {
@@ -361,6 +379,11 @@ const PLAYWRIGHT_RULES: GateRules = {
     if (/@playwright\/test/.test(code)) reasons.push('imports from @playwright/test directly instead of the ctx fixture');
     if (/\btest(?:\.describe)?\.only\b/.test(code)) reasons.push('contains test.only');
     if (/\btest(?:\.describe)?\.skip\b/.test(code)) reasons.push('contains test.skip');
+    // Serial mode skips every later test in the file after one failure, so one API bug would hide the
+    // results of unrelated cases. A case that compares calls is one test that sends them all itself.
+    if (/\btest\.describe\.serial\b/.test(code) || /\bdescribe\.configure\s*\(\s*\{[^}]*\bmode\s*:\s*['"`]serial['"`]/.test(code)) {
+      reasons.push("uses serial mode (test.describe.configure({ mode: 'serial' }) or test.describe.serial): one failure would skip every later test; make each test independent");
+    }
     // Playwright's own fixtures (request, page, browser, context, playwright) are clients outside the
     // guarded ctx: a test may only take { ctx }.
     for (const m of code.matchAll(/\basync\s*\(\s*\{([^}]*)\}/g)) {
@@ -455,6 +478,8 @@ export function validateWithRules(code: string, opts: ValidateOptions, rules: Ga
       testsPerType.set(type, (testsPerType.get(type) ?? 0) + 1);
       checkTypeRules(type, t.title, body, code, opts.probeStatus, own, opts.probeHasBody ?? true, opts.requiredFields ?? [], opts.probeContentType ?? null);
     }
+    const wantType = opts.contentTypes?.[t.title.replace(/\\(.)/g, '$1')];
+    if (wantType) checkContentType(t.title, body, wantType, own);
     const annotationAt = Math.min(
       ...[body.indexOf('actual-status'), ...helpers.map((h) => body.search(new RegExp(`\\b${h}\\s*\\(`)))].filter((n) => n >= 0),
     );
