@@ -6,7 +6,7 @@ import { existsSync, readFileSync } from 'node:fs';
 //
 //   {
 //     "environment": "dev",
-//     "values": { "OTHER_BRAND": "savage" },
+//     "values": { "OTHER_BRAND": "globex" },
 //     "lookup": { "endpointId": "list-badges", "query": { "page_size": 100 } }
 //   }
 //

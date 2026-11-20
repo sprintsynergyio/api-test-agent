@@ -26,7 +26,7 @@ const EndpointSchema = z.object({
   query: z.record(z.string(), QueryValue).optional(),
   headers: z.record(z.string(), z.string()).optional(),
   setup: z.union([SetupSchema, z.array(SetupSchema).min(1)]).optional(),
-  // Values for path placeholders that no setup step fills, e.g. { "brand": "fabletics" } for
+  // Values for path placeholders that no setup step fills, e.g. { "brand": "acme" } for
   // /asset/{brand}/badge. The importers write the first literal value when they group several literal
   // paths into one route; sheet cases may use their own values (agent/test-cases.ts pathValues).
   pathParams: z.record(z.string(), z.string().min(1)).optional(),

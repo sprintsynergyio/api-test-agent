@@ -38,8 +38,8 @@ const probe = (status: number): ProbeResult => ({ endpointId: 'list-photos', sta
 // ---------- test data file ----------
 
 await check('test data file: values, lookup and environment are read; bad shapes are refused with the reason', () => {
-  const d = parseTestData({ environment: 'dev', values: { OTHER_BRAND: 'savage', LIMIT: 5 }, lookup: { endpointId: 'list-badges', query: { page_size: 100 } } });
-  assert.deepEqual(d, { environment: 'dev', values: { OTHER_BRAND: 'savage', LIMIT: '5' }, lookup: { endpointId: 'list-badges', query: { page_size: 100 } } });
+  const d = parseTestData({ environment: 'dev', values: { OTHER_BRAND: 'globex', LIMIT: 5 }, lookup: { endpointId: 'list-badges', query: { page_size: 100 } } });
+  assert.deepEqual(d, { environment: 'dev', values: { OTHER_BRAND: 'globex', LIMIT: '5' }, lookup: { endpointId: 'list-badges', query: { page_size: 100 } } });
   assert.deepEqual(parseTestData({}), { values: {} });
   assert.throws(() => parseTestData([]), /must be a JSON object/);
   assert.throws(() => parseTestData({ value: {} }), /unknown key\(s\) value/);
@@ -50,7 +50,7 @@ await check('test data file: values, lookup and environment are read; bad shapes
 
 await check('placeholders: [UPPER_CASE] names (3+ characters) are filled; [], [0], [id], [OK] are left alone', () => {
   assert.deepEqual(placeholdersIn('GET /badges?brand=[OTHER_BRAND]&x=[0]&y=[id]&z=[OK]&w=[]'), ['OTHER_BRAND']);
-  assert.deepEqual(fillPlaceholders('brand [OTHER_BRAND] and [MISSING_ONE]', { OTHER_BRAND: 'savage' }), { text: 'brand savage and [MISSING_ONE]', missing: ['MISSING_ONE'] });
+  assert.deepEqual(fillPlaceholders('brand [OTHER_BRAND] and [MISSING_ONE]', { OTHER_BRAND: 'globex' }), { text: 'brand globex and [MISSING_ONE]', missing: ['MISSING_ONE'] });
   assert.deepEqual(requiredDataNames('Test_A.png; kk-coming-soon.png\nb.png, Test_A.png'), ['Test_A.png', 'kk-coming-soon.png', 'b.png']);
 });
 
@@ -107,10 +107,10 @@ await check('prepareSheetCases: fills placeholders from the test data; a missing
       sheetCase('TC-3', { steps: 'GET /badges?brand=[THIRD_BRAND]', automation: 'Manual' }),
       sheetCase('TC-4', { requiredData: 'a.png' }),
     ],
-    { environment: 'dev', values: { OTHER_BRAND: 'savage' } },
+    { environment: 'dev', values: { OTHER_BRAND: 'globex' } },
   );
-  assert.equal(cases[0].steps, 'GET /badges?brand=savage');
-  assert.equal(cases[0].expected, 'Status 200; brand is savage');
+  assert.equal(cases[0].steps, 'GET /badges?brand=globex');
+  assert.equal(cases[0].expected, 'Status 200; brand is globex');
   assert.equal(cases[0].declaredSkip, undefined);
   assert.equal(cases[1].declaredSkip?.code, 'MISSING_TEST_DATA');
   assert.match(cases[1].declaredSkip!.reason, /^MISSING_TEST_DATA: needs \[THIRD_BRAND\]; add it to "values" in the test data file for dev/);

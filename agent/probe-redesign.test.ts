@@ -172,7 +172,7 @@ await check('sheet: a Documented 5xx column ("yes" or a reference) or the @docum
 
 await check('matching: the case keeps the values its own request puts in the path', () => {
   assert.deepEqual(pathValuesFor('/products/42', '/products/{id}'), { id: '42' });
-  assert.deepEqual(pathValuesFor('https://x.test/asset/savage/badge?x=1', '/asset/{brand}/badge'), { brand: 'savage' });
+  assert.deepEqual(pathValuesFor('https://x.test/asset/globex/badge?x=1', '/asset/{brand}/badge'), { brand: 'globex' });
   assert.equal(pathValuesFor('/products/{id}', '/products/{id}'), undefined);
   const refs = [{ id: 'get-product', method: 'GET', path: '/products/{id}' }];
   assert.deepEqual(matchExplicit(sheetCase('TC-1', { endpoint: '' }), refs).pathValues, { id: '42' });
@@ -195,7 +195,7 @@ await check('case probes: GET only, never a case that needs setup, at most the c
   assert.deepEqual(notProbed.map((n) => [n.caseId, /never probed|setup step|cap of 2/.exec(n.reason)?.[0]]), [['TC-2', 'never probed'], ['TC-3', 'setup step'], ['TC-5', 'cap of 2']]);
   assert.deepEqual(caseProbePlan(reqs, 0).send, []);
   // A fixed route value fills the other placeholder, so no setup is needed.
-  assert.equal(caseProbePlan([{ caseId: 'TC-6', endpoint: ep({ path: '/s/{stack}/p/{id}', pathParams: { stack: '6454' } }), pathValues: { id: '1' } }], 5).send.length, 1);
+  assert.equal(caseProbePlan([{ caseId: 'TC-6', endpoint: ep({ path: '/s/{stack}/p/{id}', pathParams: { stack: '1234' } }), pathValues: { id: '1' } }], 5).send.length, 1);
 });
 
 await check('flags: --case-probes N (0 turns them off), default 20', () => {
@@ -210,8 +210,8 @@ await check('routes: value segments and one differing middle word become placeho
   const warnings: string[] = [];
   const out = groupRoutes(
     [
-      { method: 'GET', pathname: '/sam-api/6454/asset/fabletics/badge' },
-      { method: 'GET', pathname: '/sam-api/6454/asset/savage/badge' },
+      { method: 'GET', pathname: '/catalog-api/1234/asset/acme/badge' },
+      { method: 'GET', pathname: '/catalog-api/1234/asset/globex/badge' },
       { method: 'GET', pathname: '/products/42' },
       { method: 'POST', pathname: '/products/import' },
       { method: 'POST', pathname: '/products/export' },
@@ -220,27 +220,27 @@ await check('routes: value segments and one differing middle word become placeho
     warnings,
   );
   assert.deepEqual(out.map((r) => `${r.method} ${r.pathname} ${JSON.stringify(r.pathParams ?? null)}`), [
-    'GET /sam-api/{samApiId}/asset/{asset}/badge {"samApiId":"6454","asset":"fabletics"}',
+    'GET /catalog-api/{catalogApiId}/asset/{asset}/badge {"catalogApiId":"1234","asset":"acme"}',
     'GET /products/{productId} {"productId":"42"}',
     'POST /products/import null',
     'POST /products/export null',
     'GET /products null',
   ]);
-  assert.ok(warnings.some((w) => /Grouped 2 requests into one route GET \/sam-api\/\{samApiId\}\/asset\/\{asset\}\/badge/.test(w)));
+  assert.ok(warnings.some((w) => /Grouped 2 requests into one route GET \/catalog-api\/\{catalogApiId\}\/asset\/\{asset\}\/badge/.test(w)));
 });
 
 await check('routes: the importer writes pathParams (no setup for a recorded value); groupRoutes: false keeps literal paths', () => {
   const reqs = [
-    { item: 'a', method: 'GET', url: 'https://api.test/brands/fabletics/badge' },
-    { item: 'b', method: 'GET', url: 'https://api.test/brands/savage/badge' },
+    { item: 'a', method: 'GET', url: 'https://api.test/brands/acme/badge' },
+    { item: 'b', method: 'GET', url: 'https://api.test/brands/globex/badge' },
     { item: 'c', method: 'POST', url: 'https://api.test/brands', body: { kind: 'json' as const, text: '{"name":"x"}' } },
   ];
   const grouped = buildInput(reqs as never).input.endpoints;
   const route = grouped.find((e) => e.path === '/brands/{brand}/badge')!;
-  assert.deepEqual(route.pathParams, { brand: 'fabletics' });
+  assert.deepEqual(route.pathParams, { brand: 'acme' });
   assert.equal(route.setup, undefined, 'a recorded value needs no created resource');
   const literal = buildInput(reqs as never, { groupRoutes: false }).input.endpoints;
-  assert.deepEqual(literal.filter((e) => e.method === 'GET').map((e) => e.path), ['/brands/fabletics/badge', '/brands/savage/badge']);
+  assert.deepEqual(literal.filter((e) => e.method === 'GET').map((e) => e.path), ['/brands/acme/badge', '/brands/globex/badge']);
 });
 
 await check('config: pathParams must name placeholders; runSetup fills them when no setup step does', async () => {

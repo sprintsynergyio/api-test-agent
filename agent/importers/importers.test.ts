@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import { ConfigSchema, configProblems, loadConfig } from '../config';
 import { queryString, setupSteps } from '../model';
 import { AUTH_NEEDED, AUTH_REMOVED, CREDENTIALS_DROPPED, type ImportResult } from './core';
-import { importCurl } from './curl';
+import { importCurl, normalizePastedQuotes } from './curl';
 import { importHar } from './har';
 import { importOpenApi } from './openapi';
 import { importPostman } from './postman';
@@ -278,6 +278,52 @@ async function main() {
     assert.deepEqual(lines(r), ['get-products GET /products auth=true']);
     assert.equal(r.input.baseUrl, 'http://localhost:4000');
     assertNoSecret('import result', JSON.stringify(r));
+  });
+
+  // Pasted from Word, Slack or Notes: curly quotes and no-break spaces (they once gave the base URL
+  // http://xn--https-hw3b). Quotes are written as \u escapes so an editor cannot straighten them.
+  await check('curly double quotes and no-break spaces from a pasted command', () => {
+    const text = 'curl -X GET \u201Chttps://api.example.com/v1/products?limit=5\u201D\u00A0-H \u201CAccept: application/json\u201D -H \u201CX-Trace: abc\u201D';
+    const r = importCurl(text);
+    assert.equal(r.input.baseUrl, 'https://api.example.com');
+    assert.deepEqual(r.skipped, []);
+    assert.equal(r.input.endpoints.length, 1);
+    const e = r.input.endpoints[0];
+    assert.equal(e.method, 'GET');
+    assert.equal(e.path, '/v1/products');
+    assert.deepEqual(e.query, { limit: '5' });
+    assert.equal(r.input.defaultHeaders?.Accept, 'application/json');
+    assert.deepEqual(e.headers, { 'X-Trace': 'abc' });
+  });
+
+  await check('curly single quotes, a curly JSON body and an apostrophe inside it', () => {
+    const text =
+      'curl -X POST \u2018https://api.example.com/v1/items?draft=true\u2019 -H \u2018Content-Type: application/json\u2019 ' +
+      '-H \u2018X-Trace: abc\u2019 -d \u2018{\u201Cname\u201D:\u201CIt\u2019s new\u201D,\u201Cqty\u201D:2}\u2019';
+    const r = importCurl(text);
+    assert.equal(r.input.baseUrl, 'https://api.example.com');
+    assert.deepEqual(r.skipped, []);
+    assert.equal(r.input.endpoints.length, 1);
+    const e = r.input.endpoints[0];
+    assert.equal(e.method, 'POST');
+    assert.equal(e.path, '/v1/items');
+    assert.deepEqual(e.query, { draft: 'true' });
+    assert.deepEqual(e.headers, { 'X-Trace': 'abc' });
+    assert.deepEqual(e.body, { name: 'It\u2019s new', qty: 2 });
+  });
+
+  await check('straight quotes keep curly characters that are part of a value', () => {
+    const text = `curl -X POST https://api.example.com/v1/notes -H 'Content-Type: application/json' -d '{"text":"say \u201Chi\u201D, it\u2019s fine"}'`;
+    const r = importCurl(text);
+    assert.equal(r.input.baseUrl, 'https://api.example.com');
+    assert.deepEqual(r.input.endpoints[0]?.body, { text: 'say \u201Chi\u201D, it\u2019s fine' });
+  });
+
+  await check('normalizePastedQuotes changes nothing in a plain command and keeps the length', () => {
+    const plain = `curl 'https://api.example.com/x' -H "A: b"`;
+    assert.equal(normalizePastedQuotes(plain), plain);
+    const curly = '\u201Chttps://api.example.com/x\u201D\u00A0\u2018a\u2019';
+    assert.equal(normalizePastedQuotes(curly), `"https://api.example.com/x" 'a'`);
   });
 
   console.log('OpenAPI / Swagger');

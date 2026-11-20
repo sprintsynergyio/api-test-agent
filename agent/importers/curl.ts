@@ -3,6 +3,53 @@ import { buildInput, type Credential, type ImportResult, type RawBody, type RawR
 // One or more curl commands pasted together (bash syntax): line continuations, quotes, $'...',
 // comments, ; && || | between commands. Each curl command becomes an endpoint or a skipped item.
 
+// Text pasted from Word, Slack, Notes, Confluence or a chat app often has its quotes turned into curly
+// ones and its spaces into non-breaking spaces. The shell would not accept them, and parsed as they are,
+// “https://api.example.com/x” became the host xn--https-hw3b. This puts the straight characters back,
+// one character for one, so line numbers stay the same.
+// - When the paste has no straight quote at all (the whole command was auto-formatted), every curly
+//   double quote becomes " and every curly single quote becomes ', except an apostrophe between two
+//   letters (It’s), which stays as it is so it cannot close a single-quoted body.
+// - When the paste mixes straight and curly quotes, only characters outside straight-quoted strings
+//   change: a curly character inside '...' or "..." is part of the value (a body saying “hi”).
+const CURLY_DOUBLE = new Set(['\u201C', '\u201D', '\u201E', '\u201F', '\u2033']); // “ ” „ ‟ ″
+const CURLY_SINGLE_OPEN = new Set(['\u2018', '\u201A', '\u201B']); // ‘ ‚ ‛
+const CURLY_SINGLE_CLOSE = new Set(['\u2019', '\u2032']); // ’ ′
+const ODD_SPACES = new Set(['\u00A0', '\u202F', '\u2007']); // no-break, narrow no-break, figure space
+const ODD_CHARS = /[\u201C\u201D\u201E\u201F\u2033\u2018\u201A\u201B\u2019\u2032\u00A0\u202F\u2007]/;
+const LETTER = /[\p{L}\p{N}]/u;
+
+export function normalizePastedQuotes(text: string): string {
+  if (!ODD_CHARS.test(text)) return text;
+  const allCurly = !/['"]/.test(text);
+  let out = '';
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (!allCurly) {
+      // A backslash escapes the next character outside quotes and inside "...", never inside '...'.
+      if (c === '\\' && !inSingle) {
+        out += c + (text[i + 1] ?? '');
+        i++;
+        continue;
+      }
+      if (c === "'" && !inDouble) inSingle = !inSingle;
+      else if (c === '"' && !inSingle) inDouble = !inDouble;
+      if (inSingle || inDouble || c === "'" || c === '"') {
+        out += c;
+        continue;
+      }
+    }
+    if (CURLY_DOUBLE.has(c)) out += '"';
+    else if (CURLY_SINGLE_OPEN.has(c)) out += "'";
+    else if (CURLY_SINGLE_CLOSE.has(c)) out += LETTER.test(text[i - 1] ?? '') && LETTER.test(text[i + 1] ?? '') ? c : "'";
+    else if (ODD_SPACES.has(c)) out += ' ';
+    else out += c;
+  }
+  return out;
+}
+
 type Word = { text: string; vars: string[]; line: number };
 type Command = { words: Word[]; line: number };
 
@@ -267,7 +314,7 @@ export function importCurl(content: string): ImportResult {
   const warnings: string[] = [];
   const ignored = new Set<string>();
   let n = 0;
-  for (const cmd of splitCommands(content)) {
+  for (const cmd of splitCommands(normalizePastedQuotes(content))) {
     // A pasted shell prompt ($ curl ...) or sudo in front is fine.
     while (cmd.words.length && (cmd.words[0].text === '$' || cmd.words[0].text === 'sudo')) cmd.words.shift();
     if (!cmd.words.length) continue;
