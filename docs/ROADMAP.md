@@ -104,7 +104,7 @@ Every adapter must produce **normalized results**: test title, type tag, pass/fa
 
 ## Phase 3: Eval harness (quality numbers you can quote). In progress: harness built, score pending (no valid live run yet)
 
-Built before Phase 2 so the Pactum proof can be "same eval score as Playwright", not just "same 2 findings". As built: one local API with an 8-bug catalog (`local-api/bugs.json`, 6 detectable today, 2 marked none-yet) instead of three or four APIs; `npm run eval` runs one framework (Playwright) until Phase 2 adds the adapter.
+Built before Phase 2 so the Pactum proof can be "same eval score as Playwright", not just "same 2 findings". As built: one local API with an 8-bug catalog (`local-api/bugs.json`, 6 detectable today, 2 marked none-yet) instead of three or four APIs; `npm run eval` runs one framework (Playwright) until Phase 2 adds the adapter. Since the harness fix of 21 Nov 2026 the eval input is `input/local-shop-login.json` (login plus a viewer role), so the `[authz]` bug can be caught; a preflight without the model and a run validity rule (every endpoint tested, or the run is invalid and gets no score) keep a setup problem from printing a number that looks like a detection rate.
 
 **Goal:** measure how good the agent is, and stop any later change from quietly making it worse.
 
