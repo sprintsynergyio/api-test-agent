@@ -64,7 +64,7 @@ function paramName(previous: string | undefined, taken: Set<string>, suffix: str
 // 1. a value segment (number, UUID, long hex or token) becomes a placeholder: /products/42 ->
 //    /products/{productId} with pathParams { productId: "42" };
 // 2. requests with the same method whose paths differ in exactly one word that is neither the first nor
-//    the last segment become one route: /asset/fabletics/badge + /asset/savage/badge ->
+//    the last segment become one route: /asset/acme/badge + /asset/globex/badge ->
 //    /asset/{asset}/badge. The last segment never merges (/products/import and /products/export stay apart).
 // The first request of a route keeps its query, body and headers; the others are dropped with a warning
 // naming how many literal paths the route covers.
@@ -523,7 +523,7 @@ export function buildInput(requests: RawRequest[], opts: BuildOptions = {}): Imp
   });
   if (!baseUrl && onBase.length) warnings.push(opts.noBaseUrlWarning ?? NO_BASE_URL);
 
-  // Routes: literal paths that differ only in a value (/asset/fabletics/badge and /asset/savage/badge,
+  // Routes: literal paths that differ only in a value (/asset/acme/badge and /asset/globex/badge,
   // /products/42) become one endpoint with a {param} (agent/importers/core.ts groupRoutes). The first
   // literal value is kept in pathParams; sheet cases may still use their own values.
   const grouped = opts.groupRoutes === false ? onBase.map((k) => ({ ...k, pathParams: undefined as Record<string, string> | undefined })) : groupRoutes(onBase, warnings);

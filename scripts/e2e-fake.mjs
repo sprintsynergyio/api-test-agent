@@ -135,7 +135,24 @@ function killTree(child) {
   else child.kill("SIGTERM");
 }
 
+// The checks start their own local API on this port. A server already listening there (an
+// `npm run api:local` left open) would answer instead, the new one would fail with EADDRINUSE, and the
+// checks would run against a server whose data earlier runs have changed. Wait briefly for a server
+// that is shutting down, then refuse.
+async function ensurePortFree() {
+  for (let i = 0; i < 20; i++) {
+    try {
+      await fetch(`http://127.0.0.1:${PORT}/`, { signal: AbortSignal.timeout(1000) });
+    } catch {
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  throw new Error(`port ${PORT} is already in use (an \`npm run api:local\` still running?). Stop it first: these checks start their own local API.`);
+}
+
 async function startApi(fixed) {
+  await ensurePortFree();
   const env = { ...process.env, PORT: String(PORT) };
   if (fixed) env.FIXED = "1";
   else delete env.FIXED;
