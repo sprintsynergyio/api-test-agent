@@ -5,19 +5,27 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
-import { findingKey, loadCatalog, scoreRun, type BugCatalog, type Score, type Summary } from './score';
+import { preflight } from './preflight';
+import { findingKey, loadCatalog, runValidity, scoreRun, type BugCatalog, type Score, type Summary } from './score';
 
 // npm run eval -- [--runs N] [--bugs all|none|id,id] [--dry-run]
 //
 // For every bug set in the matrix: start the local shop API on a free port with exactly those bugs,
-// run the agent on a copy of input/local-shop.json pointed at that port, N times, score each run.
+// run the agent on a copy of input/local-shop-login.json pointed at that port, N times, score each run.
 // Output: one table on stdout, eval-results/<timestamp>/ with every summary.json, run log and score.json.
-// Exit 1 when any run produced no summary.json or did not end with status "completed". Nothing is swallowed.
+//
+// A run is scored only when it is valid: the agent wrote a summary, ended "completed" and tested every
+// endpoint (runValidity in score.ts). Before the runs of a bug set, a preflight without the model
+// checks that every endpoint probes and every role can log in (preflight.ts); when it fails, no model
+// call is made for that set. An invalid run or a failed preflight is never a score: it is listed with
+// its reason, left out of every rate, and the eval exits 1. Nothing is swallowed.
 
-const INPUT_TEMPLATE = 'input/local-shop.json';
+// The login input, because it has a second role (viewer): without one the agent writes no [authz]
+// test and the planted bug viewer-can-delete could never be detected.
+const INPUT_TEMPLATE = 'input/local-shop-login.json';
 const SUMMARY_FILE = 'out/summary.json';
-// Not under out/: the agent deletes out/ at the start of every run.
-const EVAL_ROOT = 'eval-results';
+// Not under out/: the agent deletes out/ at the start of every run. EVAL_RESULTS_DIR is for the tests.
+const EVAL_ROOT = process.env.EVAL_RESULTS_DIR || 'eval-results';
 const API_START_TIMEOUT_MS = 10_000;
 
 type Args = { runs: number; bugSets: string[][] | null; dryRun: boolean; provider: string | null };
@@ -153,7 +161,8 @@ function printTable(records: RunRecord[], sets: { label: string; bugs: string[] 
     const detected = scored.reduce((a, s) => a + s.detected, 0);
     const findings = scored.reduce((a, s) => a + s.suspectedFindings, 0);
     const falseAlarms = scored.reduce((a, s) => a + s.falseAlarms.length, 0);
-    const keys = new Set(recs.map((r) => r.key ?? `error:${r.error}`));
+    // Flakiness is judged on valid runs only, and needs at least two of them.
+    const keys = new Set(recs.filter((r) => r.score && !r.error).map((r) => r.key));
     const calls = scored.length ? (scored.reduce((a, s) => a + s.claudeCalls, 0) / scored.length).toFixed(1) : 'n/a';
     const secs = scored.length ? Math.round(scored.reduce((a, s) => a + s.durationSec, 0) / scored.length) : 'n/a';
     const expectedMisses = scored.length ? scored[0].expectedMisses : set.bugs.filter((id) => catalog.bugs.find((b) => b.id === id)?.detectableBy === 'none-yet').length;
@@ -162,7 +171,7 @@ function printTable(records: RunRecord[], sets: { label: string; bugs: string[] 
       runs: `${scored.length}/${recs.length}`,
       detection: `${pct(detected, detectable)} (${detected}/${detectable})`,
       falseAlarm: `${pct(falseAlarms, findings)} (${falseAlarms}/${findings})`,
-      flaky: keys.size > 1 ? `yes (${keys.size} different)` : 'no',
+      flaky: scored.length < 2 ? 'n/a' : keys.size > 1 ? `yes (${keys.size} different)` : 'no',
       expectedMiss: String(expectedMisses),
       calls: String(calls),
       secs: String(secs),
@@ -170,7 +179,7 @@ function printTable(records: RunRecord[], sets: { label: string; bugs: string[] 
   });
   const cols: [keyof (typeof rows)[number], string][] = [
     ['set', 'bug set'],
-    ['runs', 'runs ok'],
+    ['runs', 'valid runs'],
     ['detection', 'detection'],
     ['falseAlarm', 'false alarms'],
     ['flaky', 'flaky'],
@@ -188,7 +197,8 @@ function printTable(records: RunRecord[], sets: { label: string; bugs: string[] 
   const detected = all.reduce((a, s) => a + s.detected, 0);
   const findings = all.reduce((a, s) => a + s.suspectedFindings, 0);
   const falseAlarms = all.reduce((a, s) => a + s.falseAlarms.length, 0);
-  console.log(`\noverall: detection ${pct(detected, detectable)} (${detected}/${detectable}), false alarms ${pct(falseAlarms, findings)} (${falseAlarms}/${findings}), runs scored ${all.length}/${records.length}`);
+  if (all.length === 0) console.log(`\noverall: no valid run, so there is no score (runs scored 0/${records.length})`);
+  else console.log(`\noverall: detection ${pct(detected, detectable)} (${detected}/${detectable}), false alarms ${pct(falseAlarms, findings)} (${falseAlarms}/${findings}), runs scored ${all.length}/${records.length}`);
   console.log('not-yet = planted bugs that need test types the agent does not have yet; they never count against detection.');
 }
 
@@ -204,8 +214,9 @@ async function main() {
     return;
   }
   if (!existsSync(INPUT_TEMPLATE)) throw new Error(`${INPUT_TEMPLATE} is missing`);
-  const template = JSON.parse(readFileSync(INPUT_TEMPLATE, 'utf8')) as { baseUrl: string; name?: string };
-  for (const name of allAuthEnvNames(normalizeAuth((template as { auth?: unknown }).auth))) {
+  const template = JSON.parse(readFileSync(INPUT_TEMPLATE, 'utf8')) as { baseUrl: string; name?: string; endpoints?: unknown[] };
+  const authEnvNames = allAuthEnvNames(normalizeAuth((template as { auth?: unknown }).auth));
+  for (const name of authEnvNames) {
     if (!process.env[name]) throw new Error(`environment variable ${name} is not set (needed by ${INPUT_TEMPLATE}); add it to .env`);
   }
 
@@ -224,6 +235,18 @@ async function main() {
       const inputFile = join(setDir, 'input.json');
       writeFileSync(inputFile, JSON.stringify({ ...template, name: 'eval-local-shop', baseUrl: `http://127.0.0.1:${port}` }, null, 2) + '\n');
 
+      // No model call before the input is proven to work against this API.
+      console.log('  preflight (no model):');
+      const problems = await preflight(inputFile);
+      if (problems.length) {
+        const error = `preflight failed, no run started: ${problems.join('; ')}`;
+        console.log(`  INVALID ${error}`);
+        if (authEnvNames.length) console.log(`  hint: the eval reads ${authEnvNames.join(', ')} from .env; the demo values are in .env.example`);
+        for (let run = 1; run <= args.runs; run++) records.push({ set: set.label, run, exitCode: null, score: null, key: null, error });
+        continue;
+      }
+      console.log(`  preflight ok: ${template.endpoints?.length ?? 0} endpoint(s) usable, every role can log in`);
+
       for (let run = 1; run <= args.runs; run++) {
         const label = `${set.label} run ${run}/${args.runs}`;
         console.log(`=== ${label} ===`);
@@ -237,19 +260,22 @@ async function main() {
         } else {
           copyFileSync(SUMMARY_FILE, join(setDir, `run-${run}.summary.json`));
           const summary = JSON.parse(readFileSync(SUMMARY_FILE, 'utf8')) as Summary;
-          record.score = scoreRun(summary, set.bugs, catalog);
-          record.key = findingKey(summary);
-          // Only a completed run counts. no-tests, stopped-budget or refused is a failed run.
-          if (summary.status !== 'completed') {
-            record.error = `agent status "${summary.status}" (see ${join(setDir, `run-${run}.log`)})`;
-            console.log(`  FAILED ${record.error}`);
+          // Only a valid run is scored: completed, and every endpoint tested. An invalid run gets no
+          // score at all, so nothing downstream can read a detection number out of it.
+          const validity = runValidity(summary);
+          if (!validity.valid) {
+            record.error = `invalid run, not scored: ${validity.reason} (agent exit ${exitCode}, calls ${summary.claudeCalls?.used ?? 0}, see ${join(setDir, `run-${run}.log`)})`;
+            console.log(`  INVALID ${record.error}`);
+          } else {
+            record.score = scoreRun(summary, set.bugs, catalog);
+            record.key = findingKey(summary);
+            const s = record.score;
+            console.log(
+              `  status ${s.status}, detected ${s.detected}/${s.detectable}, false alarms ${s.falseAlarms.length}, not-yet ${s.expectedMisses}, calls ${s.claudeCalls}, ${s.durationSec}s`,
+            );
+            for (const b of s.bugs) console.log(`    ${pad(b.outcome, 13)} ${b.id}${b.findings.length ? `  <- ${b.findings.join(' ; ')}` : ''}`);
+            for (const f of s.falseAlarms) console.log(`    FALSE ALARM   ${f.endpointId} [${f.type}] ${f.testTitle} (actual ${f.actualStatus})`);
           }
-          const s = record.score;
-          console.log(
-            `  status ${s.status}, detected ${s.detected}/${s.detectable}, false alarms ${s.falseAlarms.length}, not-yet ${s.expectedMisses}, calls ${s.claudeCalls}, ${s.durationSec}s`,
-          );
-          for (const b of s.bugs) console.log(`    ${pad(b.outcome, 13)} ${b.id}${b.findings.length ? `  <- ${b.findings.join(' ; ')}` : ''}`);
-          for (const f of s.falseAlarms) console.log(`    FALSE ALARM   ${f.endpointId} [${f.type}] ${f.testTitle} (actual ${f.actualStatus})`);
         }
         records.push(record);
       }
@@ -258,13 +284,14 @@ async function main() {
     }
   }
 
-  writeFileSync(join(evalDir, 'score.json'), JSON.stringify({ runs: args.runs, provider: args.provider ?? process.env.LLM_PROVIDER ?? 'anthropic', sets, records }, null, 2) + '\n');
+  writeFileSync(join(evalDir, 'score.json'), JSON.stringify({ runs: args.runs, provider: args.provider ?? process.env.LLM_PROVIDER ?? 'anthropic', input: INPUT_TEMPLATE, sets, records }, null, 2) + '\n');
   console.log(`\nwritten ${evalDir}/score.json\n`);
   printTable(records, sets, catalog);
 
   const failed = records.filter((r) => !r.score || r.error);
   if (failed.length) {
-    console.error(`\n${failed.length} run(s) did not complete. See the run logs under ${evalDir}.`);
+    console.error(`\n${failed.length} of ${records.length} run(s) invalid or failed, so the eval failed. The rates above cover the valid runs only. Reasons:`);
+    for (const reason of new Set(failed.map((r) => `${r.set}: ${r.error}`))) console.error(`  ${reason}`);
     process.exit(1);
   }
 }
