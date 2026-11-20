@@ -4,6 +4,8 @@ All notable changes to this project. Dates are the day the change reached `main`
 
 ## Unreleased
 
+- Version in `package.json` set to 0.9.0: no release has been tagged or published yet. The 1.0.0 entry below is the first version shared with a team (14 Nov 2026), not a tagged release.
+- Docs: exit codes in `CLAUDE.md` and `ui/CONTRACT.md` match `agent/exit-codes.ts` (a budget stop, a refused host and a missing `--select` exit 2, not 1); `docs/ROADMAP.md` no longer says "live run pending" for the Pactum run (9 Nov 2026) and the login and roles run (13 Nov 2026); the README's results say they are single runs made before later planning, generation and gate changes, and that a measured eval score is still pending.
 - cURL import: curly quotes (“ ” ‘ ’ and similar) and no-break spaces from text pasted out of Word, Slack or Notes are turned back into straight quotes and spaces before parsing, so a pasted command no longer gives the base URL `http://xn--https-hw3b`. Applies to `npm run import curl` and the UI's import. An apostrophe inside a value (It’s) is kept.
 - Examples and tests use neutral placeholder names (`acme`, `globex`, `/catalog-api/1234/...`).
 - `package.json` `files` whitelist: `npm pack` ships the agent, UI, demo API, inputs, templates and user docs, without tests, fixtures, CI files or contributor notes (143 files to 100).

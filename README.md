@@ -475,6 +475,8 @@ A failed test is a **suspected API finding** when the API returned a 5xx, or ret
 
 All numbers below come from runs on a developer Mac with Claude (`claude-sonnet-5-5`), framework Playwright, between 9 and 13 November 2026. They are single runs, not averages; the eval harness (`npm run eval`) is the tool for repeated runs with detection, false alarm and flakiness rates per provider.
 
+These are single runs from 9 to 13 Nov 2026, made before later changes to planning, generation and the static gate (the changelog's Unreleased section). A measured eval score is pending the first valid live `npm run eval`; no detection rate is published until then.
+
 **Local shop API** (`input/local-shop.json`, two planted bugs, `npm run api:local`, 13 Nov 2026):
 - Bugs on: 5 endpoints, 25 tests, 23 passed, 2 failed. Exactly the 2 planted bugs found (price sent as text returns 500; DELETE without a token returns 204). Every other test passes. 10 model calls, 79 seconds.
 - Bugs off (`npm run api:local:fixed`, 9 Nov 2026): 0 findings, 0 failures.
