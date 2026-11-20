@@ -17,11 +17,11 @@ We work through the phases in order, one step at a time. A phase is done only wh
 | Web UI: saved APIs, custom API form, live pipeline, findings | Done, proven |
 | Web UI refresh (Phase 9 PR A): new look, framework toggle, every auth type and roles in the form, profile selects, redaction options, findings with request and response evidence, Jira and Markdown copy, run history, validation through the agent's schema (`npm run test:ui`) | Built and proven offline; a visual pass on the Mac and a live run from the page pending |
 | Importers: OpenAPI, Postman, cURL, HAR, Jira/Confluence text | Done, reviewed (Phase 0) |
-| Pactum output | Adapter built, proven offline against the local shop (Phase 2 PR); live agent run pending; UI toggle done (Phase 9 PR A) |
-| Eval harness | In progress: harness built (`npm run eval`, 7 planted bugs, scorer + offline tests); score pending the first live run |
+| Pactum output | Adapter built and proven offline against the local shop (Phase 2 PR); live agent run done on 9 Nov 2026 (27 tests, the same 2 findings as Playwright, see the README's "Results so far"); UI toggle done (Phase 9 PR A) |
+| Eval harness | In progress: harness built (`npm run eval`, 8 planted bugs of which 6 are detectable today, scorer + offline tests); score pending: there is no valid live `npm run eval` yet, so no detection number is published |
 | Safety guard against production hosts | Done, proven (Phase 1) |
 | Input model: nested paths, query, endpoint headers, env/brand/region profiles | Built and proven offline (Phase 4a PR); live agent run on `input/local-shop-nested.json` pending |
-| Real-world auth: header, query, cookie, login flow with refresh, roles, `[authz]` tests | Built and proven offline (Phase 5 PR: `npm run test:auth`, both frameworks and exports against the local shop login); live agent run on `input/local-shop-login.json` pending; UI form done (Phase 9 PR A); OAuth2 client credentials built (Phase 9 hardening PR) |
+| Real-world auth: header, query, cookie, login flow with refresh, roles, `[authz]` tests | Built and proven offline (Phase 5 PR: `npm run test:auth`, both frameworks and exports against the local shop login); live agent run on `input/local-shop-login.json` done on 13 Nov 2026 (27 tests, 3 findings including `[authz]`, see the README's "Results so far"); UI form done (Phase 9 PR A); OAuth2 client credentials built (Phase 9 hardening PR) |
 | Static gate hardening: a spec may import only the ctx file, unsafe code (require, eval, process, fetch, Node modules) rejected, untrusted-data markers in every prompt, model keys kept out of the test process, DNS-aware host check (fix PR A) | Done, proven offline (`npm run test:gate`, `test:security`, `test:safety`) |
 | CI behaviour: exit codes 0 / 1 / 2 with `--fail-on`, summary kept when the export fails, in-process zip (fix PR B) | Done, proven offline (`npm run test:exit`, `test:checkpoint`) |
 | macOS, Windows and Linux (fix PR C) | Done: CI runs every offline suite, a `FAKE_MODEL` end-to-end run and `npm test` in both exports on ubuntu, windows and macos with Node 22 and 24 |
@@ -65,9 +65,9 @@ We work through the phases in order, one step at a time. A phase is done only wh
 
 ---
 
-## Phase 2: Framework adapter + Pactum (built, live run pending)
+## Phase 2: Framework adapter + Pactum (built; live Pactum run done 9 Nov 2026)
 
-Status: adapter interface, Pactum setup file with the guard, template, gate, runner, parser and exporter are built and proven offline (template green against the local shop, exported framework runs standalone, refusal works standalone). Allure for Pactum done (Phase 9 hardening PR, Nov 2026: the adapter writes Allure result files from the Mocha JSON and status files, with the redacted evidence attached, and builds the report with the Allure CLI). Still open: the first live agent run in Pactum mode (needs a model key or a Claude Code login). The UI framework toggle is done (Phase 9 PR A).
+Status: adapter interface, Pactum setup file with the guard, template, gate, runner, parser and exporter are built and proven offline (template green against the local shop, exported framework runs standalone, refusal works standalone). Allure for Pactum done (Phase 9 hardening PR, Nov 2026: the adapter writes Allure result files from the Mocha JSON and status files, with the redacted evidence attached, and builds the report with the Allure CLI). The first live agent run in Pactum mode was done on 9 Nov 2026: 27 tests and the same 2 findings as Playwright (README, "Results so far"). The UI framework toggle is done (Phase 9 PR A).
 
 **Goal:** one agent, two output frameworks. The user picks Playwright or Pactum; everything else stays shared.
 
@@ -102,9 +102,9 @@ Every adapter must produce **normalized results**: test title, type tag, pass/fa
 
 ---
 
-## Phase 3: Eval harness (quality numbers you can quote). In progress: harness built, score pending first live run
+## Phase 3: Eval harness (quality numbers you can quote). In progress: harness built, score pending (no valid live run yet)
 
-Built before Phase 2 so the Pactum proof can be "same eval score as Playwright", not just "same 2 findings". As built: one local API with a 7-bug catalog (`local-api/bugs.json`, 5 detectable today, 2 marked none-yet) instead of three or four APIs; `npm run eval` runs one framework (Playwright) until Phase 2 adds the adapter.
+Built before Phase 2 so the Pactum proof can be "same eval score as Playwright", not just "same 2 findings". As built: one local API with an 8-bug catalog (`local-api/bugs.json`, 6 detectable today, 2 marked none-yet) instead of three or four APIs; `npm run eval` runs one framework (Playwright) until Phase 2 adds the adapter.
 
 **Goal:** measure how good the agent is, and stop any later change from quietly making it worse.
 
@@ -152,7 +152,7 @@ Status (fix PR D, Nov 2026): the OpenAPI importer carries each operation's docum
 
 ---
 
-## Phase 5: Real-world auth (built, live run pending)
+## Phase 5: Real-world auth (built; live login and roles run done 13 Nov 2026)
 
 **Goal:** test the APIs real teams have, which rarely use a fixed header.
 
@@ -162,7 +162,7 @@ Status (fix PR D, Nov 2026): the OpenAPI importer carries each operation's docum
 - OAuth2 client credentials. **Done (Phase 9 hardening PR, Nov 2026):** `auth.type: "oauth2_client"` sends the form-encoded grant to `tokenUrl` (a path or an absolute URL, whose host the safety guard classifies), caches the access token, refreshes once on 401, supports `clientAuth: "basic"`; the local shop API has `POST /oauth/token` and `input/local-shop-oauth.json`; the OpenAPI importer maps `clientCredentials` flows to it.
 - Roles: two users (for example admin and customer). New `[authz]` tests: a customer cannot read or change another customer's data, a customer cannot call admin endpoints. Built: `auth.roles`, `ctx.as(role)` in both frameworks, the `[authz]` case type with its own plan and gate rules, finding classification and eval scoring.
 
-**Proof so far:** the local shop API has `POST /auth/login` with admin and viewer users and the planted bug `viewer-can-delete`; throwaway `[authz]` specs catch it in both frameworks (actual status 204 recorded); both exports run standalone with the login flow; `npm run test:auth` covers every type, caching, refresh, the guard and redaction; no credential or token in any output. Pending: the live agent run (`npm run agent input/local-shop-login.json`). The UI form takes every auth type since Phase 9 PR A.
+**Proof so far:** the local shop API has `POST /auth/login` with admin and viewer users and the planted bug `viewer-can-delete`; throwaway `[authz]` specs catch it in both frameworks (actual status 204 recorded); both exports run standalone with the login flow; `npm run test:auth` covers every type, caching, refresh, the guard and redaction; no credential or token in any output. The live agent run (`npm run agent input/local-shop-login.json` with the planted bug `viewer-can-delete` on) was done on 13 Nov 2026: 5 endpoints, 27 tests, 3 findings, the two default ones plus `[authz]` viewer can delete (README, "Results so far"). The UI form takes every auth type since Phase 9 PR A.
 
 ---
 

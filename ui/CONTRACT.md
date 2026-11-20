@@ -37,11 +37,11 @@ layer replaced and what the probe's own setup data cleanup did (section 9). The 
     redaction: standard, 3 value(s) replaced
     cleanup: created 3, deleted 3, failed 0, no delete endpoint 0
 
-A refused run prints one line, no phase headers, and exits 1:
+A refused run prints one line, no phase headers, and exits 2 (section 13):
 
     REFUSED: api.example.com looks like a production host. Set allowProduction to run read-only tests.
 
-Exit code 0 when the pipeline completed (even with failing tests), non-zero otherwise.
+Exit codes are 0, 1 or 2 (section 13): a completed run with failed tests exits 1 unless `--fail-on none` is set; a refused host, no tests, a budget stop or any other tool or setup error exits 2.
 
 ## 2. out/summary.json
 
@@ -189,7 +189,7 @@ The base URL's host is classified by agent/safety.ts (ui/host-class.mjs has the 
 | Host | allowProduction | allowWrites | safety.mode | What runs |
 |---|---|---|---|---|
 | local or non-production | any | any | "full" | everything |
-| production | false | any | "refused" | nothing; status "refused", requestsSent 0, exit 1 |
+| production | false | any | "refused" | nothing; status "refused", requestsSent 0, exit 2 |
 | production | true | false | "read-only" | GET, HEAD and OPTIONS endpoints without setup; the rest are skipped |
 | production | true | true | "full" | everything, with the WARNING line |
 
