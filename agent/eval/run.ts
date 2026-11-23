@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { preflight } from './preflight';
 import { findingKey, loadCatalog, runValidity, scoreRun, type BugCatalog, type Score, type Summary } from './score';
 
-// npm run eval -- [--runs N] [--bugs all|none|id,id] [--dry-run]
+// npm run eval -- [--runs N] [--bugs all|none|id,id] [--provider anthropic|openai] [--layout flat|clients] [--dry-run]
 //
 // For every bug set in the matrix: start the local shop API on a free port with exactly those bugs,
 // run the agent on a copy of input/local-shop-login.json pointed at that port, N times, score each run.
@@ -28,15 +28,15 @@ const SUMMARY_FILE = 'out/summary.json';
 const EVAL_ROOT = process.env.EVAL_RESULTS_DIR || 'eval-results';
 const API_START_TIMEOUT_MS = 10_000;
 
-type Args = { runs: number; bugSets: string[][] | null; dryRun: boolean; provider: string | null };
+type Args = { runs: number; bugSets: string[][] | null; dryRun: boolean; provider: string | null; layout: 'flat' | 'clients' };
 
 function usage(): never {
-  console.error('usage: npm run eval -- [--runs N] [--bugs all|none|id,id] [--provider anthropic|openai] [--dry-run]');
+  console.error('usage: npm run eval -- [--runs N] [--bugs all|none|id,id] [--provider anthropic|openai] [--layout flat|clients] [--dry-run]');
   process.exit(2);
 }
 
 function parseArgs(argv: string[]): Args {
-  const args: Args = { runs: 3, bugSets: null, dryRun: false, provider: null };
+  const args: Args = { runs: 3, bugSets: null, dryRun: false, provider: null, layout: 'flat' };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--dry-run') args.dryRun = true;
@@ -52,6 +52,11 @@ function parseArgs(argv: string[]): Args {
       const v = argv[++i];
       if (v !== 'anthropic' && v !== 'openai') usage();
       args.provider = v;
+    } else if (a === '--layout') {
+      // The same bug sets with the client layer on, to prove the layout finds what the flat one finds.
+      const v = argv[++i];
+      if (v !== 'flat' && v !== 'clients') usage();
+      args.layout = v;
     } else usage();
   }
   return args;
@@ -207,7 +212,7 @@ async function main() {
   const catalog = loadCatalog();
   const sets = matrix(catalog, args.bugSets);
 
-  console.log(`eval matrix (${sets.length} bug set(s), ${args.runs} run(s) each):`);
+  console.log(`eval matrix (${sets.length} bug set(s), ${args.runs} run(s) each${args.layout === 'clients' ? ', layout: clients' : ''}):`);
   for (const set of sets) console.log(`  ${pad(set.label, 28)} BUGS=${set.bugs.join(',') || '(none)'}`);
   if (args.dryRun) {
     console.log('dry run: nothing started.');
@@ -233,7 +238,7 @@ async function main() {
       const setDir = join(evalDir, set.label.replace(/[^a-z0-9-]+/g, '_'));
       mkdirSync(setDir, { recursive: true });
       const inputFile = join(setDir, 'input.json');
-      writeFileSync(inputFile, JSON.stringify({ ...template, name: 'eval-local-shop', baseUrl: `http://127.0.0.1:${port}` }, null, 2) + '\n');
+      writeFileSync(inputFile, JSON.stringify({ ...template, name: 'eval-local-shop', baseUrl: `http://127.0.0.1:${port}`, ...(args.layout === 'clients' ? { layout: 'clients' } : {}) }, null, 2) + '\n');
 
       // No model call before the input is proven to work against this API.
       console.log('  preflight (no model):');
@@ -284,7 +289,7 @@ async function main() {
     }
   }
 
-  writeFileSync(join(evalDir, 'score.json'), JSON.stringify({ runs: args.runs, provider: args.provider ?? process.env.LLM_PROVIDER ?? 'anthropic', input: INPUT_TEMPLATE, sets, records }, null, 2) + '\n');
+  writeFileSync(join(evalDir, 'score.json'), JSON.stringify({ runs: args.runs, provider: args.provider ?? process.env.LLM_PROVIDER ?? 'anthropic', layout: args.layout, input: INPUT_TEMPLATE, sets, records }, null, 2) + '\n');
   console.log(`\nwritten ${evalDir}/score.json\n`);
   printTable(records, sets, catalog);
 

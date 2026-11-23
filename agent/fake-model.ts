@@ -359,8 +359,13 @@ function setupKind(user: string): SetupKind {
   return { kind: 'none' };
 }
 
+// The clients layout (agent/client-layer.ts): the prompt names the endpoint's client class, its method
+// and the sample body function, and the fake sends every request through them like a real model must.
+type FakeClient = { className: string; clientModule: string; method: string; pathArguments: string[]; takesBody: boolean; bodyFunction: string | null; dataModule: string | null };
+
 export function fakeSpec(user: string, pactum: boolean): string {
   const endpoint = endpointBlock(user);
+  const layer = pactum ? null : (block(user, 'CLIENT LAYER:') as unknown as FakeClient | null);
   const probe = probeBlock(user);
   const plan = block(user, 'PLAN:');
   if (!plan) throw new Error('FAKE_MODEL: prompt has no PLAN block');
@@ -404,6 +409,12 @@ export function fakeSpec(user: string, pactum: boolean): string {
 
   // q: the query to send instead of the sample one (an invalid value, or another page).
   const call = (client: string, p: string, b: string | null, q: Json | undefined = query) => {
+    if (layer) {
+      // p is the list of path arguments here. The method sends the sample query and headers itself, so
+      // options are passed only for a query that differs from the sample one.
+      const args = [p, layer.takesBody ? (b ?? (layer.bodyFunction ? `${layer.bodyFunction}()` : 'undefined')) : '', q !== query && q ? `{ params: ${JSON.stringify(q)} }` : ''].filter(Boolean);
+      return `new ${layer.className}(${client}).${layer.method}(${args.join(', ')})`;
+    }
     const qOpts = [q ? `params: ${JSON.stringify(q)}` : '', headers ? `headers: ${JSON.stringify(headers)}` : ''].filter(Boolean).join(', ');
     if (pactum) {
       if (hasBody) return `${client}.${method}(${p}, ${b ?? 'validBody'}${qOpts ? `, { ${qOpts} }` : ''})`;
@@ -468,7 +479,14 @@ export function fakeSpec(user: string, pactum: boolean): string {
       const missing = invalid && c.statusCodes?.includes(404) && !c.statusCodes.includes(400) && params.length > 0;
       // A case with its own path values (GET /products/42) sends exactly those.
       const own = c.pathValues && params.every((x) => c.pathValues![x] !== undefined) ? `'${path.replace(/\{([^}]+)\}/g, (_m, x: string) => encodeURIComponent(c.pathValues![x]))}'` : null;
-      const p = own ?? (missing ? invalidPathExpr.replace('not-a-valid-id', '999999') : invalid && !hasBody ? invalidPathExpr : pathExpr);
+      const flatPath = own ?? (missing ? invalidPathExpr.replace('not-a-valid-id', '999999') : invalid && !hasBody ? invalidPathExpr : pathExpr);
+      // The same choice as path arguments for the client method: the case's own values, a missing or
+      // invalid id in the last placeholder, or the ids from setup.
+      const badLast = missing ? `'999999'` : invalid && !hasBody && setup.kind !== 'none' ? `'not-a-valid-id'` : null;
+      const pathArgs = params
+        .map((x, i) => (own ? `'${c.pathValues![x].replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'` : badLast && i === params.length - 1 ? badLast : setup.kind === 'multi' ? `p.${x}` : 'id'))
+        .join(', ');
+      const p = layer ? pathArgs : flatPath;
       const b = invalid && hasBody ? invalidBody : null;
       const open = pactum ? `  it('${c.title.replace(/'/g, "\\'")}', async () => {` : `  test('${c.title.replace(/'/g, "\\'")}', async ({ ctx }) => {`;
       const q = invalid && invalidQuery ? invalidQuery : query;
@@ -493,6 +511,10 @@ export function fakeSpec(user: string, pactum: boolean): string {
   const header = pactum
     ? `import { ctx, expect, recordStatus } from '../tests-pactum/setup/ctx';\n`
     : `import { test, expect } from '../tests/fixtures/ctx';\n\nfunction recordStatus(status: number) {\n  test.info().annotations.push({ type: 'actual-status', description: String(status) });\n}\n`;
+  if (layer) {
+    const imports = [`import { test, expect } from '../tests/fixtures/ctx';`, `import { ${layer.className} } from '${layer.clientModule}';`, ...(layer.bodyFunction && layer.dataModule ? [`import { ${layer.bodyFunction} } from '${layer.dataModule}';`] : [])];
+    return `${imports.join('\n')}\n\nfunction recordStatus(status: number) {\n  test.info().annotations.push({ type: 'actual-status', description: String(status) });\n}\n\ntest.describe('${id} ${endpoint.method} ${path}', () => {\n${tests}\n});\n`;
+  }
   const bodyConst = hasBody ? `\nconst validBody = ${JSON.stringify(body)};\n` : '';
   const describe = pactum ? `describe('${id} ${endpoint.method} ${path}', () => {` : `test.describe('${id} ${endpoint.method} ${path}', () => {`;
   return `${header}${bodyConst}\n${describe}\n${tests}\n});\n`;

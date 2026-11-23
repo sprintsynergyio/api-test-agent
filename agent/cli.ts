@@ -18,6 +18,7 @@ import { buildTraceRows, coverageGaps, traceCsv, traceTotals, traceXlsx, type Tr
 import { testTypeOf } from './model';
 import { frameworkFor, outcomeKind, type FrameworkAdapter, type FrameworkInfo, type TestOutcome } from './frameworks';
 import { generateEndpoint } from './generate';
+import { buildClientLayer, clientUse, writeClientLayer, type ClientLayer } from './client-layer';
 import { dataStability, planEndpoint, type Plan, type Stability } from './plan';
 import { addCleanup, cleanupLine, emptyCleanup, type CleanupTotals } from './http';
 import { probeAll, probeCases, type CaseProbeRequest, type ProbeResult } from './probe';
@@ -185,7 +186,7 @@ async function planPhase(states: EndpointState[], roles: string[]) {
   });
 }
 
-async function generatePhase(fw: FrameworkAdapter, states: EndpointState[]) {
+async function generatePhase(fw: FrameworkAdapter, states: EndpointState[], layer: ClientLayer | null) {
   await forEachLimited(states, CONCURRENCY, async (s) => {
     const id = s.endpoint.id;
     if (s.skippedReason) {
@@ -207,7 +208,7 @@ async function generatePhase(fw: FrameworkAdapter, states: EndpointState[]) {
       return;
     }
     try {
-      const result = await generateEndpoint(fw, s.endpoint, s.plan, s.probe!, { stability: stabilityOf(id) });
+      const result = await generateEndpoint(fw, s.endpoint, s.plan, s.probe!, { stability: stabilityOf(id), ...(layer ? { client: clientUse(layer, id) } : {}) });
       if (result.ok) {
         s.specFile = basename(result.specFile);
         s.plan = result.plan;
@@ -290,6 +291,8 @@ function writeSummary(o: {
     schemaVersion: 1,
     status,
     testFramework,
+    // Only present for the clients layout (additive; a summary without it is the flat layout).
+    ...(config.layout === 'clients' ? { layout: 'clients' } : {}),
     model: { provider: choice.provider, model: choice.model, via: choice.via },
     inputFile,
     baseUrl: config.baseUrl,
@@ -447,6 +450,11 @@ function resolveScope(flags: AgentFlags, config: Config, fw: FrameworkAdapter, i
       console.log(`${mode}: ${CHECKPOINT_FILE} belongs to ${prev.inputFile} (${prev.framework}), starting fresh`);
       prev = null;
       mode = 'fresh';
+    } else if (mode === 'only-new' && (prev.layout ?? 'flat') !== (config.layout ?? 'flat')) {
+      // A spec kept from the other layout would sit next to specs in the new one.
+      console.log(`only-new: the layout changed since the checkpoint (${prev.layout ?? 'flat'} to ${config.layout ?? 'flat'}), starting fresh`);
+      prev = null;
+      mode = 'fresh';
     } else if (mode === 'resume' && prev.inputHash !== inputHash(config, extra)) {
       console.log(`resume: ${inputFile} changed since the checkpoint, starting fresh (use --only-new to regenerate only the changed endpoints)`);
       prev = null;
@@ -482,6 +490,9 @@ async function main() {
   const startedAt = new Date();
   const config = loadConfig(inputFile);
   const fw = frameworkFor(config);
+  // "layout": "clients": the client classes and data files, built from the input (never by the model).
+  // An endpoint id clash throws here, before any request.
+  const layer = config.layout === 'clients' ? buildClientLayer(config) : null;
   // --allow-invalid-input / --stable-data [ids]: the same as the per-endpoint options in the input.
   for (const [flag, list, key] of [['--allow-invalid-input', flags.allowInvalidInput, 'allowInvalidInput'], ['--stable-data', flags.stableData, 'stableData']] as const) {
     if (!list) continue;
@@ -606,6 +617,7 @@ async function main() {
   console.log(`safety: ${safety.hostClass} host, ${safety.mode} mode`);
   if (safety.resolvesToLocal?.length) console.log(`safety note: ${safety.host} resolves to a local or private address (${safety.resolvesToLocal.join(', ')}); it keeps its ${safety.hostClass} rules`);
   console.log(`framework: ${fw.name}`);
+  if (layer) console.log(`layout: clients (${layer.classes.length} client class${layer.classes.length === 1 ? '' : 'es'}: ${layer.classes.map((c) => c.className).join(', ')})`);
   console.log(describeModelChoice());
   if (fakeModelEnabled()) console.log('model: FAKE_MODEL=1 test mode, no model is called');
   const selected = selectionLine(config);
@@ -739,7 +751,10 @@ async function main() {
   await planPhase(states, roles);
 
   console.log('=== GENERATING ===');
-  await generatePhase(fw, states);
+  // Written on every run (fresh, resume, only-new): the same input always gives the same files, and
+  // specs kept from a checkpoint import them too.
+  if (layer) writeClientLayer(layer, 'generated');
+  await generatePhase(fw, states, layer);
   rmSync('generated/.candidate', { recursive: true, force: true });
   if (budgetHit) {
     console.log('STOPPED: budget reached');

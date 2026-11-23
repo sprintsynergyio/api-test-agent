@@ -30,6 +30,9 @@ const SHEET_STATUS = {
 const INPUTS = [
   { input: "input/local-shop.json", framework: "playwright" },
   { input: "input/local-shop-pactum.json", framework: "pactum" },
+  // The clients layout (agent/client-layer.ts): the same API and the same findings, with every request
+  // sent through a client class the agent wrote. Its export runs standalone like the others.
+  { input: "input/local-shop-clients.json", framework: "playwright", clients: true },
   { input: "input/local-shop-sheet.json", framework: "playwright", sheet: "sheet-plus-agent" },
   { input: "input/local-shop-pactum.json", framework: "pactum", sheet: "sheet-only", args: ["--test-cases", path.join("input", "local-shop-test-cases.csv"), "--test-cases-mode", "sheet-only"] },
   // The sample sheet as a Confluence table, read live through a link (scripts/mock-atlassian.mjs). Its
@@ -97,6 +100,25 @@ function checkStatusesRun(label, summary) {
   check(pactum ? /requireDataFor\("\[TC-205\] \[[a-z-]+\] View one product", \["Summer Hat \(seasonal\)"\]\);/.test(specs) : /await ctx\.requireData\(\["Summer Hat \(seasonal\)"\]\);/.test(specs), `${label}: the agent added the required data check`);
   check(/\[TC-203\] \[skipped\]/.test(specs) && /\[TC-204\] \[manual\]/.test(specs), `${label}: skipped and manual placeholders are in the spec`);
   check(fs.existsSync(path.resolve(ROOT, summary.framework?.dir ?? "-", "config", "test-data.json")) && fs.existsSync(path.resolve(ROOT, summary.framework?.dir ?? "-", "src", "test-data.ts")), `${label}: the export has config/test-data.json and src/test-data.ts`);
+  const contract = spawnSync(process.execPath, [tsxEntry(), "agent/check-contract.ts"], { cwd: ROOT, encoding: "utf8" });
+  check(contract.status === 0, `${label}: contract check passes (${(contract.stdout + contract.stderr).trim().split("\n").pop()})`);
+}
+
+function checkClientsRun(label, summary) {
+  check(summary.layout === "clients", `${label}: summary.layout is clients (${summary.layout})`);
+  const gen = path.join(ROOT, "generated");
+  check(fs.existsSync(path.join(gen, "clients", "base.ts")) && fs.existsSync(path.join(gen, "clients", "products.ts")) && fs.existsSync(path.join(gen, "data", "products.ts")), `${label}: the agent wrote generated/clients and generated/data`);
+  const specs = fs.readdirSync(gen).filter((f) => f.endsWith(".spec.ts"));
+  const texts = specs.map((f) => fs.readFileSync(path.join(gen, f), "utf8"));
+  check(specs.length === 5 && texts.every((t) => /import \{ ProductsClient \} from '\.\.\/generated\/clients\/products';/.test(t) && /new ProductsClient\(ctx\.(?:api|noAuthApi)\)\./.test(t)), `${label}: all 5 specs send their requests through ProductsClient`);
+  check(texts.every((t) => !/ctx\.(?:api|noAuthApi)\.(?:get|post|put|patch|delete|head|fetch)\(/.test(t) && !/['"\`]\/products/.test(t)), `${label}: no spec calls the request context or writes a path itself`);
+  check(summary.totals?.failed === 1 && (summary.findings || []).length === 1 && /\[auth\] delete-product/.test(summary.findings[0].testTitle) && summary.findings[0].classification === "suspected API finding", `${label}: the same finding as the flat layout (delete-product without auth), got ${JSON.stringify((summary.findings || []).map((f) => f.testTitle))}`);
+  const dir = path.resolve(ROOT, summary.framework?.dir ?? "-");
+  const has = (f) => fs.existsSync(path.join(dir, ...f.split("/")));
+  check(has("src/clients/base.ts") && has("src/clients/products.ts") && has("src/data/products.ts"), `${label}: the export has src/clients and src/data`);
+  const exportedSpecs = fs.existsSync(path.join(dir, "tests")) ? fs.readdirSync(path.join(dir, "tests")).filter((f) => f.endsWith(".spec.ts")).map((f) => fs.readFileSync(path.join(dir, "tests", f), "utf8")) : [];
+  check(exportedSpecs.length === 5 && exportedSpecs.every((t) => /from '\.\.\/src\/clients\/products'/.test(t) && !/generated\//.test(t)), `${label}: exported specs import ../src/clients, never generated/`);
+  check(fs.existsSync(path.join(dir, "README.md")) && /## Client layer/.test(fs.readFileSync(path.join(dir, "README.md"), "utf8")), `${label}: the export README explains the client layer`);
   const contract = spawnSync(process.execPath, [tsxEntry(), "agent/check-contract.ts"], { cwd: ROOT, encoding: "utf8" });
   check(contract.status === 0, `${label}: contract check passes (${(contract.stdout + contract.stderr).trim().split("\n").pop()})`);
 }
@@ -209,7 +231,7 @@ const exported = [];
 try {
   api = await startApi(false);
   atlassian = await startAtlassian();
-  for (const { input, framework, sheet, args: given = [], confluence, noExport, statuses, probes } of INPUTS) {
+  for (const { input, framework, sheet, args: given = [], confluence, noExport, statuses, probes, clients } of INPUTS) {
     const env = { ...process.env, FAKE_MODEL: "1", LOCAL_API_AUTH_VALUE: TOKEN };
     const args = confluence ? ["--test-cases", `${atlassian.url}/wiki/spaces/QA/pages/${CONFLUENCE_PAGE_ID}/Local+shop+API+test+cases`, "--test-cases-mode", sheet] : given;
     if (confluence) Object.assign(env, atlassian.env);
@@ -229,6 +251,8 @@ try {
     else if (statuses) checkStatusesRun(`${input} (statuses)`, summary);
     else if (sheet) checkSheetRun(`${input} (${confluence ? "Confluence link, " : ""}${sheet})`, summary, sheet, confluence ? "confluence" : null);
     else check(summary.testCases === null, `${input}: no test case sheet, summary.testCases is null`);
+    if (clients) checkClientsRun(`${input} (clients layout)`, summary);
+    else check(summary.layout === undefined && !fs.existsSync(path.join(ROOT, "generated", "clients")), `${input}: flat layout, no client layer written`);
     if (confluence) {
       const text = fs.readFileSync(path.join(ROOT, "out", "summary.json"), "utf8");
       check(!text.includes(atlassian.env.ATLASSIAN_API_TOKEN), `${input} (Confluence link): the Atlassian token is not in summary.json`);

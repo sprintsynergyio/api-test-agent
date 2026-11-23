@@ -38,6 +38,9 @@ export type Checkpoint = {
   inputFile: string;
   inputHash: string;
   framework: string;
+  // "clients" when the run used the client layer; missing means the flat layout (so checkpoints
+  // written before the option existed stay valid).
+  layout?: 'clients';
   startedAt: string;
   updatedAt: string;
   endpoints: Record<string, EndpointCheckpoint>;
@@ -79,7 +82,7 @@ export function endpointHash(endpoint: Endpoint): string {
 
 export function newCheckpoint(config: Config, inputFile: string, framework: string, extra?: unknown): Checkpoint {
   const now = new Date().toISOString();
-  return { version: VERSION, inputFile, inputHash: inputHash(config, extra), framework, startedAt: now, updatedAt: now, endpoints: {} };
+  return { version: VERSION, inputFile, inputHash: inputHash(config, extra), framework, ...(config.layout === 'clients' ? { layout: 'clients' as const } : {}), startedAt: now, updatedAt: now, endpoints: {} };
 }
 
 export function loadCheckpoint(file = CHECKPOINT_FILE): Checkpoint | null {
