@@ -32,7 +32,7 @@ An agent that takes a base URL and a list of API endpoints, probes the real API,
 | `npm run test:gate:pactum` | Pactum static gate tests (must stay all passed) |
 | `npm run test:response-schema` | Documented response schemas: the OpenAPI conversion and the probe check (must stay all passed) |
 | `npm run eval -- [--runs N] [--bugs all\|none\|id,id] [--provider anthropic\|openai] [--dry-run]` | eval harness: runs the agent against every planted-bug set and prints detection, false alarm and flakiness rates (see Eval harness); `--provider` sets `LLM_PROVIDER` for the runs and is recorded in score.json |
-| `npm run test:eval` | eval harness tests, offline: the scorer, and every planted bug against a real local API (must stay all passed) |
+| `npm run test:eval` | eval harness tests, offline: the scorer, the run validity rule, every planted bug against a real local API, the preflight, and the eval runner itself with `FAKE_MODEL=1` (must stay all passed) |
 | `npm run test:claude-api` | Messages API and Chat Completions paths of `agent/claude.ts` with a fake fetch, plus `verifyProviderKey`: request shapes, error handling, keys never leak (must stay all passed) |
 | `npm run test:settings` | the UI's model settings routes against a fake provider server: verify, save to `.env`, restart reads it, read-only with a login (must stay all passed) |
 | `npm run test:ui-layout` | the UI layout in headless Chromium at 1920, 1440, 1280, 1101, 1100, 1024, 900, 768 and 390 px and at 1280 with 125% and 150% zoom: the input column and the pipeline/runs column never overlap, nothing sticks out of its card, no sideways scroll (must stay all passed) |
@@ -198,15 +198,16 @@ Additions (agent/validate.ts, agent/generate.ts):
 
 The local API also has `POST /auth/login` (users admin and viewer, see Auth) and the planted bug `viewer-can-delete` (`detectableBy: "authz"`).
 
-`npm run eval` (`agent/eval/run.ts`) starts the local API itself on a free port for each bug set (default matrix: all bugs, no bugs, each detectable bug alone), runs the agent N times (default 3) on a copy of `input/local-shop.json` pointed at that port, and scores every run with `agent/eval/score.ts`:
+`npm run eval` (`agent/eval/run.ts`) starts the local API itself on a free port for each bug set (default matrix: all bugs, no bugs, each detectable bug alone), runs the agent N times (default 3) on a copy of `input/local-shop-login.json` pointed at that port, and scores every valid run with `agent/eval/score.ts`. The login input is used because it has a second role (viewer): without one no `[authz]` test is written and `viewer-can-delete` could never be detected. `.env` needs the four `LOCAL_API_*_USER` / `_PASSWORD` values from `.env.example`.
 
 - detected: a "suspected API finding" exists for the bug's endpoint with the bug's type (invalid-input bugs need an invalid-input finding, auth bugs an auth finding, authz bugs an authz finding)
 - false alarm: a suspected finding no active bug explains
 - flaky: runs in the same bug set whose suspected finding sets differ
 - not-yet: bugs with `detectableBy: "none-yet"` (needs a test type the agent does not have); reported, never counted against detection
-- a run counts only when its status is `completed`; `no-tests`, `stopped-budget` or `refused` fails the eval (exit 1)
+- preflight (`agent/eval/preflight.ts`), once per bug set and without the model: every endpoint must probe usable and every extra role must be able to log in. When it fails no agent run starts for that set (no model call is paid for), every run of the set is recorded as invalid with the reason, and the console prints which `.env` variables the eval reads
+- a run is scored only when it is valid (`runValidity` in `agent/eval/score.ts`): the agent wrote a summary, its status is `completed`, and every endpoint of the input was tested (no `failureReason`, no `skippedReason`, a spec written). An endpoint that was not probed, or whose spec the gate dropped, makes the whole run invalid. An invalid run gets no score at all (`score: null` and an `error` in `score.json`), is printed as `INVALID <reason>`, is left out of every rate, and fails the eval (exit 1). The table's `valid runs` column and the `runs scored N/M` line show how many runs the rates rest on; with no valid run the eval prints `no valid run, so there is no score`. Never quote a rate from an eval that exited 1 without reading which runs were invalid. `flaky` is judged on valid runs and is `n/a` with fewer than two
 
-Output goes to `eval-results/<timestamp>/` (gitignored; not under `out/`, which the agent deletes every run): per set `input.json`, `run-N.log`, `run-N.summary.json`, plus `score.json`. Adding a planted bug: add it to `bugs.json`, implement it in `server.mjs` behind `bug("<id>")`, add its probe to `agent/eval/eval.test.ts` (the test fails until every catalog bug has one).
+Output goes to `eval-results/<timestamp>/` (gitignored; not under `out/`, which the agent deletes every run): per set `input.json`, `run-N.log`, `run-N.summary.json`, plus `score.json` (with `input`, the template the runs used). `EVAL_RESULTS_DIR` moves the folder (the tests use it). Adding a planted bug: add it to `bugs.json`, implement it in `server.mjs` behind `bug("<id>")`, add its probe to `agent/eval/eval.test.ts` (the test fails until every catalog bug has one).
 
 ## Input files
 

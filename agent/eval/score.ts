@@ -30,6 +30,8 @@ export type Summary = {
   claudeCalls: { used: number; budget: number };
   totals: { endpoints: number; testsGenerated: number; passed: number; failed: number };
   findings: SummaryFinding[];
+  // Per endpoint: why it was not tested (failureReason, skippedReason) and whether a spec exists.
+  endpoints?: { id: string; specWritten?: boolean; failureReason?: string | null; skippedReason?: string | null }[];
 };
 
 export type BugOutcome = {
@@ -103,6 +105,22 @@ export function scoreRun(summary: Summary, activeBugIds: string[], catalog: BugC
     durationSec: summary.durationSec ?? 0,
     status: summary.status,
   };
+}
+
+export type Validity = { valid: true } | { valid: false; reason: string };
+
+// A run may be scored only when the agent tested every endpoint of the input. Anything else is an
+// invalid run, never a score: a bug on an endpoint that was never probed, planned or generated would
+// read as "missed" and the detection rate would look like a measurement when it is a setup problem
+// (a wrong auth value in .env once produced 0 of 36 that way). An invalid run fails the eval.
+export function runValidity(summary: Summary): Validity {
+  if (summary.status !== 'completed') return { valid: false, reason: `agent status "${summary.status}"` };
+  const endpoints = summary.endpoints;
+  if (!Array.isArray(endpoints) || endpoints.length === 0) return { valid: false, reason: 'the summary lists no endpoints, so nothing proves they were tested' };
+  const untested = endpoints.filter((e) => e.failureReason || e.skippedReason || e.specWritten === false);
+  if (untested.length === 0) return { valid: true };
+  const why = untested.map((e) => `${e.id}: ${e.failureReason || e.skippedReason || 'no spec written'}`).join('; ');
+  return { valid: false, reason: `${untested.length} of ${endpoints.length} endpoint(s) not tested (${why})` };
 }
 
 // The set of (endpointId, type) pairs reported as suspected findings, for comparing runs.
