@@ -475,7 +475,23 @@ A failed test is a **suspected API finding** when the API returned a 5xx, or ret
 
 All numbers below come from runs on a developer Mac with Claude (`claude-sonnet-5-5`), framework Playwright, between 9 and 13 November 2026. They are single runs, not averages; the eval harness (`npm run eval`) is the tool for repeated runs with detection, false alarm and flakiness rates per provider.
 
-These are single runs from 9 to 13 Nov 2026, made before later changes to planning, generation and the static gate (the changelog's Unreleased section). A measured eval score is pending the first valid live `npm run eval`; no detection rate is published until then.
+These are single runs from 9 to 13 Nov 2026, made before later changes to planning, generation and the static gate (the changelog's Unreleased section). The measured eval score is in the next block.
+
+**Eval score** (`npm run eval`, 23 Nov 2026, commit `bad4087`, Claude `claude-sonnet-5-5` by API key, Playwright, input `input/local-shop-login.json`):
+
+| | Result |
+|---|---|
+| Runs | 24 of 24 valid (8 bug sets, 3 runs each): every run completed and tested all 5 endpoints |
+| Detection | 36 of 36: each of the 6 detectable planted bugs was found in every run where it was on (3 runs alone, 3 runs with all bugs on) |
+| False alarms | 0 of 42 suspected findings; with every bug off, 3 runs gave 0 findings |
+| Flaky | no: the three runs of every bug set reported the same findings |
+| Tests | 608 generated over the 24 runs (24 to 27 per run), 566 passed, 42 failed, and each of the 42 failures is a planted bug |
+| Cost | 10 to 11 model calls per run (241 in total), 22 to 28 seconds per run |
+
+How to read it, before quoting it:
+- The catalog has 8 planted bugs. 6 can be detected today and were. 2 (`update-not-persisted`, `list-wrong-type`) need test types the agent does not have yet; they are reported as not-yet and are not part of the 36.
+- This is the project's own benchmark: one small API (5 endpoints), the same local shop the prompts were developed against. It is a baseline that a later change must not lower, not a measurement on an API the agent has never seen.
+- Three runs per bug set, one model, one framework. Pactum and the OpenAI provider have not been measured.
 
 **Local shop API** (`input/local-shop.json`, two planted bugs, `npm run api:local`, 13 Nov 2026):
 - Bugs on: 5 endpoints, 25 tests, 23 passed, 2 failed. Exactly the 2 planted bugs found (price sent as text returns 500; DELETE without a token returns 204). Every other test passes. 10 model calls, 79 seconds.

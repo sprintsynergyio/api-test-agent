@@ -18,7 +18,7 @@ We work through the phases in order, one step at a time. A phase is done only wh
 | Web UI refresh (Phase 9 PR A): new look, framework toggle, every auth type and roles in the form, profile selects, redaction options, findings with request and response evidence, Jira and Markdown copy, run history, validation through the agent's schema (`npm run test:ui`) | Built and proven offline; a visual pass on the Mac and a live run from the page pending |
 | Importers: OpenAPI, Postman, cURL, HAR, Jira/Confluence text | Done, reviewed (Phase 0) |
 | Pactum output | Adapter built and proven offline against the local shop (Phase 2 PR); live agent run done on 9 Nov 2026 (27 tests, the same 2 findings as Playwright, see the README's "Results so far"); UI toggle done (Phase 9 PR A) |
-| Eval harness | In progress: harness built (`npm run eval`, 8 planted bugs of which 6 are detectable today, scorer + offline tests); score pending: there is no valid live `npm run eval` yet, so no detection number is published |
+| Eval harness | Harness built (`npm run eval`, 8 planted bugs of which 6 are detectable today, scorer + offline tests). First valid live score, 23 Nov 2026 (Claude `claude-sonnet-5-5`, Playwright): 24 of 24 runs valid, detection 36 of 36, false alarms 0 of 42, not flaky (README, "Results so far"). Still open: Pactum and OpenAI not measured, one API only, 2 planted bugs not detectable yet, proof 2 (a deliberate generator bug lowers the score) not run |
 | Safety guard against production hosts | Done, proven (Phase 1) |
 | Input model: nested paths, query, endpoint headers, env/brand/region profiles | Built and proven offline (Phase 4a PR); live agent run on `input/local-shop-nested.json` pending |
 | Real-world auth: header, query, cookie, login flow with refresh, roles, `[authz]` tests | Built and proven offline (Phase 5 PR: `npm run test:auth`, both frameworks and exports against the local shop login); live agent run on `input/local-shop-login.json` done on 13 Nov 2026 (27 tests, 3 findings including `[authz]`, see the README's "Results so far"); UI form done (Phase 9 PR A); OAuth2 client credentials built (Phase 9 hardening PR) |
@@ -102,7 +102,7 @@ Every adapter must produce **normalized results**: test title, type tag, pass/fa
 
 ---
 
-## Phase 3: Eval harness (quality numbers you can quote). In progress: harness built, score pending (no valid live run yet)
+## Phase 3: Eval harness (quality numbers you can quote). In progress: harness built, first live score measured 23 Nov 2026, proof 2 open
 
 Built before Phase 2 so the Pactum proof can be "same eval score as Playwright", not just "same 2 findings". As built: one local API with an 8-bug catalog (`local-api/bugs.json`, 6 detectable today, 2 marked none-yet) instead of three or four APIs; `npm run eval` runs one framework (Playwright) until Phase 2 adds the adapter. Since the harness fix of 21 Nov 2026 the eval input is `input/local-shop-login.json` (login plus a viewer role), so the `[authz]` bug can be caught; a preflight without the model and a run validity rule (every endpoint tested, or the run is invalid and gets no score) keep a setup problem from printing a number that looks like a detection rate.
 
@@ -118,8 +118,8 @@ Built before Phase 2 so the Pactum proof can be "same eval score as Playwright",
 - The eval score goes in the README, and every later phase must not lower it.
 
 **Proof**
-1. `npm run eval` prints the score table.
-2. Introducing a deliberate generator bug lowers the score (the harness catches regressions).
+1. `npm run eval` prints the score table. Done on 23 Nov 2026 at commit `bad4087`: 24 of 24 runs valid, detection 36 of 36, false alarms 0 of 42 (README, "Results so far").
+2. Introducing a deliberate generator bug lowers the score (the harness catches regressions). Not run yet.
 
 **Pitch-ready after this phase:** "Import your spec, choose Playwright or Pactum, safe by default, catches X% of planted bugs with Y false alarms."
 
