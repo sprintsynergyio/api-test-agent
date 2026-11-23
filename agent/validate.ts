@@ -51,6 +51,11 @@ export type ValidateOptions = {
   // Titles whose expected status differs from the probe's: the probe did not show that response's
   // body, so the body-assertion rule is lifted for them (the status, schema and content-type rules stay).
   bodyOptional?: string[];
+  // The clients layout (input "layout": "clients", agent/client-layer.ts): the endpoint's client class
+  // and method, every client class of the run, and the client and data modules a spec may import on top
+  // of the ctx file. With it, a test must send its request through the client class and may not call the
+  // request context itself.
+  clientLayer?: { className: string; clientModule: string; method: string; knownClasses: string[]; allowedModules: string[] };
 };
 
 const NO_BODY_STATUSES = [204, 205, 304];
@@ -375,6 +380,8 @@ export type GateRules = {
   statusRecorders?: string[];
   // The only module a generated spec may import: the framework's ctx file. Anything else is rejected.
   allowedImport: RegExp;
+  // Rules about one test's own code (the clients layout adds its own); returns reasons.
+  testRules?: (title: string, body: string) => string[];
 };
 
 const PLAYWRIGHT_RULES: GateRules = {
@@ -463,9 +470,59 @@ export function unsafeCodeReasons(code: string, allowedImport: RegExp): string[]
   return reasons;
 }
 
+const escapeRe = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const HTTP_VERBS = 'get|post|put|patch|delete|head|fetch';
+
+// The clients layout. A spec may also import the run's client and data modules (files the agent wrote
+// from the input, never the model), and every test sends its request through the endpoint's client
+// class: new ProductsClient(ctx.api).updateProduct(...). The class is given ctx.api, ctx.noAuthApi or
+// ctx.as('<role>'), so every rule above about which of those a test may mention still applies as written.
+export function clientLayerRules(layer: NonNullable<ValidateOptions['clientLayer']>): GateRules {
+  const modules = layer.allowedModules.map(escapeRe).join('|');
+  const cls = escapeRe(layer.className);
+  const method = escapeRe(layer.method);
+  // new <Class>(<ctx client>).<method>( ... ), or the client kept in a variable first. The constructor
+  // argument may hold brackets of its own (ctx.as('viewer')), so its end is found by matching brackets.
+  const sendsThroughClient = (body: string): boolean => {
+    for (const m of body.matchAll(new RegExp(`\\bnew\\s+${cls}\\s*\\(`, 'g'))) {
+      const close = matchingParen(body, m.index! + m[0].length - 1);
+      if (new RegExp(`^\\s*\\.\\s*${method}\\s*\\(`).test(body.slice(close + 1))) return true;
+    }
+    for (const m of body.matchAll(new RegExp(`\\b(?:const|let)\\s+(\\w+)\\s*=\\s*new\\s+${cls}\\s*\\(`, 'g'))) {
+      if (new RegExp(`(?<![.\\w$])${m[1]}\\s*\\.\\s*${method}\\s*\\(`).test(body)) return true;
+    }
+    return false;
+  };
+  return {
+    ...PLAYWRIGHT_RULES,
+    allowedImport: new RegExp(`${PLAYWRIGHT_RULES.allowedImport.source}${modules ? `|^(?:${modules})(?:\\.ts)?$` : ''}`),
+    frameworkRules(code) {
+      const reasons = PLAYWRIGHT_RULES.frameworkRules(code);
+      const imported = new RegExp(`import\\s*\\{[^}]*\\b${cls}\\b[^}]*\\}\\s*from\\s*['"]${escapeRe(layer.clientModule)}(?:\\.ts)?['"]`).test(code);
+      if (!imported) reasons.push(`does not import ${layer.className} from '${layer.clientModule}'`);
+      // The client classes are the agent's own files. A class written in the spec would be the model's.
+      if (/\bclass\b/.test(codeOnly(code))) reasons.push('declares a class; in the clients layout the client classes are imported, never written in the spec');
+      return reasons;
+    },
+    testRules(title, body) {
+      const reasons: string[] = [];
+      const direct =
+        new RegExp(`\\bctx\\s*\\.\\s*(?:api|noAuthApi)\\s*\\.\\s*(?:${HTTP_VERBS})\\s*\\(`).test(body) ||
+        new RegExp(`\\bctx\\s*\\.\\s*as\\s*\\([^)]*\\)\\s*\\.\\s*(?:${HTTP_VERBS})\\s*\\(`).test(body) ||
+        new RegExp(`(?<![.\\w$])(?:api|noAuthApi)\\s*\\.\\s*(?:${HTTP_VERBS})\\s*\\(`).test(body);
+      if (direct) reasons.push(`test "${title}": calls the request context directly; in the clients layout every request goes through the client class, for example new ${layer.className}(ctx.api).${layer.method}(...)`);
+      const made = [...body.matchAll(/\bnew\s+(\w+)\s*\(/g)].map((m) => m[1]);
+      const unknown = made.filter((n) => /Client$/.test(n) && !layer.knownClasses.includes(n));
+      if (unknown.length) reasons.push(`test "${title}": uses ${[...new Set(unknown)].join(', ')}, which is not one of this run's client classes (${layer.knownClasses.join(', ')})`);
+      if (!sendsThroughClient(body)) reasons.push(`test "${title}": does not send its request with new ${layer.className}(<ctx client>).${layer.method}(...)`);
+      return reasons;
+    },
+  };
+}
+
 // The Playwright gate.
 export function validateSpec(code: string, opts: ValidateOptions): ValidationResult {
-  return validateWithRules(code, opts, PLAYWRIGHT_RULES);
+  return validateWithRules(code, opts, opts.clientLayer ? clientLayerRules(opts.clientLayer) : PLAYWRIGHT_RULES);
 }
 
 // The shared gate: framework rules first, then every rule that is the same for all frameworks.
@@ -510,6 +567,7 @@ export function validateWithRules(code: string, opts: ValidateOptions, rules: Ga
       own.push(`test records actual-status after its first assertion: "${t.title}"`);
     }
     for (const why of codeRules(body, rules.allowedImport, false, opts.accepted5xx?.[t.title.replace(/\\(.)/g, '$1')] ?? null)) own.push(`test "${t.title}": ${why}`);
+    if (rules.testRules) own.push(...rules.testRules(t.title, body));
     if (required && !required.has(t.title.replace(/\\(.)/g, '$1'))) {
       own.push(`test "${t.title}" is not one of the plan's cases; write exactly one test per plan case and no others`);
     }

@@ -14,6 +14,7 @@ const ALLOWED_PACKAGES = new Set(['@playwright/test', 'dotenv', 'dotenv/config',
 const TYPES = ['happy', 'schema', 'invalid-input', 'auth', 'authz'] as const;
 
 import type { ExportEndpoint, ExportFinding, ExportOptions, FrameworkInfo } from './frameworks/types';
+import { buildClientLayer, clientLayerFiles, type ClientLayer } from './client-layer';
 export type { ExportEndpoint, ExportFinding, FrameworkInfo };
 
 
@@ -265,7 +266,28 @@ function countByType(spec: string): Record<(typeof TYPES)[number], number> {
   return counts;
 }
 
-function readme(name: string, config: Config, endpoints: ExportEndpoint[], specs: Map<string, string>, findings: ExportFinding[]): string {
+// The README section for the clients layout: where a path or a sample body is changed.
+function clientLayerReadme(layer: ClientLayer | null): string {
+  if (!layer) return '';
+  const rows = layer.classes.map((c) => `| \`${c.className}\` | \`src/clients/${c.file}.ts\` | ${c.hasData ? `\`src/data/${c.file}.ts\`` : 'none'} | ${c.methods.map((m) => `\`${m.name}\``).join(', ')} |`);
+  return `
+## Client layer
+
+The tests do not write paths or request bodies themselves. Each resource has a client class with one method per endpoint, and a data file with the sample request bodies:
+
+| Class | File | Sample bodies | Methods |
+|---|---|---|---|
+${rows.join('\n')}
+
+A test sends its request like this: \`new ${layer.classes[0].className}(ctx.api).${layer.classes[0].methods[0].name}(...)\`. The class is given \`ctx.api\`, \`ctx.noAuthApi\` (no credentials) or \`ctx.as('<role>')\`, so every request still goes through the checked clients in \`tests/fixtures/ctx.ts\`.
+
+- A path or a default query value changed in the API: change it once in the client class.
+- A sample body changed: change it once in the data file. Every test that sends a valid body picks it up; an invalid-input test starts from the same body and changes only its own field.
+- A new endpoint: add a method to the class (and a body function to the data file), then write its tests.
+`;
+}
+
+function readme(name: string, config: Config, endpoints: ExportEndpoint[], specs: Map<string, string>, findings: ExportFinding[], layer: ClientLayer | null = null): string {
   const rows = endpoints
     .filter((e) => e.specFile)
     .map((e) => {
@@ -302,7 +324,7 @@ ${envStep}
 4. \`npm run report\` to open the HTML report.
 
 The API config (base URL, headers, endpoints) is in \`config/api.json\`.
-
+${clientLayerReadme(layer)}
 ## Production safety
 
 Before any test runs, the base URL is checked (\`src/safety.ts\`). \`localhost\`, private IP addresses and \`.local\` hosts are local; hosts with a part such as \`dev\`, \`test\`, \`qa\`, \`staging\`, \`stage\`, \`sandbox\`, \`uat\` or \`preprod\` are non-production; everything else is production.
@@ -423,16 +445,33 @@ export function exportFramework(opts: ExportOptions): FrameworkInfo {
   mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
   for (const [file, content] of Object.entries(ciFiles(config, { testCommand: 'npm test', reportDir: 'playwright-report', reportLabel: 'playwright-report' }))) write(file, content);
 
+  // The clients layout: the client classes and sample bodies go to src/clients and src/data. They are
+  // built again from the config (the same code and the same input as during the run, so the same
+  // files), never copied from generated/.
+  const layer = config.layout === 'clients' ? buildClientLayer(config) : null;
+  if (layer) {
+    mkdirSync(join(dir, 'src', 'clients'), { recursive: true });
+    for (const f of clientLayerFiles(layer)) {
+      mkdirSync(dirname(join(dir, 'src', f.path)), { recursive: true });
+      write(join('src', f.path), f.content);
+    }
+  }
+
   const specs = new Map<string, string>();
   for (const e of endpoints) {
     if (!e.specFile) continue;
     const code = readFileSync(join('generated', e.specFile), 'utf8');
-    const rewritten = code.replace(/(from\s*['"])\.\.\/tests\/fixtures\/ctx(?:\.ts)?(['"])/g, '$1./fixtures/ctx$2');
+    let rewritten = code.replace(/(from\s*['"])\.\.\/tests\/fixtures\/ctx(?:\.ts)?(['"])/g, '$1./fixtures/ctx$2');
     if (rewritten === code) throw new Error(`framework export: could not rewrite the fixture import in ${e.specFile}`);
+    if (layer) {
+      const before = rewritten;
+      rewritten = rewritten.replace(/(from\s*['"])\.\.\/generated\/(clients|data)\//g, '$1../src/$2/');
+      if (rewritten === before) throw new Error(`framework export: ${e.specFile} does not import its client class`);
+    }
     specs.set(e.endpoint.id, rewritten);
     write(join('tests', e.specFile), rewritten);
   }
-  write('README.md', readme(name, config, endpoints, specs, findings));
+  write('README.md', readme(name, config, endpoints, specs, findings, layer));
   for (const f of opts.extraFiles ?? []) if (/^[\w.-]+$/.test(f.path)) write(f.path, f.content);
 
   const files = listFiles(dir);

@@ -5,37 +5,43 @@
       "id": "price-text-500",
       "description": "POST /products with a non-number price returns 500 (correct: 400)",
       "endpointId": "create-product",
-      "detectableBy": "invalid-input"
+      "detectableBy": "invalid-input",
+      "symptom": "5xx"
     },
     {
       "id": "delete-no-auth",
       "description": "DELETE /products/:id does not check the auth token (correct: 401)",
       "endpointId": "delete-product",
-      "detectableBy": "auth"
+      "detectableBy": "auth",
+      "symptom": "2xx"
     },
     {
       "id": "update-no-auth",
       "description": "PUT /products/:id does not check the auth token (correct: 401)",
       "endpointId": "update-product",
-      "detectableBy": "auth"
+      "detectableBy": "auth",
+      "symptom": "2xx"
     },
     {
       "id": "create-accepts-missing-name",
       "description": "POST /products without a name returns 201 (correct: 400)",
       "endpointId": "create-product",
-      "detectableBy": "invalid-input"
+      "detectableBy": "invalid-input",
+      "symptom": "2xx"
     },
     {
       "id": "get-bad-id-500",
       "description": "GET /products/<not a number> returns 500 (correct: 400)",
       "endpointId": "get-product",
-      "detectableBy": "invalid-input"
+      "detectableBy": "invalid-input",
+      "symptom": "5xx"
     },
     {
       "id": "viewer-can-delete",
       "description": "DELETE /products/:id accepts a viewer's login token (correct: 403; only admin may write)",
       "endpointId": "delete-product",
-      "detectableBy": "authz"
+      "detectableBy": "authz",
+      "symptom": "2xx"
     },
     {
       "id": "update-not-persisted",

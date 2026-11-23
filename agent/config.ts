@@ -125,6 +125,8 @@ const AuthUnion = z.discriminatedUnion('type', [
 ]);
 const AuthSchema = z.preprocess((raw) => (raw && typeof raw === 'object' && !Array.isArray(raw) && !('type' in raw) ? { ...raw, type: 'header' } : raw), AuthUnion);
 
+export const LAYOUTS = ['flat', 'clients'] as const;
+export type Layout = (typeof LAYOUTS)[number];
 export const ConfigSchema = z.object({
   name: z.string().regex(/^[a-z0-9-]+$/, 'must use lowercase letters, numbers and dashes only').optional(),
   // One of baseUrl or profile is required (checked in configProblems). With a profile, baseUrl is the
@@ -138,6 +140,10 @@ export const ConfigSchema = z.object({
   allowWrites: z.boolean().optional(),
   // Output framework for the generated tests. Missing means playwright.
   framework: z.enum(['playwright', 'pactum']).optional(),
+  // How the generated tests are laid out. Missing or "flat": each test writes its own path and body.
+  // "clients": the agent also writes one client class per resource and one data file per resource, and
+  // the tests call those (agent/client-layer.ts). Playwright only for now.
+  layout: z.enum(LAYOUTS).optional(),
   // Client data redaction before anything reaches Claude or the disk (agent/redact.ts). The built-in
   // rules are always on; fields lists dot paths (with * wildcards) whose values are always hidden;
   // strict hides every string and number in response bodies and keeps only the shape.
@@ -197,6 +203,9 @@ export function configProblems(config: Omit<Config, 'baseUrl' | 'selection'> & {
       problems.push(`field "endpoints[${i}].requiresAuth" endpoint "${ep.id}" requires auth but the input has no auth section`);
     }
   });
+  if (config.layout === 'clients' && config.framework === 'pactum') {
+    problems.push('field "layout" the clients layout is available for Playwright only; remove "layout" or set "framework" to "playwright"');
+  }
   problems.push(...authProblems(config.auth));
   config.endpoints.forEach((ep, i) => {
     const params = pathParams(ep.path);

@@ -8,6 +8,7 @@ generated/
 input/ui-run.json
 playwright-report/
 .tscheck/
+.tscheck-client-layer/
 frameworks/*
 !frameworks/.gitkeep
 profiles/local/*

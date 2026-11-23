@@ -399,6 +399,28 @@ site with sample cases; it prints the `.env` lines to use).
 
 It never imports from this repo. Copy it anywhere, `npm install`, fill in `.env`, `npm test`.
 
+### Client layer (optional)
+
+API tests have no pages, so a Page Object Model does not apply. The matching idea for an API is a client layer, and the agent can write one. Add `"layout": "clients"` to the input file (Playwright only for now):
+
+```
+<name>/
+  src/clients/base.ts        the base class (sends through the ctx request context it is given)
+  src/clients/products.ts    ProductsClient: one method per endpoint (listProducts, updateProduct, ...)
+  src/data/products.ts       the sample request bodies (createProductBody(), updateProductBody())
+  tests/update-product.spec.ts
+```
+
+A test then reads:
+
+```ts
+const response = await new ProductsClient(ctx.api).updateProduct(id, updateProductBody());
+```
+
+A path, a default query value or a sample body lives in one place, so an API change is one edit and not one per test. The client and data files are written by code from the input file, not by the model, and the class is given `ctx.api`, `ctx.noAuthApi` or `ctx.as('<role>')`, so the safety guard, the evidence and the cleanup work exactly as in the default layout. Try it: `npm run agent input/local-shop-clients.json`. The default layout (paths and bodies inside each test) is unchanged when `layout` is missing.
+
+The measured eval score in "Results so far" was taken with the default layout. The client layer has passed the offline checks; its live eval (`npm run eval -- --layout clients`) has not been run yet.
+
 **Font.** The UI and the HTML reports from an agent run (the Playwright report in `reports/html` and the
 Allure report) use Calibri: `Calibri, Carlito, 'Segoe UI', Arial, sans-serif`. Calibri is not licensed for
 the web, so no font file is bundled; on machines without it, Carlito (the free font with Calibri's exact
@@ -425,6 +447,7 @@ Write an input file (or use the Build tab in the UI):
 ```
 
 - `name` is optional (lowercase letters, numbers, dashes). It names the framework folder; the default is the input file name.
+- `layout` is optional: `"clients"` writes a client class per resource and a data file with the sample bodies (see "Client layer" above). Missing or `"flat"` keeps paths and bodies inside each test.
 - `auth` is optional. The file only names the environment variable; put the value in `.env`. Without `auth`, no endpoint may have `requiresAuth: true`.
 - `body` is the sample request body used for the happy path.
 - `setup` means: before calling this endpoint, call `endpointId` with its sample body, read `idField` from the response, and put it into the path placeholder (`{id}`).
@@ -462,7 +485,8 @@ Every generated spec must pass the static gate (`agent/validate.ts`) before it i
 - Nothing hides errors: no `test.only`, no `test.skip`, no empty or swallowing `catch`, no `.catch()`.
 - Generated code is untrusted: the only import allowed is the ctx file, and the gate rejects `require`, dynamic `import()`, `eval`, `Function`, `process`, `globalThis`, `fetch`, Node built-in modules (`child_process`, `fs`, `net`, `http`, ...) and any Playwright fixture other than `ctx`. Every request goes through `ctx`, so the safety guard sees it.
 - Never expect a 5xx. A 5xx on bad input fails the test, and that is reported as a suspected API bug. Expectations are never changed to match a bug.
-- Every test title starts with its type (`[happy]`, `[schema]`, `[invalid-input]`, `[auth]`), records the real status before asserting, and the file must typecheck.
+- Every test title starts with its type (`[happy]`, `[schema]`, `[invalid-input]`, `[auth]`, or `[authz]` when the input has a second role), records the real status before asserting, and the file must typecheck.
+- With `"layout": "clients"` a spec may also import the client and data files the agent wrote for that run, every request must go through the endpoint's client class, and a direct `ctx.api.get(...)` is rejected.
 - Response format: when a sheet case's expected result names one (`Content-Type application/json`, `a JSON error`, `plain text`, `image/png`), the test asserts the Content-Type header (`toContain('json')` for any JSON type, else the media type), and a test for a format that is not JSON never calls `response.json()` (it reads `response.text()` or `response.body()`). A format that is ruled out (`not JSON`) or describes the request (`send a JSON body`) is ignored.
 - Responses that are not JSON (images, PDFs, files): a happy or schema test checks headers (`Content-Type`, `Cache-Control`, `Content-Length`), the body size (`(await response.body()).length > 0`) or the file signature (PNG `89504E47`, JPEG `FFD8FF`, GIF, WebP, PDF), never `response.json()`. The probe reads such a body as bytes and records its type, size, signature and headers for the prompts.
 - invalid-input asserts the 4xx range, plus the sheet's own codes when it lists them (`expect([400, 404]).toContain(response.status())`).

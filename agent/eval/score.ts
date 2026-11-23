@@ -6,11 +6,16 @@ import { fileURLToPath } from 'node:url';
 
 export type DetectableBy = 'invalid-input' | 'auth' | 'authz' | 'schema' | 'flow' | 'none-yet';
 
+// The status class of the buggy answer: "5xx" (the API crashes) or "2xx" (the API accepts what it
+// must reject). Every detectable bug has one; none-yet bugs do not need one.
+export type Symptom = '5xx' | '2xx';
+
 export type PlantedBug = {
   id: string;
   description: string;
   endpointId: string;
   detectableBy: DetectableBy;
+  symptom?: Symptom;
 };
 
 export type BugCatalog = { default: string[]; bugs: PlantedBug[] };
@@ -63,13 +68,33 @@ export type Score = {
 export function loadCatalog(file = fileURLToPath(new URL('../../local-api/bugs.json', import.meta.url))): BugCatalog {
   const raw = JSON.parse(readFileSync(file, 'utf8')) as BugCatalog;
   if (!Array.isArray(raw.bugs) || !Array.isArray(raw.default)) throw new Error(`${file}: expected { default: [], bugs: [] }`);
+  // A bug is credited by its signature: endpoint, test type and symptom. Two detectable bugs with the
+  // same signature could not be told apart (one finding would credit both), so the catalog refuses them.
+  const seen = new Map<string, string>();
+  for (const bug of raw.bugs) {
+    if (bug.detectableBy === 'none-yet') continue;
+    if (bug.symptom !== '5xx' && bug.symptom !== '2xx') throw new Error(`${file}: bug "${bug.id}" needs "symptom": "5xx" or "2xx" (the status class of the buggy answer)`);
+    const signature = `${bug.endpointId} [${bug.detectableBy}] ${bug.symptom}`;
+    const other = seen.get(signature);
+    if (other) throw new Error(`${file}: bugs "${other}" and "${bug.id}" share the signature ${signature}; the scorer could not tell them apart`);
+    seen.set(signature, bug.id);
+  }
   return raw;
 }
 
-// Which finding types count as evidence for a bug type.
-function matchesType(bugType: DetectableBy, findingType: string): boolean {
-  if (bugType === 'none-yet') return false;
-  return bugType === findingType;
+export function statusClass(status: number | null): Symptom | null {
+  if (status === null) return null;
+  if (status >= 500) return '5xx';
+  if (status >= 200 && status <= 299) return '2xx';
+  return null;
+}
+
+// A finding is evidence for a bug when it is on the bug's endpoint, has the bug's test type and shows
+// the bug's symptom. Endpoint and type alone are not enough: price-text-500 (500) and
+// create-accepts-missing-name (201) are both invalid-input bugs on create-product.
+function isEvidence(bug: PlantedBug, f: SummaryFinding): boolean {
+  if (bug.detectableBy === 'none-yet') return false;
+  return f.endpointId === bug.endpointId && f.type === bug.detectableBy && statusClass(f.actualStatus) === bug.symptom;
 }
 
 export function scoreRun(summary: Summary, activeBugIds: string[], catalog: BugCatalog): Score {
@@ -81,14 +106,14 @@ export function scoreRun(summary: Summary, activeBugIds: string[], catalog: BugC
   const suspected = summary.findings.filter((f) => f.classification === 'suspected API finding');
 
   const bugs: BugOutcome[] = active.map((bug) => {
-    const matching = suspected.filter((f) => f.endpointId === bug.endpointId && matchesType(bug.detectableBy, f.type));
+    const matching = suspected.filter((f) => isEvidence(bug, f));
     const outcome: BugOutcome['outcome'] =
       bug.detectableBy === 'none-yet' ? 'expected-miss' : matching.length > 0 ? 'detected' : 'missed';
     return { id: bug.id, endpointId: bug.endpointId, detectableBy: bug.detectableBy, outcome, findings: matching.map((f) => f.testTitle) };
   });
 
-  // A suspected finding is a false alarm when no active bug explains it (same endpoint and type).
-  const explained = (f: SummaryFinding) => active.some((b) => b.endpointId === f.endpointId && matchesType(b.detectableBy, f.type));
+  // A suspected finding is a false alarm when no active bug explains it (same endpoint, type and symptom).
+  const explained = (f: SummaryFinding) => active.some((b) => isEvidence(b, f));
   const falseAlarms: FalseAlarm[] = suspected
     .filter((f) => !explained(f))
     .map((f) => ({ endpointId: f.endpointId, type: f.type, testTitle: f.testTitle, actualStatus: f.actualStatus }));
@@ -123,11 +148,11 @@ export function runValidity(summary: Summary): Validity {
   return { valid: false, reason: `${untested.length} of ${endpoints.length} endpoint(s) not tested (${why})` };
 }
 
-// The set of (endpointId, type) pairs reported as suspected findings, for comparing runs.
+// The set of (endpointId, type, status class) triples reported as suspected findings, for comparing runs.
 export function findingKey(summary: Summary): string {
   return summary.findings
     .filter((f) => f.classification === 'suspected API finding')
-    .map((f) => `${f.endpointId}:${f.type}`)
+    .map((f) => `${f.endpointId}:${f.type}:${statusClass(f.actualStatus) ?? f.actualStatus}`)
     .sort()
     .join('|');
 }

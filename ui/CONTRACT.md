@@ -80,6 +80,11 @@ pactum run there is no reports/html folder (htmlReport is null) and allureReport
 when the Allure report was built from the Mocha results and the status file (null with the reason in the
 console otherwise); the console says "framework: pactum" right after the safety line. Everything else in the summary has the same shape for both frameworks.
 
+Optional top-level "layout": "clients" when the input asked for the client layer (`"layout": "clients"`,
+Playwright only): the tests send their requests through client classes the agent wrote. The field is
+absent for the default flat layout, and nothing else in the summary changes. The console prints
+"layout: clients (N client class(es): ...)" after the framework line. The UI does not read either yet.
+
 Since Phase 4 the summary also has a top-level "selection": null | { "<dimension>": "<value>", ... }. It is
 null for an input file with a plain baseUrl (every UI run). For an input file with a profile block
 (environments, brands, regions) it is the selection the run used, and baseUrl is the resolved base URL

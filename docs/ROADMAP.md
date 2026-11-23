@@ -26,6 +26,7 @@ We work through the phases in order, one step at a time. A phase is done only wh
 | CI behaviour: exit codes 0 / 1 / 2 with `--fail-on`, summary kept when the export fails, in-process zip (fix PR B) | Done, proven offline (`npm run test:exit`, `test:checkpoint`) |
 | macOS, Windows and Linux (fix PR C) | Done: CI runs every offline suite, a `FAKE_MODEL` end-to-end run and `npm test` in both exports on ubuntu, windows and macos with Node 22 and 24 |
 | Response schemas from OpenAPI, body assertions required in `[happy]` and `[schema]` tests, model API retries (fix PR D) | Built and proven offline; a live run pending |
+| Client layer (`"layout": "clients"`): one client class per resource and one data file with the sample bodies, written by code; tests call `new ProductsClient(ctx.api).updateProduct(...)`; gate rules, export and docs | Built and proven offline for Playwright (`npm run test:client-layer`, an e2e run with the standalone export, the same findings as the flat layout). Open: live eval with `--layout clients`, Pactum, a UI switch, protection of hand edits |
 
 ---
 
