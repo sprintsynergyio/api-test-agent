@@ -130,6 +130,64 @@ await check('scorer: an authz finding on delete-product detects viewer-can-delet
   assert.equal(miss.falseAlarms.length, 1);
 });
 
+// The two invalid-input bugs on create-product: one finding must never credit both.
+const CREATE_PAIR = ['price-text-500', 'create-accepts-missing-name'];
+
+await check('scorer: with both create-product bugs on, a 500 credits only price-text-500', () => {
+  const s = scoreRun(summary([suspected('create-product', 'invalid-input', 500)]), CREATE_PAIR, catalog);
+  assert.deepEqual(s.bugs.map((b) => [b.id, b.outcome]), [['price-text-500', 'detected'], ['create-accepts-missing-name', 'missed']]);
+  assert.equal(s.detected, 1);
+  assert.deepEqual(s.falseAlarms, []);
+});
+
+await check('scorer: with both create-product bugs on, a 201 credits only create-accepts-missing-name', () => {
+  const s = scoreRun(summary([suspected('create-product', 'invalid-input', 201)]), CREATE_PAIR, catalog);
+  assert.deepEqual(s.bugs.map((b) => [b.id, b.outcome]), [['price-text-500', 'missed'], ['create-accepts-missing-name', 'detected']]);
+  assert.equal(s.detected, 1);
+});
+
+await check('scorer: both symptoms present credits both, each with its own finding', () => {
+  const s = scoreRun(summary([suspected('create-product', 'invalid-input', 500), suspected('create-product', 'invalid-input', 201)]), CREATE_PAIR, catalog);
+  assert.equal(s.detected, 2);
+  assert.deepEqual(s.bugs.map((b) => b.findings.length), [1, 1]);
+});
+
+await check('scorer: the right endpoint and type with the wrong symptom is a false alarm, not a detection', () => {
+  // Only price-text-500 (a 500) is on. A 201 for an invalid body on create-product is something else.
+  const s = scoreRun(summary([suspected('create-product', 'invalid-input', 201)]), ['price-text-500'], catalog);
+  assert.equal(s.detected, 0);
+  assert.equal(s.falseAlarms.length, 1);
+  assert.equal(s.falseAlarms[0].actualStatus, 201);
+});
+
+await check('catalog: every detectable bug has a symptom and no two share a signature', () => {
+  const signatures = catalog.bugs.filter((b) => b.detectableBy !== 'none-yet').map((b) => `${b.endpointId} [${b.detectableBy}] ${b.symptom}`);
+  assert.equal(new Set(signatures).size, signatures.length);
+  assert.ok(signatures.every((s) => /(5xx|2xx)$/.test(s)), signatures.join(' | '));
+});
+
+await check('catalog: a detectable bug without a symptom, or two with one signature, is refused', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'catalog-test-'));
+  try {
+    const bug = { id: 'a', description: 'x', endpointId: 'create-product', detectableBy: 'invalid-input' };
+    const noSymptom = join(dir, 'no-symptom.json');
+    writeFileSync(noSymptom, JSON.stringify({ default: [], bugs: [bug] }));
+    assert.throws(() => loadCatalog(noSymptom), /bug "a" needs "symptom"/);
+    const twins = join(dir, 'twins.json');
+    writeFileSync(twins, JSON.stringify({ default: [], bugs: [{ ...bug, symptom: '5xx' }, { ...bug, id: 'b', symptom: '5xx' }] }));
+    assert.throws(() => loadCatalog(twins), /bugs "a" and "b" share the signature create-product \[invalid-input\] 5xx/);
+    const ok = join(dir, 'ok.json');
+    writeFileSync(ok, JSON.stringify({ default: [], bugs: [{ ...bug, symptom: '5xx' }, { ...bug, id: 'b', symptom: '2xx' }] }));
+    assert.equal(loadCatalog(ok).bugs.length, 2);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+await check('findingKey tells a 500 from a 201 on the same endpoint and type', () => {
+  assert.notEqual(findingKey(summary([suspected('create-product', 'invalid-input', 500)])), findingKey(summary([suspected('create-product', 'invalid-input', 201)])));
+});
+
 await check('scorer: unknown bug id throws', () => {
   assert.throws(() => scoreRun(summary([]), ['no-such-bug'], catalog), /unknown bug id/);
 });
@@ -138,7 +196,7 @@ await check('findingKey ignores order and needs-review entries', () => {
   const a = summary([suspected('delete-product', 'auth', 204), suspected('create-product', 'invalid-input', 500), needsReview('x', 'happy')]);
   const b = summary([suspected('create-product', 'invalid-input', 500), suspected('delete-product', 'auth', 204)]);
   assert.equal(findingKey(a), findingKey(b));
-  assert.equal(findingKey(a), 'create-product:invalid-input|delete-product:auth');
+  assert.equal(findingKey(a), 'create-product:invalid-input:5xx|delete-product:auth:2xx');
 });
 
 // The planted bugs, against the real server
