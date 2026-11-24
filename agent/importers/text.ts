@@ -1,12 +1,14 @@
 import { z } from 'zod';
+import { loadLinkText, type LoadOptions } from '../atlassian';
 import { callClaudeOutsideBudget, claudeBudget } from '../claude';
 import { untrusted, withUntrustedRule } from '../untrusted';
 import { ConfigSchema, zodProblems } from '../config';
 import { buildInput, ImportError, isCredentialHeader, isCredentialParam, type ImportResult, type RawRequest, type Skipped } from './core';
 
-// Jira / Confluence text pasted by the user. Claude reads it and returns the input file shape, with
-// at most 2 calls per import (one retry with the zod errors). The calls are logged but do not count
-// against the run budget. Claude never sees a credential: values are masked before the text is sent.
+// Jira / Confluence text pasted by the user, or a Confluence page link: the page is read with the
+// Atlassian settings in .env (agent/atlassian.ts loadLinkText) and its text is used exactly as if it
+// had been pasted. Claude reads the text and returns the input file shape, with at most 2 calls per
+// import (one retry with the zod errors). The calls are logged but do not count against the run budget. Claude never sees a credential: values are masked before the text is sent.
 // Nothing Claude adds is trusted: a base URL, path or body field that is not in the text is dropped.
 
 const MAX_CALLS = 2;
@@ -147,8 +149,33 @@ export function fromAnswer(answer: TextAnswer, original: string, removed: string
   });
 }
 
-export async function importText(content: string): Promise<ImportResult> {
-  if (content.length > MAX_TEXT) {
+// One http(s) URL and nothing else: a page link, not text.
+export function isPageLink(content: string): boolean {
+  return /^https?:\/\/\S+$/i.test(content.trim());
+}
+
+export type TextImportOptions = {
+  atlassian?: LoadOptions; // tests: a fake fetch and env for the page read
+  ask?: (step: string, system: string, user: string) => Promise<string>; // tests: a stand-in for the model
+};
+
+export async function importText(pasted: string, opts: TextImportOptions = {}): Promise<ImportResult> {
+  let content = pasted;
+  const readWarnings: string[] = [];
+  if (isPageLink(pasted)) {
+    let page;
+    try {
+      page = await loadLinkText(pasted.trim(), opts.atlassian);
+    } catch (err) {
+      // AtlassianError messages are already redacted and safe to show.
+      throw new ImportError(`Could not read the Confluence page: ${String((err as Error)?.message ?? err)}`);
+    }
+    content = page.text;
+    readWarnings.push(`Read from ${page.label}.`, ...page.warnings);
+    if (content.length > MAX_TEXT) {
+      throw new ImportError(`${page.label} is too long (${content.length} characters of text, at most ${MAX_TEXT}). Copy only the part that describes the API and paste it.`);
+    }
+  } else if (content.length > MAX_TEXT) {
     throw new ImportError(`The text is too long (${content.length} characters, at most ${MAX_TEXT}). Paste only the part that describes the API.`);
   }
   const { text, removed } = maskCredentials(content);
@@ -160,13 +187,10 @@ export async function importText(content: string): Promise<ImportResult> {
       attempt === 1 ? prompt : `${prompt}\n\nYOUR PREVIOUS ANSWER WAS REJECTED. Fix these problems and answer again with JSON only:\n- ${errors.join('\n- ')}`;
     let reply: string;
     try {
-      reply = await callClaudeOutsideBudget(
-        attempt === 1 ? 'import-text' : 'import-text-retry',
-        'text',
-        SYSTEM,
-        user,
-        `import call ${attempt}/${maxCalls}, not counted in the run budget`,
-      );
+      const step = attempt === 1 ? 'import-text' : 'import-text-retry';
+      reply = opts.ask
+        ? await opts.ask(step, SYSTEM, user)
+        : await callClaudeOutsideBudget(step, 'text', SYSTEM, user, `import call ${attempt}/${maxCalls}, not counted in the run budget`);
     } catch (err) {
       throw new ImportError(`Claude call failed: ${String((err as Error)?.message ?? err).split('\n')[0]}`);
     }
@@ -183,7 +207,8 @@ export async function importText(content: string): Promise<ImportResult> {
       errors = zodProblems(parsed.error);
       continue;
     }
-    return fromAnswer(parsed.data, content, removed);
+    const result = fromAnswer(parsed.data, content, removed);
+    return readWarnings.length ? { ...result, warnings: [...readWarnings, ...result.warnings] } : result;
   }
   throw new ImportError(`Claude's answer was still invalid after ${maxCalls} call${maxCalls === 1 ? '' : 's'}: ${errors.join('; ')}`);
 }

@@ -4,10 +4,13 @@ import { TestCasesConfigSchema } from './config';
 import { parseAgentFlags } from './flags';
 import { testEnv } from './frameworks/test-env';
 import { previewSheet, SheetError } from './test-cases';
+import { ImportError } from './importers/core';
+import { importText } from './importers/text';
 
 // npm run test:atlassian: live test case links (agent/atlassian.ts) against mocked HTTP: Jira Cloud and
 // Data Center search, Xray Cloud and Data Center steps, Zephyr Scale Cloud and Data Center, Confluence
 // Cloud v2 and Data Center pages, rate limits, error messages, caps and the host guard. Offline.
+// Also the endpoint import from a Confluence page link (loadLinkText, importText), with a stand-in model.
 
 let failed = 0;
 let passed = 0;
@@ -445,6 +448,118 @@ await check('input testCases takes a file or a link, not both; --test-cases take
   assert.ok(!TestCasesConfigSchema.safeParse({}).success);
   const f = parseAgentFlags(['input/x.json', '--test-cases', 'https://acme.atlassian.net/issues/?jql=project%20%3D%20QA&x=1']);
   assert.equal(f.testCases, 'https://acme.atlassian.net/issues/?jql=project%20%3D%20QA&x=1');
+});
+
+// ---------- Endpoint import from a Confluence page link ----------
+
+// An API documentation page in Confluence storage format, the way the editor saves it: a section per
+// resource with a Method | Endpoint | Description | Auth table (every cell wrapped in <p>, a status
+// lozenge in the Auth column), a heading per endpoint, a field table and a JSON code block.
+const CODE = (json: string) => `<ac:structured-macro ac:name="code" ac:schema-version="1"><ac:parameter ac:name="language">json</ac:parameter><ac:parameter ac:name="theme">Midnight</ac:parameter><ac:plain-text-body><![CDATA[${json}]]></ac:plain-text-body></ac:structured-macro>`;
+const LOZENGE = (title: string) => `<ac:structured-macro ac:name="status" ac:schema-version="1"><ac:parameter ac:name="colour">Green</ac:parameter><ac:parameter ac:name="title">${title}</ac:parameter></ac:structured-macro>`;
+const API_PAGE = [
+  '<h1>Bookstore API</h1><p>Base URL: <code>https://bookstore.staging.acme.test</code></p>',
+  '<h2>Auth</h2><table><tbody><tr><th><p>Method</p></th><th><p>Endpoint</p></th><th><p>Description</p></th><th><p>Auth</p></th></tr>',
+  `<tr><td><p>POST</p></td><td><p>/auth/login</p></td><td><p>Returns a token</p></td><td><p>${LOZENGE('No')}</p></td></tr></tbody></table>`,
+  '<h2>Books</h2><table><tbody><tr><th><p>Method</p></th><th><p>Endpoint</p></th><th><p>Description</p></th><th><p>Auth</p></th></tr>',
+  '<tr><td><p>GET</p></td><td><p>/books</p></td><td><p>Lists books</p></td><td><p>No</p></td></tr>',
+  `<tr><td><p>POST</p></td><td><p>/books</p></td><td><p>Creates a book</p></td><td><p>${LOZENGE('Bearer token')}</p></td></tr></tbody></table>`,
+  '<h3>POST /books</h3><table><tbody><tr><th><p>Field</p></th><th><p>Type</p></th><th><p>Required</p></th></tr><tr><td><p>title</p></td><td><p>string</p></td><td><p>yes</p></td></tr><tr><td><p>isbn</p></td><td><p>string</p></td><td><p>yes</p></td></tr></tbody></table>',
+  '<p>Example request:</p>',
+  CODE('{\n  "title": "Dune",\n  "isbn": "9780441013593"\n}'),
+  '<p>Example header: Authorization: Bearer abcdefghijklmnop0123</p>',
+].join('');
+const PAGE_ANSWER = JSON.stringify({
+  name: 'bookstore',
+  baseUrl: 'https://bookstore.staging.acme.test',
+  auth: { header: 'Authorization', valueEnv: 'CUSTOM_API_AUTH' },
+  endpoints: [
+    { id: 'login', method: 'POST', path: '/auth/login', requiresAuth: false },
+    { id: 'list-books', method: 'GET', path: '/books', requiresAuth: false },
+    { id: 'create-book', method: 'POST', path: '/books', requiresAuth: true, body: { title: 'Dune', isbn: '9780441013593' } },
+  ],
+});
+// A stand-in model: records what it was sent and answers PAGE_ANSWER.
+function model(answer = PAGE_ANSWER) {
+  const sent: string[] = [];
+  return { sent, ask: async (_step: string, _system: string, user: string) => (sent.push(user), answer) };
+}
+const pageReply = (title: string) => ({ body: { id: '4242', title, body: { storage: { value: API_PAGE, representation: 'storage' } } } });
+
+await check('endpoint import, Cloud: a page link is read through /wiki/api/v2 and the page text (not the link) goes to the model', async () => {
+  const f = fake((u) => (u.pathname === '/wiki/api/v2/pages/4242' ? pageReply('Bookstore API') : undefined));
+  const m = model();
+  const link = 'https://acme.atlassian.net/wiki/spaces/API/pages/4242/Bookstore+API';
+  const r = await importText(link, { atlassian: { env: CLOUD, fetch: f.fn }, ask: m.ask });
+  assert.equal(f.calls.length, 1);
+  assert.equal(new URL(f.calls[0].url).searchParams.get('body-format'), 'storage');
+  assert.equal(f.calls[0].auth, BASIC);
+  assert.equal(m.sent.length, 1);
+  const sent = m.sent[0];
+  assert.ok(!sent.includes(link), 'the link itself was sent to the model');
+  // Each table row on one line, the lozenge title kept, its colour dropped.
+  assert.match(sent, /POST \| \/auth\/login \| Returns a token \| No/);
+  assert.match(sent, /GET \| \/books \| Lists books \| No/);
+  assert.match(sent, /POST \| \/books \| Creates a book \| Bearer token/);
+  assert.ok(!/Green|Midnight/.test(sent), 'macro display settings reached the model');
+  // The JSON example on its own lines, not glued to "json" or the text around it.
+  assert.match(sent, /\n\{\n\s*"title": "Dune",\n\s*"isbn": "9780441013593"\n\}\n/);
+  assert.ok(!/json\s*\{/.test(sent), 'the code block language is glued to the JSON');
+  // Credentials on the page are masked before the model sees them.
+  assert.ok(!sent.includes('abcdefghijklmnop0123'), 'a token on the page reached the model');
+  assert.deepEqual(r.input.endpoints.map((e) => `${e.method} ${e.path} auth=${e.requiresAuth}`), ['POST /auth/login auth=false', 'GET /books auth=false', 'POST /books auth=true']);
+  assert.equal(r.input.baseUrl, 'https://bookstore.staging.acme.test');
+  assert.deepEqual(r.input.endpoints[2].body, { title: 'Dune', isbn: '9780441013593' });
+  assert.equal(r.warnings[0], 'Read from Confluence page "Bookstore API".');
+  assert.ok(!JSON.stringify(r).includes(TOKEN) && !JSON.stringify(r).includes(BASIC.split(' ')[1]));
+});
+
+await check('endpoint import, Data Center: /rest/api/content by page id and by space and title', async () => {
+  const f = fake((u) => {
+    if (u.host !== 'wiki.acme.test') return undefined;
+    if (u.pathname === '/rest/api/content/4242') {
+      assert.equal(u.searchParams.get('expand'), 'body.storage');
+      return pageReply('Bookstore API');
+    }
+    if (u.pathname === '/rest/api/content' && u.searchParams.get('spaceKey') === 'API' && u.searchParams.get('title') === 'Bookstore API') return { body: { results: [pageReply('Bookstore API').body] } };
+    return undefined;
+  });
+  for (const link of ['https://wiki.acme.test/pages/viewpage.action?pageId=4242', 'https://wiki.acme.test/display/API/Bookstore+API']) {
+    const m = model();
+    const r = await importText(link, { atlassian: { env: DC, fetch: f.fn }, ask: m.ask });
+    assert.equal(r.input.endpoints.length, 3, link);
+    assert.match(m.sent[0], /POST \| \/books \| Creates a book/);
+  }
+  assert.ok(f.calls.every((c) => c.auth === `Bearer ${TOKEN}`));
+});
+
+await check('endpoint import: a Jira link, another host, no Atlassian settings and a 404 give clear errors without the token; pasted text is unchanged', async () => {
+  const none = fake(() => undefined);
+  const m = model();
+  const fails = async (link: string, env: Record<string, string>, re: RegExp, fetchFn = none.fn) =>
+    assert.rejects(importText(link, { atlassian: { env, fetch: fetchFn, sleep: noSleep }, ask: m.ask }), (err: Error) => {
+      assert.ok(err instanceof ImportError, `not an ImportError: ${err}`);
+      assert.match(err.message, re);
+      assert.ok(!err.message.includes(TOKEN) && !err.message.includes(BASIC.split(' ')[1]), 'token in the message');
+      return true;
+    });
+  await fails('https://acme.atlassian.net/browse/QA-1', CLOUD, /^Could not read the Confluence page: endpoint import reads Confluence pages only \(this link is Jira issue QA-1\)/);
+  await fails('https://evil.test/wiki/spaces/API/pages/1', CLOUD, /the link is on evil\.test, but the Atlassian site in \.env is acme\.atlassian\.net/);
+  await fails('https://acme.atlassian.net/wiki/spaces/API/pages/1', {}, /Jira and Confluence are not set up: add ATLASSIAN_BASE_URL/);
+  const echo = fake((_u, c) => ({ status: 404, body: { message: `nothing for ${c.auth}` } }));
+  await fails('https://acme.atlassian.net/wiki/spaces/API/pages/1', CLOUD, /Confluence said 404 for page 1/, echo.fn);
+  const empty = fake(() => ({ body: { title: 'Empty', body: { storage: { value: '<p> </p>' } } } }));
+  await fails('https://acme.atlassian.net/wiki/spaces/API/pages/1', CLOUD, /Confluence page "Empty" is empty/, empty.fn);
+  assert.equal(m.sent.length, 0, 'the model was called for a page that could not be read');
+  assert.equal(none.calls.length, 0, 'a request was sent for a refused link');
+  // Text with a link inside it is text: no page read, sent as pasted.
+  const t = model();
+  const pasted = 'Bookstore API, see https://acme.atlassian.net/wiki/x/1\nPOST /auth/login returns a token. GET /books lists books. POST /books creates a book with title and isbn: Dune, 9780441013593. Base URL https://bookstore.staging.acme.test';
+  const r = await importText(pasted, { atlassian: { env: CLOUD, fetch: none.fn }, ask: t.ask });
+  assert.equal(none.calls.length, 0);
+  assert.ok(t.sent[0].includes('POST /auth/login returns a token'));
+  assert.equal(r.input.endpoints.length, 3);
+  assert.ok(!r.warnings.some((w) => /^Read from/.test(w)));
 });
 
 await check('the generated tests never see the Atlassian, Xray or Zephyr tokens', () => {

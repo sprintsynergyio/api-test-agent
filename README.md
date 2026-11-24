@@ -150,7 +150,7 @@ npm run -s import postman < collection.json
 | `openapi` | OpenAPI 3.x or Swagger 2.0, JSON or YAML. The body comes from the example, else from the schema's required fields |
 | `curl` | One or more curl commands pasted together |
 | `har` | A browser network capture (Save all as HAR). Requests are grouped by method and path, ids become `{id}` |
-| `text` | A Jira ticket or Confluence page. Claude extracts the endpoints (at most 2 calls, not counted in the run budget) |
+| `text` | A Jira ticket or Confluence page, pasted as text, or a Confluence page link (read with the Jira and Confluence settings in `.env`, see Test cases from links). Claude extracts the endpoints (at most 2 calls, not counted in the run budget) |
 
 - **Nothing is dropped silently.** Every request becomes an endpoint or a skipped entry with a reason: another origin than the base URL (the most common origin), an unresolved variable in the URL (`{{baseUrl}}` with no value, `$VAR`), a non-JSON body, or a method other than GET, POST, PUT, PATCH, DELETE. In a HAR file, static assets, analytics and other origins are counted in one "filtered: not an API call" entry. From text, a base URL, path or body field that is not in the text is dropped.
 - **Auth.** Every credential is removed: Authorization, Cookie, any header whose name contains auth, token, key, secret or session, Postman auth blocks, curl `-u` and `-b`, credential query parameters, and `user:password@` in URLs. Those endpoints get `requiresAuth: true`, and the input gets `auth: { header, valueEnv: "CUSTOM_API_AUTH" }`. Enter the value in the auth field before running. Credential values never appear in the output, warnings or errors.
@@ -158,6 +158,7 @@ npm run -s import postman < collection.json
 - **Grouped by route.** Requests to the same route with different values in the path become one endpoint: `/products/42` and `/products/7` become `/products/{productId}`, `/asset/acme/badge` and `/asset/globex/badge` become `/asset/{asset}/badge` (only a middle segment, never the first or last word). The first recorded value goes to `pathParams` (for example `{ "productId": "42" }`) so the probe can call it without a setup step, and the warnings say what was grouped. Sheet cases can still use their own ids. Paths with no value segment stay separate. Code that calls `buildInput` can pass `groupRoutes: false` to keep every literal path.
 - A missing or relative base URL leaves `baseUrl` empty, and Generate stays disabled until you fill it in.
 - **Big imports.** Every imported endpoint is selected. Each costs about 2 model calls of the 60-call budget; above 50 endpoints the preview shows the estimate. A run that stops at the budget is continued from the terminal with `--resume` (see Run it).
+- **Confluence page link.** With source `text`, a single Confluence page link (and nothing else in the box) is read through the Confluence REST API with the same settings, host check and token redaction as test case links, and the page's text is imported as if it had been pasted: each table row stays on one line, code blocks keep their JSON. A Jira or Zephyr Scale link is refused with a message; for those, paste the text. The first warning names the page that was read.
 - Acceptance criteria in a ticket are not turned into tests yet.
 
 ## Test case sheets

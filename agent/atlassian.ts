@@ -370,6 +370,27 @@ export function htmlToText(html: string): string {
     .trim();
 }
 
+// A whole Confluence page (storage format) to text for the endpoint import. On top of htmlToText:
+// - a table row stays on one line ("POST | /books | Creates a book | Yes"): the <p> and <br> the
+//   editor puts inside every cell become spaces;
+// - a code block's body gets its own lines, so a JSON example is not glued to the heading or text
+//   around it;
+// - macro display settings (a code block's language or theme, a status lozenge's colour) are dropped,
+//   so "json" is not glued to the JSON. Every other macro parameter (a status lozenge's title such as
+//   "Required") is kept as text.
+// The test case import keeps using htmlToText and parseHtmlTables unchanged.
+const MACRO_DISPLAY = /<ac:parameter\b[^>]*ac:name="(?:language|theme|linenumbers|firstline|collapse|colou?r|subtle|breakoutMode|breakoutWidth)"[^>]*>[\s\S]*?<\/ac:parameter>/gi;
+export function storageToText(storage: string): string {
+  return htmlToText(
+    storage
+      .replace(MACRO_DISPLAY, '')
+      .replace(/(<t[dh]\b[^>]*>)([\s\S]*?)(<\/t[dh]>)/gi, (_m, open: string, inner: string, close: string) => `${open}${inner.replace(/<\/?p\b[^>]*>|<br\s*\/?>/gi, ' ')}${close}`)
+      .replace(/<\/ac:parameter>/gi, ' ')
+      .replace(/<ac:plain-text-body\b[^>]*>/gi, '\n')
+      .replace(/<\/ac:plain-text-body>/gi, '\n</p>'),
+  );
+}
+
 type Adf = { type?: string; text?: string; content?: Adf[]; attrs?: Record<string, unknown> };
 // Atlassian Document Format (Jira Cloud descriptions and rich text fields) to plain text.
 export function adfToText(node: unknown): string {
@@ -754,7 +775,9 @@ export function parseHtmlTables(html: string): string[][][] {
   return top.map((i) => parsed[i]);
 }
 
-async function loadConfluence(ctx: Ctx, target: Extract<LinkTarget, { kind: 'confluence' }>, link: string): Promise<ParsedSheet> {
+// One Confluence page's title and storage-format body: Cloud v2 or Data Center REST, by page id or by
+// space and title. Shared by the test case import (loadConfluence) and the endpoint import (loadLinkText).
+async function fetchConfluencePage(ctx: Ctx, target: Extract<LinkTarget, { kind: 'confluence' }>): Promise<{ title: string; storage: string }> {
   const cb = ctx.s.confluenceBase;
   const cloud = ctx.s.deployment === 'cloud';
   let title = '';
@@ -785,6 +808,11 @@ async function loadConfluence(ctx: Ctx, target: Extract<LinkTarget, { kind: 'con
     title = fieldText(page?.title);
     storage = fieldText(((page?.body as Record<string, unknown>)?.storage as Record<string, unknown>)?.value);
   }
+  return { title, storage };
+}
+
+async function loadConfluence(ctx: Ctx, target: Extract<LinkTarget, { kind: 'confluence' }>, link: string): Promise<ParsedSheet> {
+  const { title, storage } = await fetchConfluencePage(ctx, target);
   const label = title ? `Confluence page "${title}"` : target.label;
   const tables = parseHtmlTables(storage);
   if (!tables.length) throw new AtlassianError(`${label} has no table. Put the test cases in a table with a header row (ID, Title, Steps / Request, Expected Result)`);
@@ -848,6 +876,27 @@ export async function loadLinkCases(text: string, opts: LoadOptions = {}): Promi
     const msg = redactSecrets((err as Error).message ?? String(err), ctx.s.secrets);
     if (err instanceof SheetError) throw new AtlassianError(msg);
     throw new AtlassianError(`could not read the test cases: ${msg.slice(0, 300)}`);
+  }
+}
+
+// A Confluence page link to the page's text, for the endpoint import (agent/importers/text.ts). Same
+// settings, host guard, caps and redaction as loadLinkCases; a Jira or Zephyr Scale link is refused.
+// Throws AtlassianError with a message safe to show.
+export type LinkText = { label: string; text: string; warnings: string[] };
+export async function loadLinkText(link: string, opts: LoadOptions = {}): Promise<LinkText> {
+  const ctx = ctxFor(opts);
+  try {
+    const target = parseLink(link, ctx.s);
+    if (target.kind !== 'confluence') throw new AtlassianError(`endpoint import reads Confluence pages only (this link is ${target.label}). Paste the link of the Confluence page that documents the API, or paste the text itself`);
+    const { title, storage } = await fetchConfluencePage(ctx, target);
+    const label = title ? `Confluence page "${title}"` : target.label;
+    const body = storageToText(storage);
+    if (!body) throw new AtlassianError(`${label} is empty`);
+    return { label, text: title ? `${title}\n\n${body}` : body, warnings: [...ctx.warnings] };
+  } catch (err) {
+    const msg = redactSecrets((err as Error).message ?? String(err), ctx.s.secrets);
+    if (err instanceof SheetError) throw new AtlassianError(msg);
+    throw new AtlassianError(`could not read the page: ${msg.slice(0, 300)}`);
   }
 }
 
