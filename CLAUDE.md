@@ -243,7 +243,7 @@ Output goes to `eval-results/<timestamp>/` (gitignored; not under `out/`, which 
 | `postman` | Postman collection v2.0 / v2.1 |
 | `curl` | one or more curl commands |
 | `har` | browser network capture (static assets, analytics and other origins filtered out) |
-| `text` | Jira / Confluence text; Claude extracts it, at most 2 calls, outside the run budget |
+| `text` | Jira / Confluence text, or one Confluence page link (`loadLinkText` in `agent/atlassian.ts` reads the page with the `ATLASSIAN_*` settings, `storageToText` keeps table rows on one line and code blocks on their own lines); Claude extracts it, at most 2 calls, outside the run budget |
 
 - Command: `npm run -s import <type> < file`. It reads stdin and prints one JSON object `{ input, skipped, warnings }` on stdout. It writes no file; to make an input file: `npm run -s import openapi < spec.yaml | jq '.input' > input/<name>.json` (keep `-s`: without it npm's banner breaks the JSON). Nothing importable: exit 1, reason on stderr.
 - The UI uses the same CLI through `POST /api/import` (Import tab, Source). See `ui/CONTRACT.md` section 6. The page's other routes for inputs, run history and evidence are section 11.

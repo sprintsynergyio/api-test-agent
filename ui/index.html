@@ -2343,7 +2343,7 @@
     openapi: { hint: "Paste an OpenAPI 3.x or Swagger 2.0 document (JSON or YAML), or upload it.", accept: ".json,.yaml,.yml", placeholder: "openapi: 3.0.3\ninfo: ...\nservers: ...\npaths: ..." },
     curl: { hint: "Paste one or more curl commands. Line continuations are fine.", accept: ".txt,.sh", placeholder: "curl -X POST https://api.example.com/orders -H 'Content-Type: application/json' -d '{\"sku\": \"A1\"}'" },
     har: { hint: "Upload a HAR file from the browser network tab (Save all as HAR). Only API calls are kept.", accept: ".har,.json", placeholder: "Paste HAR JSON, or upload the .har file" },
-    text: { hint: "Paste a Jira ticket or Confluence page that describes the endpoints. The model reads it (up to 2 calls, not counted in the run budget) and keeps only what the text states.", accept: "", placeholder: "GET /orders lists orders. POST /orders creates one with sku and quantity (needs a token)..." },
+    text: { hint: "Paste a Confluence page link, or the text of a Jira ticket or Confluence page that describes the endpoints. A link is read with your Jira and Confluence settings. The model reads the text (up to 2 calls, not counted in the run budget) and keeps only what it states.", accept: "", placeholder: "https://your-team.atlassian.net/wiki/spaces/API/pages/12345/API+reference\nor: GET /orders lists orders. POST /orders creates one with sku and quantity (needs a token)..." },
   };
   function formatSize(bytes) { return bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`; }
   function impMessage(kind, text) {

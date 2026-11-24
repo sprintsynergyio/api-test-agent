@@ -173,10 +173,14 @@ Responses:
   `input` has the input file shape (section 4), except that `baseUrl` may be "" when the source has
   none; the user must fill it in before running. `name` and `auth` are optional. `auth.valueEnv` is
   always "CUSTOM_API_AUTH". No credential value ever appears in the response.
+  For `text`, `content` may be a single Confluence page link instead of text: the importer reads the
+  page with the `ATLASSIAN_*` settings (section on test cases from links) and its first warning is
+  `Read from Confluence page "<title>".` A link it cannot read is a 422 whose `error` starts with
+  `Could not read the Confluence page: `.
 - 400 `{ "error" }`: unknown type, or content missing or not a string
 - 413 `{ "error" }`: content over 5 MB
 - 422 `{ "error" }`: the importer failed (nothing importable, not valid JSON or YAML, Claude call
-  failed); `error` is the importer's message
+  failed, a Confluence page link that could not be read); `error` is the importer's message
 - 504 `{ "error" }`: the import timed out (7 minutes)
 
 The Custom API tab shows the result as a preview; "Use these endpoints" puts the checked endpoints
