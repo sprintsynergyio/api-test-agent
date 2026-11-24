@@ -43,12 +43,27 @@ export function buildPrompt(fw: FrameworkAdapter, endpoint: Endpoint, plan: Plan
   const clientCall = (ctxClient: string) => (cl ? `new ${cl.className}(${ctxClient}).${cl.method}(...)` : '');
   const fixed = Object.keys(endpoint.pathParams ?? {}).filter((p) => !steps.some((s) => s.param === p));
   const fillers = [...steps.map((s) => `${s.endpointId} fills {${s.param}}`), ...fixed.map((p) => `{${p}} has the fixed value ${JSON.stringify(endpoint.pathParams![p])}`)];
+  // bodyFrom needs every setup value by name, so such an endpoint always uses ctx.setup().
+  const bodyFrom = Object.entries(endpoint.bodyFrom ?? {});
   const setupLine =
-    steps.length > 1 || params.length > 1 || fixed.length
+    !params.length && steps.length
+      ? `- This endpoint has setup for its request body (${steps.map((s) => `${s.endpointId} gives {${s.param}}`).join('; ')}). Each test calls \`const p = await ctx.setup();\` first and passes p to ctx.body (below). Do not call ctx.createResource for these values.`
+      : steps.length > 1 || params.length > 1 || fixed.length || bodyFrom.length
       ? `- This endpoint's path has ${params.length} placeholder${params.length === 1 ? '' : 's'} (${params.map((p) => `{${p}}`).join(', ')}) filled by setup (${fillers.join('; ')}). Each test that needs an existing resource calls \`const p = await ctx.setup();\` and ${cl ? `passes ${params.map((p) => `\`p.${p}\``).join(', ')} as the method's path arguments, in that order` : `builds the path as \`${endpoint.path.replace(/\{([^}]+)\}/g, '${p.$1}')}\``}. Do not call ctx.createResource for these placeholders.`
       : steps.length === 1
         ? `- This endpoint has setup. Each test that needs an existing resource gets one with \`const id = await ctx.createResource('${steps[0].endpointId}');\` (returns the id as a string) and ${cl ? "passes it as the method's path argument" : 'puts it in the path'}.`
         : '- This endpoint has no setup. Do not call ctx.createResource unless a test needs a resource.';
+  const bodyArg = bodyFrom.length ? 'p' : '';
+  const uniqueFields = endpoint.unique ?? [];
+  const bodyLine =
+    !bodyFrom.length && !uniqueFields.length
+      ? ''
+      : `- Build the request body with \`ctx.body(${bodyArg})\`${bodyFrom.length ? ' (p is what ctx.setup() returned)' : ''}, never with a literal copy of the sample body: it ${[
+          bodyFrom.length ? `fills ${bodyFrom.map(([f, n]) => `${f} from {${n}}`).join(', ')} with what setup created` : '',
+          uniqueFields.length ? `gives ${uniqueFields.join(', ')} a new value on every call, so creating twice is not refused as a duplicate` : '',
+        ]
+          .filter(Boolean)
+          .join(' and ')}. ${cl ? "Pass it as the method's body argument instead of the data module's sample body function. " : ''}Every test that sends a body uses it, the [auth] and [authz] tests too. An [invalid-input] test changes one field of it, for example \`{ ...ctx.body(${bodyArg}), ${Object.keys(endpoint.body ?? {})[0] ?? 'field'}: null }\`, or sends \`{}\`. Assert a value you sent by reading it from the body you built, not from the sample.`;
   const queryLine = !shown.query
     ? ''
     : cl
@@ -135,7 +150,7 @@ ${read(templateFile)}
 
 RULES:
 - The file lives in generated/, so import exactly: ${importLines.join(' ')}
-${setupLine}${queryLine ? `\n${queryLine}` : ''}${headersLine ? `\n${headersLine}` : ''}
+${setupLine}${bodyLine ? `\n${bodyLine}` : ''}${queryLine ? `\n${queryLine}` : ''}${headersLine ? `\n${headersLine}` : ''}
 ${requestRules.join('\n')}
 - Never expect a 5xx, except a plan case with "accepted5xx": true: the team documented that 5xx, so that one test asserts exactly expect(response.status()).toBe(<its expectedStatus>) and nothing else about the status.
 - Every [happy] and [schema] test asserts exactly its plan case's "expectedStatus" (the team's sheet decides it; it may differ from the probe status, and then the probe does not show that response's body: assert only what the case's expected result says).

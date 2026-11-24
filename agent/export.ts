@@ -35,7 +35,7 @@ function pinnedVersions(): Record<string, string> {
 function httpSource(): string {
   const src = readFileSync('agent/http.ts', 'utf8');
   const importLine = "import type { Config } from './config';";
-  const modelLine = "import { isBinaryContentType, joinUrl, parseTestTitle, pathParams, queryString, resolvePath, setupSteps, testTypeOf } from './model';";
+  const modelLine = "import { getAt, isBinaryContentType, joinUrl, newUniqueToken, parseTestTitle, pathParams, queryString, requestBody, resolvePath, setupSteps, testTypeOf } from './model';";
   if (!src.includes(modelLine)) throw new Error('framework export: agent/http.ts no longer imports model helpers as expected');
   if (!src.includes(importLine)) throw new Error('framework export: agent/http.ts no longer imports Config as expected');
   if (!src.includes("} from './auth';")) throw new Error('framework export: agent/http.ts no longer imports ./auth as expected');
@@ -61,11 +61,13 @@ function httpSource(): string {
     query?: Query;
     headers?: Record<string, string>;
     setup?: Setup | Setup[];
+    bodyFrom?: Record<string, string>;
+    unique?: string[];
     pathParams?: Record<string, string>;
   }[];
 };`,
     )
-    .replace(modelLine, "import { isBinaryContentType, joinUrl, parseTestTitle, pathParams, queryString, resolvePath, setupSteps, testTypeOf, type Profile, type Query, type Selection, type Setup } from './model';")
+    .replace(modelLine, "import { getAt, isBinaryContentType, joinUrl, newUniqueToken, parseTestTitle, pathParams, queryString, requestBody, resolvePath, setupSteps, testTypeOf, type Profile, type Query, type Selection, type Setup } from './model';")
     .replace("  type AuthRequest,\n} from './auth';", "  type AuthConfig,\n  type AuthRequest,\n} from './auth';")
     .replace("import { redactHeaders, redactText, redactValue, type RedactionCounter } from './redact';", "import { redactHeaders, redactText, redactValue, type RedactionConfig, type RedactionCounter } from './redact';")
     .replace(/^\/\/ Shared HTTP logic for the ctx fixture and the agent\./m, '// HTTP clients and createResource for the ctx fixture.');
@@ -128,7 +130,7 @@ import {
   type Config,
 } from '../../src/http';
 import { pickAuthEnv } from '../../src/auth';
-import { applyProfile } from '../../src/model';
+import { applyProfile, newUniqueToken, requestBody } from '../../src/model';
 import { endpointAllowed, READ_ONLY_SKIP } from '../../src/safety';
 import { existsSync } from 'node:fs';
 import { loadTestData, requiredDataVerdict, type TestData } from '../../src/test-data';
@@ -145,6 +147,8 @@ export type Ctx = {
   createResource: (endpointId: string) => Promise<string>;
   // Runs this spec's endpoint setup steps and returns every path placeholder value.
   setup: () => Promise<Record<string, string>>;
+  // This spec's sample request body: bodyFrom fields filled from ctx.setup()'s values, unique fields new.
+  body: (values?: Record<string, string>) => Record<string, unknown>;
   // Skips the test with DATA_NOT_ON_ENV when data it needs is not on this environment (README).
   requireData: (names: string[]) => Promise<void>;
 };
@@ -193,6 +197,10 @@ export const test = base.extend<{ ctx: Ctx }>({
       setup: async () => {
         if (!endpoint) throw new Error('ctx.setup: no endpoint in config/api.json is named after this spec file');
         return runSetup(config, recordedClients, endpoint);
+      },
+      body: (values = {}) => {
+        if (!endpoint) throw new Error('ctx.body: no endpoint in config/api.json is named after this spec file');
+        return requestBody(endpoint, values, newUniqueToken()) ?? {};
       },
       requireData: async (names) => {
         if (testData === undefined) {

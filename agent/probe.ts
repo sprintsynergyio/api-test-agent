@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { pickAuthEnv } from './auth';
 import { loadConfig, selectionLine, takeSelectFlag, type Config, type Endpoint } from './config';
 import { cleanupLine, cleanupResources, createClients, disposeClients, resolvePath, runSetup, type CleanupTotals, type Clients } from './http';
-import { fileSignature, isBinaryContentType, queryString, setupSteps } from './model';
+import { fileSignature, isBinaryContentType, newUniqueToken, queryString, requestBody, setupSteps } from './model';
 import { describeRedaction, redactHeaders, redactText, redactValue, type RedactionCounter } from './redact';
 import { CASE_PROBE_CAP } from './probe-cap';
 import { endpointAllowed } from './safety';
@@ -74,21 +74,31 @@ async function probeEndpoint(config: Config, clients: Clients, endpoint: Endpoin
     usable: false,
   };
 
+  let values: Record<string, string> = {};
   if (endpoint.setup || endpoint.pathParams) {
     try {
-      const params = await runSetup(config, clients, endpoint);
-      result.path = resolvePath(endpoint.path, params);
+      values = await runSetup(config, clients, endpoint);
+      result.path = resolvePath(endpoint.path, values);
     } catch (err) {
       const via = setupSteps(endpoint).map((s) => s.endpointId).join(', ');
       result.error = `setup via ${via} failed: ${firstLine(err)}`;
       return result;
     }
   }
+  // The body actually sent: bodyFrom filled from setup, unique fields made new (agent/model.ts).
+  let data: Record<string, unknown> | undefined;
+  try {
+    data = requestBody(endpoint, values, newUniqueToken());
+  } catch (err) {
+    result.error = firstLine(err);
+    return result;
+  }
+  if (endpoint.bodyFrom || endpoint.unique) result.requestBody = data ?? null;
 
   const client = endpoint.requiresAuth ? clients.api : clients.noAuthApi;
   const started = Date.now();
   try {
-    const response = await client.fetch(result.path, { method: endpoint.method, data: endpoint.body, params: endpoint.query, headers: endpoint.headers });
+    const response = await client.fetch(result.path, { method: endpoint.method, data, params: endpoint.query, headers: endpoint.headers });
     const headers = response.headers();
     result.contentType = headers['content-type'] ?? null;
     const shownHeaders = Object.fromEntries(PROBE_HEADERS.filter((h) => headers[h] !== undefined).map((h) => [h, headers[h]]));

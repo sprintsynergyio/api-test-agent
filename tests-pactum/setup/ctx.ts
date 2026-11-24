@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import pactum from 'pactum';
 import { assessSafety, endpointAllowed, ProductionRefused, READ_METHODS, ReadOnlyBlocked, refusalMessage, type Safety } from '../../agent/safety';
-import { applyProfile, isBinaryContentType, joinUrl, pathParams, queryString, resolvePath, setupSteps, type Profile, type Query, type Selection, type Setup } from '../../agent/model';
+import { applyProfile, getAt, isBinaryContentType, joinUrl, newUniqueToken, pathParams, queryString, requestBody, resolvePath, setupSteps, type Profile, type Query, type Selection, type Setup } from '../../agent/model';
 import {
   authRoles,
   createAuthenticator,
@@ -152,6 +152,10 @@ export type Ctx = {
   // Runs this spec's endpoint setup steps in order and returns every path placeholder value, for
   // example { id: '4', reviewId: '7' } for /products/{id}/reviews/{reviewId}.
   setup: () => Promise<Record<string, string>>;
+  // This spec's endpoint sample body, built the way the agent sends it: body fields named in bodyFrom
+  // filled from the values ctx.setup() returned, fields named in unique made new on every call. Use it
+  // for the request body when the endpoint has bodyFrom or unique.
+  body: (values?: Record<string, string>) => Record<string, unknown>;
 };
 
 const counter = { sent: 0 };
@@ -315,7 +319,7 @@ function createdIdFrom(body: unknown, idField?: string): string | undefined {
   if (!body || typeof body !== 'object') return undefined;
   const obj = body as Record<string, unknown>;
   const pick = (o: Record<string, unknown>, key: string) => {
-    const v = o[key];
+    const v = getAt(o, key);
     return (typeof v === 'string' && v.length > 0) || typeof v === 'number' ? String(v) : undefined;
   };
   const data = obj.data && typeof obj.data === 'object' ? (obj.data as Record<string, unknown>) : undefined;
@@ -385,15 +389,18 @@ async function createResource(endpointId: string, idField?: string, params: Reco
   const field = idField ?? declaredIdField(endpointId);
   if (!field) throw new Error(`createResource: no endpoint uses "${endpointId}" as setup, so idField is unknown`);
   const own = await runSetup(endpoint, params);
-  const response = await send(endpoint.method, resolvePath(endpoint.path, own), endpoint.body, endpoint.requiresAuth ? DEFAULT_ROLE_OR_NULL : null, { params: endpoint.query, headers: endpoint.headers }, { track: false });
+  const data = requestBody(endpoint, own, newUniqueToken());
+  const response = await send(endpoint.method, resolvePath(endpoint.path, own), data, endpoint.requiresAuth ? DEFAULT_ROLE_OR_NULL : null, { params: endpoint.query, headers: endpoint.headers }, { track: false });
   const text = await response.text();
   if (!response.ok()) throw new Error(`createResource(${endpointId}) failed: status ${response.status()}, body: ${scrubSecrets(text, secrets())}`);
   let id: unknown;
   try {
-    id = (JSON.parse(text) as Record<string, unknown>)?.[field];
+    // idField may be a dot path ("user.id").
+    id = getAt(JSON.parse(text), field);
   } catch {
     id = undefined;
   }
+  if (typeof id === 'object') id = undefined;
   if (id === undefined || id === null || id === '') {
     throw new Error(`createResource(${endpointId}) returned no "${field}": status ${response.status()}, body: ${scrubSecrets(text, secrets())}`);
   }
@@ -490,7 +497,13 @@ async function setup(): Promise<Record<string, string>> {
   return runSetup(endpoint);
 }
 
-export const ctx: Ctx = { baseUrl: config.baseUrl, api, noAuthApi, as, createResource: (endpointId) => createResource(endpointId), setup };
+function body(values: Record<string, string> = {}): Record<string, unknown> {
+  const endpoint = current ? config.endpoints.find((e) => `${e.id}.spec.ts` === current!.file) : undefined;
+  if (!endpoint) throw new Error('ctx.body: no endpoint in the input is named after this spec file');
+  return requestBody(endpoint, values, newUniqueToken()) ?? {};
+}
+
+export const ctx: Ctx = { baseUrl: config.baseUrl, api, noAuthApi, as, createResource: (endpointId) => createResource(endpointId), setup, body };
 
 // Records the real status of the request under test. Call it before the first expect, like the
 // actual-status annotation in the Playwright tests. The finding rules only trust tests that record it.

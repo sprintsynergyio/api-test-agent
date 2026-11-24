@@ -14,7 +14,7 @@ import {
   type AuthRequest,
 } from './auth';
 import type { Config } from './config';
-import { isBinaryContentType, joinUrl, parseTestTitle, pathParams, queryString, resolvePath, setupSteps, testTypeOf } from './model';
+import { getAt, isBinaryContentType, joinUrl, newUniqueToken, parseTestTitle, pathParams, queryString, requestBody, resolvePath, setupSteps, testTypeOf } from './model';
 import { redactHeaders, redactText, redactValue, type RedactionCounter } from './redact';
 import { assessSafety, ProductionRefused, READ_METHODS, ReadOnlyBlocked, refusalMessage, type Safety } from './safety';
 
@@ -195,7 +195,7 @@ export function createdIdFrom(body: unknown, idField?: string): string | undefin
   if (!body || typeof body !== 'object') return undefined;
   const obj = body as Record<string, unknown>;
   const pick = (o: Record<string, unknown>, key: string) => {
-    const v = o[key];
+    const v = getAt(o, key);
     return (typeof v === 'string' && v.length > 0) || typeof v === 'number' ? String(v) : undefined;
   };
   if (idField) {
@@ -480,7 +480,9 @@ export async function createResource(
   const own = await runSetup(config, clients, endpoint, params);
   const path = resolvePath(endpoint.path, own);
   const client = endpoint.requiresAuth ? clients.api : clients.noAuthApi;
-  const options: RequestOptions = { method: endpoint.method, data: endpoint.body, params: endpoint.query, headers: endpoint.headers, skipCreatedTracking: true };
+  // The sample body with bodyFrom filled from the setup values and unique fields made new.
+  const data = requestBody(endpoint, own, newUniqueToken());
+  const options: RequestOptions = { method: endpoint.method, data, params: endpoint.query, headers: endpoint.headers, skipCreatedTracking: true };
   const response = await client.fetch(path, options as Parameters<APIRequestContext['fetch']>[1]);
   const text = await response.text();
   if (!response.ok()) {
@@ -488,10 +490,12 @@ export async function createResource(
   }
   let id: unknown;
   try {
-    id = JSON.parse(text)?.[field];
+    // idField may be a dot path ("user.id" when the API answers { user: { id }, token }).
+    id = getAt(JSON.parse(text), field);
   } catch {
     id = undefined;
   }
+  if (typeof id === 'object') id = undefined;
   if (id === undefined || id === null || id === '') {
     throw new Error(`createResource(${endpointId}) returned no "${field}": status ${response.status()}, body: ${scrubSecrets(text, clients.secrets())}`);
   }

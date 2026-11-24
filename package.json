@@ -98,6 +98,7 @@
     "test:checkpoint": "tsx agent/checkpoint.test.ts",
     "test:test-cases": "tsx agent/test-cases.test.ts",
     "test:atlassian": "tsx agent/atlassian.test.ts",
+    "test:setup-chains": "tsx agent/setup-chains.test.ts",
     "test:ui-atlassian": "node ui/atlassian.test.mjs",
     "mock:atlassian": "node scripts/mock-atlassian.mjs",
     "test:e2e": "node scripts/e2e-fake.mjs"

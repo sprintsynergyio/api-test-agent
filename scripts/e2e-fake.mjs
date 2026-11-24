@@ -50,7 +50,23 @@ const INPUTS = [
   // with the planted bugs (below): only the sheet's wrong 201 fails.
   { input: "input/local-shop-probes.json", framework: "playwright", probes: true },
   { input: "input/local-shop-probes-pactum.json", framework: "pactum", probes: true },
+  // Setup chains (input/local-shop-setup.json): a user made by register (idField "user.id", unique email),
+  // a cart item whose path id is a product id (bodyFrom), a review read and deleted at the top level.
+  // Every probe is usable, every test but the planted delete-no-auth one passes, cleanup leaves nothing.
+  { input: "input/local-shop-setup.json", framework: "playwright", setupChains: true },
+  { input: "input/local-shop-setup-pactum.json", framework: "pactum", setupChains: true },
 ];
+
+function checkSetupRun(label, summary) {
+  const endpoints = summary.endpoints || [];
+  check(endpoints.length === 11 && endpoints.every((e) => e.probeUsable !== false && !e.failureReason && !e.skippedReason), `${label}: all 11 endpoints probed and tested (${endpoints.filter((e) => e.failureReason || e.skippedReason).map((e) => e.id).join(", ") || "none failed"})`);
+  const findings = summary.findings || [];
+  check(findings.length === 1 && findings[0].endpointId === "delete-product" && findings[0].actualStatus === 204, `${label}: the only finding is the planted delete-no-auth bug (${findings.map((f) => `${f.endpointId} ${f.actualStatus}`).join(", ")})`);
+  check(summary.totals?.failed === 1 && summary.totals?.passed === summary.totals?.testsGenerated - 1, `${label}: every other test passed (${summary.totals?.passed}/${summary.totals?.testsGenerated})`);
+  check(summary.cleanup?.failed === 0 && summary.cleanup?.skippedNoDeleteEndpoint === 0 && summary.cleanup?.created === summary.cleanup?.deleted, `${label}: cleanup deleted everything it made (${summary.cleanup?.deleted}/${summary.cleanup?.created})`);
+  const specs = ["add-cart-item", "register"].map((id) => fs.readFileSync(path.join(ROOT, "generated", `${id}.spec.ts`), "utf8"));
+  check(/ctx\.body\(p\)/.test(specs[0]) && /ctx\.body\(\)/.test(specs[1]), `${label}: the specs build bodies with ctx.body (bodyFrom and unique)`);
+}
 
 const PROBE_CASES = {
   "TC-301": "passed", "TC-302": "passed", "TC-303": "failed", "TC-304": "accepted 5xx", "TC-305": "needs review", "TC-306": "passed", "TC-307": "passed",
@@ -231,7 +247,7 @@ const exported = [];
 try {
   api = await startApi(false);
   atlassian = await startAtlassian();
-  for (const { input, framework, sheet, args: given = [], confluence, noExport, statuses, probes, clients } of INPUTS) {
+  for (const { input, framework, sheet, args: given = [], confluence, noExport, statuses, probes, clients, setupChains } of INPUTS) {
     const env = { ...process.env, FAKE_MODEL: "1", LOCAL_API_AUTH_VALUE: TOKEN };
     const args = confluence ? ["--test-cases", `${atlassian.url}/wiki/spaces/QA/pages/${CONFLUENCE_PAGE_ID}/Local+shop+API+test+cases`, "--test-cases-mode", sheet] : given;
     if (confluence) Object.assign(env, atlassian.env);
@@ -247,6 +263,7 @@ try {
     check((summary.findings || []).length > 0, `${input}: summary.json lists findings (${(summary.findings || []).length})`);
     check(summary.testFramework === framework && Boolean(summary.framework?.dir), `${input}: ${framework} project exported (${summary.framework?.dir})`);
     check(Boolean(summary.framework?.zip) && fs.existsSync(path.resolve(ROOT, summary.framework.zip)), `${input}: framework zip written`);
+    if (setupChains) checkSetupRun(`${input} (setup chains)`, summary);
     if (probes) checkProbesRun(`${input} (probes)`, summary);
     else if (statuses) checkStatusesRun(`${input} (statuses)`, summary);
     else if (sheet) checkSheetRun(`${input} (${confluence ? "Confluence link, " : ""}${sheet})`, summary, sheet, confluence ? "confluence" : null);

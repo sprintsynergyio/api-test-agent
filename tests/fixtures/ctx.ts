@@ -5,6 +5,7 @@ import { labels } from 'allure-js-commons';
 import { pickAuthEnv } from '../../agent/auth';
 import { apiName, loadConfig } from '../../agent/config';
 import { cleanupResources, createClients, createResource, disposeClients, formatExchange, recordClients, reportLabels, runSetup } from '../../agent/http';
+import { newUniqueToken, requestBody } from '../../agent/model';
 import { endpointAllowed, READ_ONLY_SKIP } from '../../agent/safety';
 import { loadTestData, requiredDataVerdict, type TestData } from '../../agent/test-data';
 
@@ -18,6 +19,10 @@ export type Ctx = {
   // Runs this spec's endpoint setup steps in order and returns every path placeholder value, for
   // example { id: '4', reviewId: '7' } for /products/{id}/reviews/{reviewId}.
   setup: () => Promise<Record<string, string>>;
+  // This spec's endpoint sample body, built the way the agent sends it: body fields named in bodyFrom
+  // filled from the values ctx.setup() returned, fields named in unique made new on every call. Use it
+  // for the request body when the endpoint has bodyFrom or unique.
+  body: (values?: Record<string, string>) => Record<string, unknown>;
   // Precondition check the agent adds (never the model) for a sheet case with Required data: looks the
   // names up with the test data file's lookup endpoint and skips the test with DATA_NOT_ON_ENV (or
   // ENV_UNAVAILABLE) when one is missing. Skipped, never passed.
@@ -71,6 +76,10 @@ export const test = base.extend<{ ctx: Ctx }>({
       setup: async () => {
         if (!endpoint) throw new Error(`ctx.setup: no endpoint in ${inputFile} is named after this spec file`);
         return runSetup(config, recordedClients, endpoint);
+      },
+      body: (values = {}) => {
+        if (!endpoint) throw new Error(`ctx.body: no endpoint in ${inputFile} is named after this spec file`);
+        return requestBody(endpoint, values, newUniqueToken()) ?? {};
       },
       requireData: async (names) => {
         if (testData === undefined) testData = testDataFile ? loadTestData(testDataFile) : null;

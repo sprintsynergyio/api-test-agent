@@ -10,6 +10,10 @@
 // so npm run test:cleanup can prove a failed cleanup is reported and never hidden.
 // RATE_LIMIT_FIRST=N (tests only, not a planted bug): the first N requests to GET /products answer
 // 429 with Retry-After: 1, so the 429 handling in the HTTP layer can be proved against a real server.
+// Setup chains (input/local-shop-setup.json): POST /auth/register makes an account and answers
+// { user: { id, email, name }, token } (409 for an email already taken); GET and DELETE /users/:id;
+// one shared cart (POST /cart/items with { productId, quantity }, PATCH and DELETE /cart/items/:productId,
+// GET /cart); GET and DELETE /reviews/:reviewId for a review created under POST /products/:id/reviews.
 // POST /oauth/token (input/local-shop-oauth.json): OAuth2 client credentials for the client id
 // "shop-client" with the secret from LOCAL_API_CLIENT_SECRET (default shop-client-secret, a demo value
 // of a fake local API). Issued access tokens act as admin.
@@ -176,6 +180,115 @@ async function handleReviews(req, res, parts) {
   return send(res, 405, { error: "method not allowed" });
 }
 
+// Accounts made by POST /auth/register (input/local-shop-setup.json). Separate from the demo login USERS.
+let nextUserId = 1;
+const accounts = new Map(); // id -> { id, email, name, createdAt }
+const publicAccount = (a) => ({ id: a.id, email: a.email, name: a.name, createdAt: a.createdAt });
+
+async function handleRegister(req, res) {
+  if (req.method !== "POST") return send(res, 405, { error: "method not allowed" });
+  const body = await readBody(req);
+  if (!body.ok) return send(res, 400, { error: "invalid JSON" });
+  const b = body.value;
+  const errors = [];
+  if (!b || typeof b !== "object") errors.push("body must be a JSON object");
+  else {
+    if (typeof b.email !== "string" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(b.email)) errors.push("email is required and must be an email address");
+    if (typeof b.password !== "string" || b.password.length < 8) errors.push("password is required and must have at least 8 characters");
+    if (typeof b.name !== "string" || b.name.trim() === "") errors.push("name is required and must be a non-empty string");
+  }
+  if (errors.length) return send(res, 400, { error: "validation failed", details: errors });
+  if ([...accounts.values()].some((a) => a.email.toLowerCase() === b.email.toLowerCase())) return send(res, 409, { error: "email already registered" });
+  const account = { id: nextUserId++, email: b.email, name: b.name, createdAt: new Date().toISOString() };
+  accounts.set(account.id, account);
+  const token = randomToken();
+  issuedTokens.set(`Bearer ${token}`, "viewer");
+  return send(res, 201, { user: publicAccount(account), token });
+}
+
+// GET /users/:id needs a token; DELETE /users/:id needs the admin role.
+function handleUsers(req, res, parts) {
+  const id = Number(parts[1]);
+  if (!Number.isInteger(id) || id < 1) return send(res, 400, { error: "id must be a positive integer" });
+  if (!authed(req)) return send(res, 401, { error: "unauthorized" });
+  const account = accounts.get(id);
+  if (req.method === "GET") return account ? send(res, 200, publicAccount(account)) : send(res, 404, { error: "user not found" });
+  if (req.method === "DELETE") {
+    if (!canWrite(req)) return send(res, 403, { error: "forbidden" });
+    if (!account) return send(res, 404, { error: "user not found" });
+    accounts.delete(id);
+    res.writeHead(204);
+    return res.end();
+  }
+  return send(res, 405, { error: "method not allowed" });
+}
+
+// One shared cart, keyed by product id. Every cart route needs a token.
+const cart = new Map(); // productId -> quantity
+const cartItem = (productId) => ({ productId, quantity: cart.get(productId) });
+const validQuantity = (q) => Number.isInteger(q) && q >= 1 && q <= 99;
+
+async function handleCart(req, res, parts) {
+  if (!authed(req)) return send(res, 401, { error: "unauthorized" });
+  if (parts.length === 1) {
+    if (req.method !== "GET") return send(res, 405, { error: "method not allowed" });
+    const items = [...cart.keys()].map(cartItem);
+    return send(res, 200, { items, count: items.length });
+  }
+  if (parts[1] !== "items" || parts.length > 3) return send(res, 404, { error: "not found" });
+  if (parts.length === 2) {
+    if (req.method !== "POST") return send(res, 405, { error: "method not allowed" });
+    const body = await readBody(req);
+    if (!body.ok) return send(res, 400, { error: "invalid JSON" });
+    const b = body.value;
+    const errors = [];
+    if (!b || typeof b !== "object") errors.push("body must be a JSON object");
+    else {
+      if (!Number.isInteger(b.productId) || b.productId < 1) errors.push("productId is required and must be a positive integer");
+      if (!validQuantity(b.quantity)) errors.push("quantity is required and must be an integer from 1 to 99");
+    }
+    if (errors.length) return send(res, 400, { error: "validation failed", details: errors });
+    if (!products.has(b.productId)) return send(res, 404, { error: "product not found" });
+    if (cart.has(b.productId)) return send(res, 409, { error: "product already in the cart" });
+    cart.set(b.productId, b.quantity);
+    return send(res, 201, cartItem(b.productId));
+  }
+  const productId = Number(parts[2]);
+  if (!Number.isInteger(productId) || productId < 1) return send(res, 400, { error: "productId must be a positive integer" });
+  if (req.method === "PATCH") {
+    const body = await readBody(req);
+    if (!body.ok) return send(res, 400, { error: "invalid JSON" });
+    if (!body.value || typeof body.value !== "object" || !validQuantity(body.value.quantity)) return send(res, 400, { error: "validation failed", details: ["quantity is required and must be an integer from 1 to 99"] });
+    if (!cart.has(productId)) return send(res, 404, { error: "item not in the cart" });
+    cart.set(productId, body.value.quantity);
+    return send(res, 200, cartItem(productId));
+  }
+  if (req.method === "DELETE") {
+    if (!cart.has(productId)) return send(res, 404, { error: "item not in the cart" });
+    cart.delete(productId);
+    res.writeHead(204);
+    return res.end();
+  }
+  return send(res, 405, { error: "method not allowed" });
+}
+
+// A review read or deleted by its own id, without the product in the path.
+function handleTopReview(req, res, parts) {
+  const reviewId = Number(parts[1]);
+  if (!Number.isInteger(reviewId) || reviewId < 1) return send(res, 400, { error: "reviewId must be a positive integer" });
+  const review = reviews.get(reviewId);
+  if (req.method === "GET") return review ? send(res, 200, review) : send(res, 404, { error: "review not found" });
+  if (req.method === "DELETE") {
+    if (!authed(req)) return send(res, 401, { error: "unauthorized" });
+    if (!canWrite(req)) return send(res, 403, { error: "forbidden" });
+    if (!review) return send(res, 404, { error: "review not found" });
+    reviews.delete(reviewId);
+    res.writeHead(204);
+    return res.end();
+  }
+  return send(res, 405, { error: "method not allowed" });
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   if (LOG_REQUESTS) console.log(`${req.method} ${url.pathname}${url.search}`);
@@ -195,6 +308,10 @@ const server = http.createServer(async (req, res) => {
     issuedTokens.set(`Bearer ${token}`, user.role);
     return send(res, 200, { data: { token, role: user.role } });
   }
+  if (parts[0] === "auth" && parts[1] === "register" && parts.length === 2) return handleRegister(req, res);
+  if (parts[0] === "users" && parts.length === 2) return handleUsers(req, res, parts);
+  if (parts[0] === "cart") return handleCart(req, res, parts);
+  if (parts[0] === "reviews" && parts.length === 2) return handleTopReview(req, res, parts);
   // POST /oauth/token: OAuth2 client credentials (form body, or HTTP Basic for the client id and secret).
   // Success: { access_token, token_type, expires_in }. Wrong client or grant: 401 / 400.
   if (parts[0] === "oauth" && parts[1] === "token" && parts.length === 2) {
