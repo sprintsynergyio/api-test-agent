@@ -352,7 +352,7 @@ function titleFor(type: string, role: string): string {
 type SetupKind = { kind: 'none' } | { kind: 'single'; endpointId: string } | { kind: 'multi' };
 
 function setupKind(user: string): SetupKind {
-  if (/This endpoint's path has \d+ placeholders?/.test(user)) return { kind: 'multi' };
+  if (/This endpoint's path has \d+ placeholders?/.test(user) || /This endpoint has setup for its request body/.test(user)) return { kind: 'multi' };
   // The setup rule line, not the template shown earlier in the prompt (which has its own createResource).
   const m = user.match(/This endpoint has setup\. Each test that needs an existing resource gets one with `const id = await ctx\.createResource\('([^']+)'\);`/);
   if (m) return { kind: 'single', endpointId: m[1] };
@@ -406,22 +406,25 @@ export function fakeSpec(user: string, pactum: boolean): string {
 
   const hasBody = body !== undefined && ['post', 'put', 'patch'].includes(method);
   const invalidBody = hasBody ? '{}' : null;
+  // The body rule line (bodyFrom or unique): every valid body is ctx.body(p) or ctx.body().
+  const bodyRule = user.match(/Build the request body with `ctx\.body\((p?)\)`/);
+  const validBody = bodyRule ? `ctx.body(${bodyRule[1]})` : 'validBody';
 
   // q: the query to send instead of the sample one (an invalid value, or another page).
   const call = (client: string, p: string, b: string | null, q: Json | undefined = query) => {
     if (layer) {
       // p is the list of path arguments here. The method sends the sample query and headers itself, so
       // options are passed only for a query that differs from the sample one.
-      const args = [p, layer.takesBody ? (b ?? (layer.bodyFunction ? `${layer.bodyFunction}()` : 'undefined')) : '', q !== query && q ? `{ params: ${JSON.stringify(q)} }` : ''].filter(Boolean);
+      const args = [p, layer.takesBody ? (b ?? (bodyRule ? validBody : layer.bodyFunction ? `${layer.bodyFunction}()` : 'undefined')) : '', q !== query && q ? `{ params: ${JSON.stringify(q)} }` : ''].filter(Boolean);
       return `new ${layer.className}(${client}).${layer.method}(${args.join(', ')})`;
     }
     const qOpts = [q ? `params: ${JSON.stringify(q)}` : '', headers ? `headers: ${JSON.stringify(headers)}` : ''].filter(Boolean).join(', ');
     if (pactum) {
-      if (hasBody) return `${client}.${method}(${p}, ${b ?? 'validBody'}${qOpts ? `, { ${qOpts} }` : ''})`;
+      if (hasBody) return `${client}.${method}(${p}, ${b ?? validBody}${qOpts ? `, { ${qOpts} }` : ''})`;
       return `${client}.${method}(${p}${qOpts ? `, { ${qOpts} }` : ''})`;
     }
     const parts: string[] = [];
-    if (hasBody) parts.push(`data: ${b ?? 'validBody'}`);
+    if (hasBody) parts.push(`data: ${b ?? validBody}`);
     if (qOpts) parts.push(qOpts);
     return `${client}.${method}(${p}${parts.length ? `, { ${parts.join(', ')} }` : ''})`;
   };
@@ -515,7 +518,7 @@ export function fakeSpec(user: string, pactum: boolean): string {
     const imports = [`import { test, expect } from '../tests/fixtures/ctx';`, `import { ${layer.className} } from '${layer.clientModule}';`, ...(layer.bodyFunction && layer.dataModule ? [`import { ${layer.bodyFunction} } from '${layer.dataModule}';`] : [])];
     return `${imports.join('\n')}\n\nfunction recordStatus(status: number) {\n  test.info().annotations.push({ type: 'actual-status', description: String(status) });\n}\n\ntest.describe('${id} ${endpoint.method} ${path}', () => {\n${tests}\n});\n`;
   }
-  const bodyConst = hasBody ? `\nconst validBody = ${JSON.stringify(body)};\n` : '';
+  const bodyConst = hasBody && !bodyRule ? `\nconst validBody = ${JSON.stringify(body)};\n` : '';
   const describe = pactum ? `describe('${id} ${endpoint.method} ${path}', () => {` : `test.describe('${id} ${endpoint.method} ${path}', () => {`;
   return `${header}${bodyConst}\n${describe}\n${tests}\n});\n`;
 }

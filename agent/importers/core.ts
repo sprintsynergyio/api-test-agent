@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { ConfigSchema, configProblems, zodProblems, type Config, type Endpoint, type Setup } from '../config';
 import type { ResponseSchema } from '../response-schema';
+import { pathParams } from '../model';
 
 // Shared importer logic. Each importer turns its source into RawRequest entries; buildInput turns them
 // into the input file shape (validated with the config schema), plus skipped items and warnings.
@@ -552,36 +553,12 @@ export function buildInput(requests: RawRequest[], opts: BuildOptions = {}): Imp
   });
 
   // Setup: each path placeholder gets a resource from the POST on its parent collection path
-  // (POST /products for {id} in /products/{id}, POST /products/{id}/reviews for {reviewId}).
-  const setupUsers = new Map<string, string[]>();
-  grouped.forEach((k, i) => {
-    const segments = k.pathname.split('/');
-    const ep = endpoints[i];
-    const steps: Setup[] = [];
-    segments.forEach((seg, index) => {
-      const param = seg.match(/^\{([^}]+)\}$/)?.[1];
-      if (!param) return;
-      // A value the recorded request used (route grouping): no resource needs to be created for it.
-      if (k.pathParams?.[param] !== undefined) return;
-      const parent = segments.slice(0, index).join('/') || '/';
-      const creator = grouped.findIndex((c, j) => j !== i && c.method === 'POST' && c.pathname === parent);
-      if (creator < 0) {
-        warnings.push(`${ep.id} needs setup for {${param}}: there is no POST ${parent} to create the resource first.`);
-        return;
-      }
-      const creatorId = endpoints[creator].id;
-      steps.push({ endpointId: creatorId, idField: 'id', param });
-      setupUsers.set(creatorId, [...(setupUsers.get(creatorId) ?? []), ep.id]);
-    });
-    if (!steps.length) return;
-    // One placeholder keeps the original single-object shape.
-    ep.setup = steps.length === 1 ? { endpointId: steps[0].endpointId, idField: steps[0].idField } : steps;
-  });
-  for (const [creatorId, users] of setupUsers) {
-    warnings.push(
-      `Setup added: ${users.join(', ')} first create${users.length === 1 ? 's' : ''} a resource with ${creatorId} and read${users.length === 1 ? 's' : ''} its id from the "id" field. Check that ${creatorId} returns the new id as "id" (idField).`,
-    );
-  }
+  // (POST /products for {id} in /products/{id}, POST /products/{id}/reviews for {reviewId}). Real APIs
+  // also need three more shapes (inferSetup below): a placeholder that is the id of another resource
+  // (/cart/items/{productId}), a user made by a register or sign-up endpoint, and a top-level path for
+  // a resource created under another one (/reviews/{reviewId}, created by POST /products/{id}/reviews).
+  inferSetup(grouped, endpoints, warnings);
+  markUniqueFields(endpoints, warnings);
 
   // Auth: one credential for the whole input. The most common credential name wins. Its place
   // (header, query parameter or cookie) becomes the auth type; a header keeps the original
@@ -681,4 +658,147 @@ export function buildInput(requests: RawRequest[], opts: BuildOptions = {}): Imp
     out.auth = rest as unknown as Config['auth'];
   }
   return { input: out, skipped: cleanSkipped, warnings: cleanWarnings };
+}
+
+// ---------- Setup inference (buildInput) ----------
+
+const PARAM_SEGMENT = /^\{([^}]+)\}$/;
+// "books" -> "book", "categories" -> "category", "boxes" -> "box".
+function singular(word: string): string {
+  const w = word.toLowerCase();
+  if (/ies$/.test(w)) return w.replace(/ies$/, 'y');
+  if (/(s|x|z|ch|sh)es$/.test(w)) return w.replace(/es$/, '');
+  return w.replace(/s$/, '');
+}
+// "bookId", "book_id", "bookUuid" -> "book"; "id" -> null.
+function referenceBase(param: string): string | null {
+  const m = /^(.+?)[-_]?(?:id|uuid|key)$/i.exec(param);
+  return m && m[1] ? m[1] : null;
+}
+const USER_COLLECTION = /^(users?|accounts?|customers?|members?|profiles?)$/i;
+const SIGN_UP = /^(register|registration|signup|sign-up|sign_up)$/i;
+
+type Grouped = { method: string; pathname: string; pathParams?: Record<string, string> };
+
+export function inferSetup(grouped: Grouped[], endpoints: Endpoint[], warnings: string[]): void {
+  const posts = grouped.map((g, i) => ({ g, i })).filter((x) => x.g.method === 'POST');
+  const lastWord = (pathname: string) => pathname.split('/').filter(Boolean).pop() ?? '';
+  // The DELETE for {param} under parent, when it is not the create path plus a placeholder (cleanup
+  // finds that one by itself, agent/http.ts deleteEndpointFor).
+  const deleteUnder = (parent: string) => {
+    const want = parent.split('/').length + 1;
+    const d = grouped.findIndex((g) => g.method === 'DELETE' && g.pathname.split('/').length === want && g.pathname.startsWith(`${parent}/`) && PARAM_SEGMENT.test(g.pathname.split('/').pop()!));
+    return d >= 0 ? endpoints[d].id : undefined;
+  };
+  // Grouped notes for the warnings: creator -> { idField, users }.
+  const plain = new Map<string, string[]>();
+
+  grouped.forEach((k, i) => {
+    const segments = k.pathname.split('/');
+    const ep = endpoints[i];
+    const steps: Setup[] = [];
+    segments.forEach((seg, index) => {
+      const param = seg.match(PARAM_SEGMENT)?.[1];
+      if (!param) return;
+      // A value the recorded request used (route grouping): no resource needs to be created for it.
+      if (k.pathParams?.[param] !== undefined) return;
+      const parent = segments.slice(0, index).join('/') || '/';
+      const collection = segments[index - 1] ?? '';
+      const parentPost = posts.find((x) => x.i !== i && x.g.pathname === parent);
+
+      // 1. The placeholder is the id of another resource: /cart/items/{productId}.
+      const base = referenceBase(param);
+      if (base && collection && !PARAM_SEGMENT.test(collection) && singular(base) !== singular(collection)) {
+        const owner = posts.find((x) => x.i !== i && singular(lastWord(x.g.pathname)) === singular(base) && !PARAM_SEGMENT.test(x.g.pathname));
+        if (owner) {
+          const ownerId = endpoints[owner.i].id;
+          const adder = parentPost ? endpoints[parentPost.i] : undefined;
+          const field = adder?.body ? Object.keys(adder.body).find((f) => f.toLowerCase() === param.toLowerCase() || f.toLowerCase().replace(/_/g, '') === param.toLowerCase()) : undefined;
+          if (adder && field) {
+            // The resource is added under the parent with the other resource's id in its body, and the
+            // response is read for that id: setup makes the product, the add-to-cart call takes it.
+            steps.push({ endpointId: adder.id, idField: field, param });
+            if (!adder.setup) {
+              adder.setup = { endpointId: ownerId, idField: 'id', param };
+              adder.bodyFrom = { [field]: param };
+              warnings.push(`Setup added: ${adder.id} first creates a resource with ${ownerId} and sends its id in body.${field} (bodyFrom). Check that ${ownerId} returns the new id as "id" (idField).`);
+            }
+            warnings.push(`Setup added: {${param}} in ${ep.id} is the id of a ${singular(base)}, not of the ${collection} itself, so setup adds one with ${adder.id} (which creates it first) and reads "${field}" from the answer. Check that ${adder.id} returns ${field} (idField).`);
+          } else {
+            steps.push({ endpointId: ownerId, idField: 'id', param });
+            warnings.push(`Setup added: {${param}} in ${ep.id} is the id of a ${singular(base)}, so setup creates one with ${ownerId}. Check that ${ownerId} returns the new id as "id" (idField).`);
+          }
+          return;
+        }
+      }
+
+      // 2. The POST on the parent path (the common case).
+      if (parentPost) {
+        const creatorId = endpoints[parentPost.i].id;
+        steps.push({ endpointId: creatorId, idField: 'id', param });
+        plain.set(creatorId, [...(plain.get(creatorId) ?? []), ep.id]);
+        return;
+      }
+
+      // 3. Users made by a register or sign-up endpoint.
+      if (USER_COLLECTION.test(collection)) {
+        const signUp = posts.filter((x) => x.i !== i && SIGN_UP.test(lastWord(x.g.pathname)) && !PARAM_SEGMENT.test(x.g.pathname));
+        if (signUp.length === 1) {
+          const creatorId = endpoints[signUp[0].i].id;
+          const del = deleteUnder(parent);
+          steps.push({ endpointId: creatorId, idField: 'id', param, ...(del ? { cleanup: { endpointId: del } } : {}) });
+          warnings.push(`Setup added: there is no POST ${parent}, so {${param}} in ${ep.id} comes from a new account made with ${creatorId}${del ? ` (deleted afterwards with ${del})` : ''}. Check where ${creatorId} returns the new id: often "user.id" or "data.id" rather than "id" (idField takes a dot path).`);
+          return;
+        }
+      }
+
+      // 4. A resource created under another one, read or deleted at the top level: /reviews/{reviewId}
+      //    with POST /products/{id}/reviews. The creator's own setup makes the parent resource first.
+      const nested = posts.filter((x) => x.i !== i && x.g.pathname !== parent && lastWord(x.g.pathname) === collection && x.g.pathname.split('/').some((s) => PARAM_SEGMENT.test(s)));
+      if (collection && nested.length === 1) {
+        const creatorId = endpoints[nested[0].i].id;
+        const del = deleteUnder(parent);
+        steps.push({ endpointId: creatorId, idField: 'id', param, ...(del ? { cleanup: { endpointId: del } } : {}) });
+        warnings.push(`Setup added: there is no POST ${parent}, so {${param}} in ${ep.id} comes from ${creatorId}, which first creates the resource it belongs to${del ? `, and ${del} deletes it afterwards` : ''}. Check that ${creatorId} returns the new id as "id" (idField).`);
+        return;
+      }
+
+      warnings.push(`${ep.id} needs setup for {${param}}: there is no POST ${parent} to create the resource first.`);
+    });
+    if (!steps.length) return;
+    // One step for the first placeholder keeps the original single-object shape.
+    const first = pathParams(k.pathname)[0];
+    ep.setup = steps.length === 1 && steps[0].param === first ? (({ param: _p, ...rest }) => rest)(steps[0]) : steps;
+  });
+  for (const [creatorId, users] of plain) {
+    warnings.push(
+      `Setup added: ${users.join(', ')} first create${users.length === 1 ? 's' : ''} a resource with ${creatorId} and read${users.length === 1 ? 's' : ''} its id from the "id" field. Check that ${creatorId} returns the new id as "id" (idField).`,
+    );
+  }
+}
+
+// Body fields that identify what they create (an email, a user name, an ISBN, a SKU) must be new on
+// every request, or the second create is refused as a duplicate. Only on POSTs that create something
+// (not login, token or logout calls), only string and number values, top level or one level down.
+const UNIQUE_FIELD = /^(e-?mail|email_?address|user_?name|isbn(13|10)?|sku|slug|handle)$/i;
+const NOT_A_CREATE = /^(login|log-in|log_in|signin|sign-in|sign_in|token|tokens|logout|log-out|signout|sign-out|refresh|verify|reset|forgot|forgot-password|password|session|sessions|search|query)$/i;
+
+export function markUniqueFields(endpoints: Endpoint[], warnings: string[]): void {
+  const marked: string[] = [];
+  for (const ep of endpoints) {
+    if (ep.method !== 'POST' || !ep.body || ep.unique) continue;
+    const word = ep.path.split('/').filter((s) => s && !PARAM_SEGMENT.test(s)).pop() ?? '';
+    if (NOT_A_CREATE.test(word)) continue;
+    const fields: string[] = [];
+    for (const [k, v] of Object.entries(ep.body)) {
+      if (UNIQUE_FIELD.test(k) && (typeof v === 'string' || typeof v === 'number')) fields.push(k);
+      else if (v && typeof v === 'object' && !Array.isArray(v)) {
+        for (const [k2, v2] of Object.entries(v as Record<string, unknown>)) if (UNIQUE_FIELD.test(k2) && (typeof v2 === 'string' || typeof v2 === 'number')) fields.push(`${k}.${k2}`);
+      }
+    }
+    if (!fields.length) continue;
+    ep.unique = fields;
+    marked.push(`${ep.id} (${fields.join(', ')})`);
+  }
+  if (marked.length) warnings.push(`Unique values: ${marked.join('; ')} get a new value on every request the agent builds, so a second create is not refused as a duplicate. Remove a field from "unique" if the API needs the exact sample value.`);
 }

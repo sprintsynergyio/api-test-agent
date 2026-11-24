@@ -3,7 +3,7 @@ import { z } from 'zod';
 
 import { authRoles, DEFAULT_ROLE, type AuthConfig } from './auth';
 import { ResponseSchemaZ } from './response-schema';
-import { applyProfile, pathParams, setupSteps, type Selection } from './model';
+import { applyProfile, getAt, pathParams, setupSteps, type Selection } from './model';
 
 const SetupSchema = z.object({
   endpointId: z.string().min(1),
@@ -26,6 +26,13 @@ const EndpointSchema = z.object({
   query: z.record(z.string(), QueryValue).optional(),
   headers: z.record(z.string(), z.string()).optional(),
   setup: z.union([SetupSchema, z.array(SetupSchema).min(1)]).optional(),
+  // Body fields filled from the values this endpoint's setup steps collect (agent/model.ts requestBody):
+  // { "productId": "productId" } sends the id of the product setup made in body.productId. Keys are
+  // dot paths into body; values name a setup step's param. Used by the probe, createResource and ctx.body().
+  bodyFrom: z.record(z.string().min(1), z.string().min(1)).optional(),
+  // Body fields (dot paths) made new on every request built from the sample body (email, user name,
+  // ISBN), so creating twice does not fail with a conflict. agent/model.ts uniqueValue.
+  unique: z.array(z.string().min(1)).min(1).optional(),
   // Values for path placeholders that no setup step fills, e.g. { "brand": "acme" } for
   // /asset/{brand}/badge. The importers write the first literal value when they group several literal
   // paths into one route; sheet cases may use their own values (agent/test-cases.ts pathValues).
@@ -214,9 +221,23 @@ export function configProblems(config: Omit<Config, 'baseUrl' | 'selection'> & {
     }
   });
   config.endpoints.forEach((ep, i) => {
+    const bodyFromNames = new Set(Object.values(ep.bodyFrom ?? {}));
+    for (const [key, list] of [['bodyFrom', Object.keys(ep.bodyFrom ?? {})], ['unique', ep.unique ?? []]] as const) {
+      if (!list.length) continue;
+      if (!ep.body) {
+        problems.push(`field "endpoints[${i}].${key}" needs a sample "body" to fill`);
+        continue;
+      }
+      for (const field of list) {
+        const value = getAt(ep.body, field);
+        if (value === undefined) problems.push(`field "endpoints[${i}].${key}" names body field "${field}", which is not in the sample body`);
+        else if (key === 'unique' && typeof value !== 'string' && typeof value !== 'number') problems.push(`field "endpoints[${i}].unique" names body field "${field}", which is not a string or number`);
+      }
+    }
+    if (ep.bodyFrom && !ep.setup) problems.push(`field "endpoints[${i}].bodyFrom" takes values from setup, but the endpoint has no setup`);
     if (!ep.setup) return;
     const params = pathParams(ep.path);
-    if (!params.length) problems.push(`field "endpoints[${i}].path" has setup but no {id} placeholder`);
+    if (!params.length && !bodyFromNames.size) problems.push(`field "endpoints[${i}].path" has setup but no {id} placeholder (and no bodyFrom that uses a setup value)`);
     const steps = setupSteps(ep);
     const seen = new Set<string>();
     steps.forEach((step, j) => {
@@ -224,17 +245,24 @@ export function configProblems(config: Omit<Config, 'baseUrl' | 'selection'> & {
       if (!config.endpoints.some((e) => e.id === step.endpointId)) {
         problems.push(`field "${where}.endpointId" references unknown endpoint "${step.endpointId}"`);
       }
-      if (params.length && !params.includes(step.param!)) {
-        problems.push(`field "${where}.param" names {${step.param}}, which is not a placeholder of ${ep.path} (${params.map((p) => `{${p}}`).join(', ')})`);
+      const raw = Array.isArray(ep.setup) ? ep.setup[j] : ep.setup!;
+      if (!params.length && !raw.param) {
+        problems.push(`field "${where}.param" is required: ${ep.path} has no placeholder, so name the value this step gives to bodyFrom`);
+      } else if (!params.includes(step.param!) && !bodyFromNames.has(step.param!)) {
+        problems.push(`field "${where}.param" names {${step.param}}, which is not a placeholder of ${ep.path}${params.length ? ` (${params.map((p) => `{${p}}`).join(', ')})` : ''} nor a value bodyFrom uses`);
       }
       if (seen.has(step.param!)) problems.push(`field "${where}.param" fills {${step.param}} twice`);
       seen.add(step.param!);
+
       if (step.cleanup) {
         const target = config.endpoints.find((e) => e.id === step.cleanup!.endpointId);
         if (!target) problems.push(`field "${where}.cleanup.endpointId" references unknown endpoint "${step.cleanup.endpointId}"`);
         else if (target.method !== 'DELETE') problems.push(`field "${where}.cleanup.endpointId" must name a DELETE endpoint, "${target.id}" is ${target.method}`);
       }
     });
+    for (const [field, name] of Object.entries(ep.bodyFrom ?? {})) {
+      if (!seen.has(name)) problems.push(`field "endpoints[${i}].bodyFrom.${field}" takes {${name}}, but no setup step of this endpoint has param "${name}"`);
+    }
   });
   return problems;
 }

@@ -4,8 +4,9 @@
 
 export type Query = Record<string, string | number | boolean>;
 
-// setup creates the resource a path placeholder needs. param names the placeholder it fills; a
-// single setup object without param fills the first placeholder (the original shape).
+// setup creates the resource a path placeholder needs. param names the placeholder it fills (or, on an
+// endpoint with bodyFrom, the value it hands to the body); a single setup object without param fills the
+// first placeholder (the original shape). idField may be a dot path into the response ("user.id").
 export type Setup = { endpointId: string; idField: string; param?: string; cleanup?: { endpointId: string } };
 
 export type EndpointLike = {
@@ -17,6 +18,12 @@ export type EndpointLike = {
   query?: Query;
   headers?: Record<string, string>;
   setup?: Setup | Setup[];
+  // Body fields filled from values the setup steps collected: { "productId": "productId" } puts the id
+  // of the product made by setup into body.productId. Keys are dot paths into the body.
+  bodyFrom?: Record<string, string>;
+  // Body fields (dot paths) that must be new on every request the agent or a test builds from the
+  // sample body: an email, a user name, an ISBN. See uniqueValue.
+  unique?: string[];
 };
 
 // One input file for every environment, brand and region: each dimension lists its values, baseUrl and
@@ -53,6 +60,78 @@ export function setupSteps(endpoint: Pick<EndpointLike, 'path' | 'setup'>): Setu
   const steps = Array.isArray(endpoint.setup) ? endpoint.setup : [endpoint.setup];
   const params = pathParams(endpoint.path);
   return steps.map((step, i) => ({ ...step, param: step.param ?? params[i] ?? `param${i + 1}` }));
+}
+
+// The value at a dot path ("user.id", "items.0.sku"), or undefined.
+export function getAt(value: unknown, path: string): unknown {
+  let cur: unknown = value;
+  for (const key of path.split('.')) {
+    if (cur === null || typeof cur !== 'object') return undefined;
+    cur = (cur as Record<string, unknown>)[key];
+  }
+  return cur;
+}
+
+function setAt(target: Record<string, unknown>, path: string, value: unknown): void {
+  const keys = path.split('.');
+  let cur: Record<string, unknown> = target;
+  for (const key of keys.slice(0, -1)) {
+    if (cur[key] === null || typeof cur[key] !== 'object') cur[key] = {};
+    cur = cur[key] as Record<string, unknown>;
+  }
+  cur[keys[keys.length - 1]] = value;
+}
+
+// A short random token for unique values: lowercase letters and digits.
+export function newUniqueToken(): string {
+  return `${Date.now().toString(36).slice(-5)}${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function digitsOf(token: string, n: number): string {
+  let out = '';
+  for (let i = 0; out.length < n; i++) out += String(token.charCodeAt(i % token.length) % 10);
+  return out;
+}
+
+// The sample value made new with the token, keeping its kind so the API still accepts it:
+// - an email gets the token in its local part (qa@example.com -> qa+k3x9a@example.com);
+// - a string of digits (an ISBN, a phone number) keeps its length, the last 6 digits replaced;
+// - a number keeps its number of digits;
+// - any other string gets "-<token>" at the end.
+export function uniqueValue(value: unknown, token: string): unknown {
+  if (typeof value === 'number' && Number.isInteger(value)) {
+    const len = Math.max(1, String(Math.abs(value)).length);
+    const digits = digitsOf(token, len);
+    return Number(len > 1 && digits[0] === '0' ? `1${digits.slice(1)}` : digits);
+  }
+  if (typeof value !== 'string') return value;
+  const at = value.indexOf('@');
+  if (at > 0) return `${value.slice(0, at)}+${token}${value.slice(at)}`;
+  if (/^\d+$/.test(value)) {
+    const n = Math.min(6, value.length);
+    return `${value.slice(0, value.length - n)}${digitsOf(token, n)}`;
+  }
+  return `${value}-${token}`;
+}
+
+// The request body for an endpoint: its sample body with the bodyFrom fields filled from values (the
+// ids setup collected) and the unique fields made new with token. A numeric id goes in as a number when
+// the sample has a number there. A bodyFrom value missing from values throws, naming it.
+export function requestBody(
+  endpoint: Pick<EndpointLike, 'id' | 'body' | 'bodyFrom' | 'unique'>,
+  values: Record<string, string>,
+  token: string,
+): Record<string, unknown> | undefined {
+  if (!endpoint.body) return undefined;
+  const body = JSON.parse(JSON.stringify(endpoint.body)) as Record<string, unknown>;
+  for (const [field, name] of Object.entries(endpoint.bodyFrom ?? {})) {
+    if (!(name in values)) throw new Error(`body field "${field}" of ${endpoint.id} takes {${name}} from setup, but no value was given: call ctx.setup() and pass its result`);
+    const sample = getAt(endpoint.body, field);
+    const value = values[name];
+    setAt(body, field, typeof sample === 'number' && /^-?\d+(\.\d+)?$/.test(value) ? Number(value) : value);
+  }
+  for (const field of endpoint.unique ?? []) setAt(body, field, uniqueValue(getAt(body, field), token));
+  return body;
 }
 
 // "?a=1&b=x" or "". Only strings, numbers and booleans: arrays and objects have no single wire format,

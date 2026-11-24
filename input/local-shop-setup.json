@@ -1,0 +1,96 @@
+{
+  "name": "local-shop-setup",
+  "baseUrl": "http://localhost:4000",
+  "defaultHeaders": {
+    "Accept": "application/json",
+    "Content-Type": "application/json"
+  },
+  "auth": {
+    "header": "Authorization",
+    "valueEnv": "LOCAL_API_AUTH_VALUE"
+  },
+  "endpoints": [
+    {
+      "id": "create-product",
+      "method": "POST",
+      "path": "/products",
+      "requiresAuth": true,
+      "body": { "name": "Trail Runner Shoe", "price": 89.99, "category": "shoes", "inStock": true }
+    },
+    {
+      "id": "delete-product",
+      "method": "DELETE",
+      "path": "/products/{id}",
+      "requiresAuth": true,
+      "setup": { "endpointId": "create-product", "idField": "id" }
+    },
+    {
+      "id": "register",
+      "method": "POST",
+      "path": "/auth/register",
+      "requiresAuth": false,
+      "body": { "email": "qa.user@example.com", "password": "demo-pass-123", "name": "QA User" },
+      "unique": ["email"]
+    },
+    {
+      "id": "get-user",
+      "method": "GET",
+      "path": "/users/{userId}",
+      "requiresAuth": true,
+      "setup": { "endpointId": "register", "idField": "user.id", "cleanup": { "endpointId": "delete-user" } }
+    },
+    {
+      "id": "delete-user",
+      "method": "DELETE",
+      "path": "/users/{userId}",
+      "requiresAuth": true,
+      "setup": { "endpointId": "register", "idField": "user.id", "cleanup": { "endpointId": "delete-user" } }
+    },
+    {
+      "id": "add-cart-item",
+      "method": "POST",
+      "path": "/cart/items",
+      "requiresAuth": true,
+      "body": { "productId": 1, "quantity": 2 },
+      "setup": { "endpointId": "create-product", "idField": "id", "param": "productId" },
+      "bodyFrom": { "productId": "productId" }
+    },
+    {
+      "id": "update-cart-item",
+      "method": "PATCH",
+      "path": "/cart/items/{productId}",
+      "requiresAuth": true,
+      "body": { "quantity": 3 },
+      "setup": { "endpointId": "add-cart-item", "idField": "productId" }
+    },
+    {
+      "id": "delete-cart-item",
+      "method": "DELETE",
+      "path": "/cart/items/{productId}",
+      "requiresAuth": true,
+      "setup": { "endpointId": "add-cart-item", "idField": "productId" }
+    },
+    {
+      "id": "create-review",
+      "method": "POST",
+      "path": "/products/{id}/reviews",
+      "requiresAuth": true,
+      "body": { "rating": 5, "text": "Light and comfortable" },
+      "setup": { "endpointId": "create-product", "idField": "id" }
+    },
+    {
+      "id": "get-review",
+      "method": "GET",
+      "path": "/reviews/{reviewId}",
+      "requiresAuth": false,
+      "setup": { "endpointId": "create-review", "idField": "id", "cleanup": { "endpointId": "delete-review" } }
+    },
+    {
+      "id": "delete-review",
+      "method": "DELETE",
+      "path": "/reviews/{reviewId}",
+      "requiresAuth": true,
+      "setup": { "endpointId": "create-review", "idField": "id", "cleanup": { "endpointId": "delete-review" } }
+    }
+  ]
+}

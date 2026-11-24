@@ -77,6 +77,9 @@ export function endpointHash(endpoint: Endpoint): string {
     ...(endpoint.allowInvalidInput ? { allowInvalidInput: true } : {}),
     ...(endpoint.stableData ? { stableData: true } : {}),
     ...(endpoint.errorStatuses?.length ? { errorStatuses: endpoint.errorStatuses } : {}),
+    // The request body the agent builds (same rule: only when set).
+    ...(endpoint.bodyFrom ? { bodyFrom: endpoint.bodyFrom } : {}),
+    ...(endpoint.unique ? { unique: endpoint.unique } : {}),
   });
 }
 

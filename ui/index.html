@@ -2457,10 +2457,13 @@
       for (const e of all) {
         const steps = e.setup ? (Array.isArray(e.setup) ? e.setup : [e.setup]) : [];
         for (const st of steps) {
-          if (ids.has(e.id) && !ids.has(st.endpointId) && all.some((x) => x.id === st.endpointId)) {
-            ids.add(st.endpointId);
-            added.push(`${st.endpointId} (setup for ${e.id})`);
-            grew = true;
+          // The setup endpoint, and the DELETE a step names for cleanup, come along with the endpoint.
+          for (const [need, why] of [[st.endpointId, "setup"], [st.cleanup && st.cleanup.endpointId, "cleanup"]]) {
+            if (need && ids.has(e.id) && !ids.has(need) && all.some((x) => x.id === need)) {
+              ids.add(need);
+              added.push(`${need} (${why} for ${e.id})`);
+              grew = true;
+            }
           }
         }
       }

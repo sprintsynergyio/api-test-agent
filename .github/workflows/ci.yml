@@ -75,6 +75,7 @@ jobs:
       - run: npm run test:checkpoint
       - run: npm run test:test-cases
       - run: npm run test:atlassian
+      - run: npm run test:setup-chains
       - run: npm run test:ui-atlassian
       - name: Pactum template tests against the local API
         run: |
@@ -160,5 +161,6 @@ jobs:
           Run 'test:ui'
           Run 'test:test-cases'
           Run 'test:atlassian'
+          Run 'test:setup-chains'
           Run 'test:ui-atlassian'
           Run 'test:e2e'
