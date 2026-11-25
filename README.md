@@ -710,7 +710,7 @@ How to read it, before quoting it:
 
 ## Contributing
 
-Issues and pull requests are welcome at [sprintsynergyio/api-test-agent](https://github.com/sprintsynergyio/api-test-agent/issues). Before opening a pull request, run `npm run typecheck` and the offline suites CI runs (for example `npm run test:gate`, `npm run test:safety`, `npm run test:e2e`). The rules for changing the code are in [`CLAUDE.md`](CLAUDE.md).
+Found a bug or have an idea? Open an issue. We review pull requests case by case. Before opening a pull request, run `npm run typecheck` and the offline suites CI runs (for example `npm run test:gate`, `npm run test:safety`, `npm run test:e2e`). The rules for changing the code are in [`CLAUDE.md`](CLAUDE.md).
 
 ---
 
