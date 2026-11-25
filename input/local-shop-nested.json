@@ -26,6 +26,13 @@
       "body": { "name": "Trail Runner Shoe", "price": 89.99, "category": "shoes", "inStock": true }
     },
     {
+      "id": "delete-product",
+      "method": "DELETE",
+      "path": "/products/{id}",
+      "requiresAuth": true,
+      "setup": { "endpointId": "create-product", "idField": "id" }
+    },
+    {
       "id": "create-review",
       "method": "POST",
       "path": "/products/{id}/reviews",

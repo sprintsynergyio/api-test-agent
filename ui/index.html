@@ -893,6 +893,8 @@
   let framework = "playwright"; // run option, written into the input JSON for the run
   let selection = {};           // profile selection in the saved tab
   let checked = null;           // last /api/validate-input result for the active input
+  let jsonBroken = false;       // the saved/JSON box does not parse (Run is disabled, test sheet TC-023)
+  let inputProblems = 0;        // problems the agent's schema found in the active input
   let session = { loginRequired: false, hosted: false, user: null };
   const IMPORTED = "__imported__";
   let importedJson = null;
@@ -938,12 +940,15 @@
           $("redactFields").value = (config.redaction.fields || []).join(", ");
         }
       }
+      jsonBroken = false;
       renderEndpoints();
       updateRunButton();
       return true;
     } catch (e) {
       $("jsonErr").textContent = "JSON error: " + e.message;
       $("jsonErr").classList.remove("hidden");
+      jsonBroken = true;
+      updateRunButton();
       return false;
     }
   }
@@ -990,24 +995,33 @@
   // selectors, the auth summary, the resolved base URL and the host badge from the answer.
   let validateTimer = null;
   function scheduleValidate() { clearTimeout(validateTimer); validateTimer = setTimeout(validateActive, 250); }
+  let validateSeq = 0;
   async function validateActive() {
     if (mode !== "saved") { checked = null; return; }
     if (!config || typeof config !== "object") return;
     const body = { json: $("jsonBox").value, selection: selectionText() || undefined };
+    const seq = ++validateSeq;
     let out;
     try {
       const res = await fetch("/api/validate-input", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (res.status === 401) return showLogin();
       out = await res.json();
     } catch { return; }
+    // Only the answer for the latest text counts: an older answer arriving late must not show its problems
+    // (or clear them) for text the user has already changed.
+    if (seq !== validateSeq) return;
     checked = out;
     renderProfile(out);
     renderAuthBox(out);
     if (out.baseUrl && config.profile && document.activeElement !== $("savedBase")) $("savedBase").value = out.baseUrl;
     const problems = (out.problems || []).filter((p) => p.path !== "profile");
-    $("jsonErr").classList.toggle("hidden", !problems.length);
-    if (problems.length) $("jsonErr").textContent = problems.map((p) => (p.path === "(root)" ? "" : p.path + ": ") + p.message).join(" ");
+    if (!jsonBroken) {
+      $("jsonErr").classList.toggle("hidden", !problems.length);
+      if (problems.length) $("jsonErr").textContent = problems.map((p) => (p.path === "(root)" ? "" : p.path + ": ") + p.message).join(" ");
+    }
+    inputProblems = problems.length;
     updateSafety();
+    updateRunButton();
   }
 
   function selectionText() {
@@ -1294,6 +1308,8 @@
       const missing = dims.filter((d) => !selection[d] && (config.profile.dimensions[d] || []).length !== 1);
       if (missing.length) return `Pick ${missing.join(", ")} for this run.`;
     }
+    if (mode === "saved" && jsonBroken) return "Fix the JSON error above before running.";
+    if (mode === "saved" && inputProblems) return "Fix the input problems shown above before running.";
     if (mode === "saved" && !activeBaseUrl()) return "Enter the base URL before running.";
     if (activeIsProduction() && !$("prodOk").checked) return 'Production host: tick "I understand this is a production host" to run.';
     return "";
@@ -2187,7 +2203,21 @@
     cEps[+row.dataset.i][k] = ev.target.value;
     if (k === "path") row.querySelector(".ep-id").textContent = "id: " + epIds()[+row.dataset.i];
   });
-  $("cEps").addEventListener("change", (ev) => { const k = ev.target.dataset.k; if (k === "method" || k === "path") renderEps(); });
+  // A changed method or path renames ids and changes which rows are POSTs. Refresh the id labels and the
+  // "Create the record first with" lists in place: re-rendering the list here would replace the button the
+  // user is clicking (change fires on blur, which happens on mousedown of the trash icon), and the click
+  // would be lost (test sheet TC-028).
+  function refreshEpLabels() {
+    const ids = epIds();
+    $("cEps").querySelectorAll(".ep-edit").forEach((row) => {
+      const i = +row.dataset.i;
+      row.querySelector(".ep-id").textContent = "id: " + ids[i];
+      const sel = row.querySelector('select[data-k="setupFrom"]');
+      if (sel) sel.innerHTML = `<option value="">None</option>` + ids.map((id, j) => (j !== i && cEps[j].method === "POST") ? `<option value="${esc(id)}" ${cEps[i].setupFrom === id ? "selected" : ""}>${esc(id)}</option>` : "").join("");
+    });
+    updateStepText();
+  }
+  $("cEps").addEventListener("change", (ev) => { const k = ev.target.dataset.k; if (k === "method" || k === "path") refreshEpLabels(); });
   $("cEps").addEventListener("click", (ev) => {
     const btn = ev.target.closest("[data-act]"); if (!btn || btn.dataset.act === "delrole") return;
     const i = +btn.closest(".ep-edit").dataset.i;
@@ -2512,6 +2542,9 @@
     catch { showRunErr("Could not load the host safety rules. Every host is treated as production."); }
     let info = { loginRequired: false, user: null };
     try { info = await (await fetch("/api/session")).json(); } catch {}
+    // AGENT_FORCE_PRODUCTION=1 on the server (testing only): every host is production here too, so the page
+    // asks for the production tick instead of starting a run the server then refuses.
+    if (info.forceProduction) classifyHost = () => "production";
     if (info.loginRequired && !info.user) return showLogin();
     showApp(info);
     await startApp();

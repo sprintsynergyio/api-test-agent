@@ -739,7 +739,9 @@ const server = http.createServer(async (req, res) => {
   if (LOGIN_REQUIRED && needsLogin(req.method, p) && !session) return json(res, 401, { error: "Login required" });
 
   if (req.method === "GET" && p === "/api/session") {
-    return json(res, 200, { loginRequired: LOGIN_REQUIRED, hosted: HOSTED, user: session ? session.user : null, runsPerHour: HOSTED ? RUNS_PER_HOUR : null });
+    // forceProduction: AGENT_FORCE_PRODUCTION=1 (testing only), so the page classifies hosts the way the
+    // server and the agent do and shows the production box (test sheet TC-070).
+    return json(res, 200, { loginRequired: LOGIN_REQUIRED, hosted: HOSTED, user: session ? session.user : null, runsPerHour: HOSTED ? RUNS_PER_HOUR : null, forceProduction: FORCE_PRODUCTION });
   }
 
   if (req.method === "POST" && p === "/api/login") {
