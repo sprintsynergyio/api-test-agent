@@ -51,7 +51,10 @@ Every run exports a standalone project (`frameworks/<name>/`, `out/framework.zip
 </tr>
 </table>
 
-<!-- A screenshot or GIF of the UI after a run belongs here: <img src=".github/assets/ui.png" alt="API Test Agent UI" width="100%" /> -->
+<p align="center">
+  <img src=".github/assets/demo.gif" alt="API Test Agent UI: generate tests, watch the probe, plan, generation and test run, then review the local shop API findings" width="1100" />
+  <br/><sub>A real run against the bundled local shop API, using Claude via Claude Code login. Edited for length: 22 tests, 20 passed, 2 suspected API bugs.</sub>
+</p>
 
 ---
 
@@ -520,6 +523,16 @@ Write an input file (or use the Build tab in the UI):
 Then run `npm run agent path/to/my-api.json`.
 
 ### What you get
+
+<p align="center">
+  <img src=".github/assets/ui-results.png" alt="Local shop API results: 22 tests across five endpoints, 20 passed and two suspected API bugs, with findings and per-endpoint results" width="1100" />
+  <br/><sub>The same local shop API run: the price-as-text request returns 500, and DELETE without auth returns 204. Both are reported as suspected API bugs.</sub>
+</p>
+
+<p align="center">
+  <img src=".github/assets/ui-framework.png" alt="A suspected API bug with its expected and received status, the standalone Playwright framework tree, and the Download framework button" width="1100" />
+  <br/><sub>Review the finding, inspect the standalone Playwright framework, and download it as a zip.</sub>
+</p>
 
 `frameworks/<name>/` is a standalone Playwright project (also downloadable as a zip from the UI):
 
