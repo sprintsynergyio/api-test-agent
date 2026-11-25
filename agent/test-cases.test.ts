@@ -100,6 +100,11 @@ await check('refuses: no title or steps column, empty, a pasted link, .xls, a he
   await rejects(parseSheet(''), /empty/);
   await rejects(parseSheet('https://example.atlassian.net/browse/QA-1'), /a link was pasted where a sheet was expected.*Jira or Confluence link/);
   await rejects(parseSheet(Buffer.from('x'), 'old.xls'), /\.xls files are not supported/);
+  // An upload is refused by its type, not read as CSV (test sheet TC-050); its content is never parsed.
+  await rejects(parseSheet(Buffer.from('%PDF-1.4 fake pdf bytes'), 'report.pdf'), /^report\.pdf is not a test case sheet: upload a \.csv, \.tsv, \.txt, \.xlsx file/);
+  await rejects(parseSheet('ID,Title,Steps\nTC-1,a,GET /x\n', 'cases.docx'), /cases\.docx is not a test case sheet/);
+  assert.equal((await parseSheet('ID,Title,Steps\nTC-1,a,GET /x\n', 'CASES.CSV')).cases.length, 1);
+  assert.equal((await parseSheet('ID,Title,Steps\nTC-1,a,GET /x\n', 'pasted')).cases.length, 1);
   await rejects(parseSheet('ID,Title\n'), /no test cases/);
 });
 

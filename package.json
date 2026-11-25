@@ -91,6 +91,7 @@
     "test:settings": "node ui/settings.test.mjs",
     "test:ui": "node ui/ui.test.mjs",
     "test:ui-layout": "node ui/layout.test.mjs",
+    "test:ui-page": "node ui/page.test.mjs",
     "test:ui-smoke": "node scripts/ui-smoke.mjs",
     "test:claude-api": "tsx agent/claude-api.test.ts",
     "ui:hash": "node ui/hash-password.mjs",

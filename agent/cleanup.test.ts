@@ -83,7 +83,7 @@ await check('deleteEndpointFor: by path, by explicit cleanup, or none', async ()
   assert.equal(deleteEndpointFor(cfg, 'create-product')?.id, 'delete-product');
   const nested = { ...JSON.parse(readFileSync('input/local-shop-nested.json', 'utf8')), selection: null } as Config;
   assert.equal(deleteEndpointFor(nested, 'create-review')?.id, 'delete-review', 'nested resource: parent placeholders may differ in name');
-  assert.equal(deleteEndpointFor(nested, 'create-product'), undefined, 'no DELETE /products/{id} in the nested input');
+  assert.equal(deleteEndpointFor(nested, 'create-product')?.id, 'delete-product', 'the nested input deletes the products it makes (test sheet TC-073)');
   const explicit: Config = {
     ...cfg,
     endpoints: [
@@ -144,7 +144,6 @@ await check('nested: the review is deleted before its product, both through the 
     const raw = JSON.parse(readFileSync('input/local-shop-nested.json', 'utf8')) as Config;
     const nested = { ...raw, selection: null, auth: normalizeAuth(raw.auth) } as Config;
     nested.baseUrl = `http://localhost:${api.port}`;
-    nested.endpoints.push({ id: 'delete-product', method: 'DELETE', path: '/products/{id}', requiresAuth: true });
     const clients = await createClients(nested, AUTH);
     const reviewId = await createResource(nested, clients, 'create-review');
     assert.equal(clients.created.length, 2, 'the product the review needed is recorded too');
