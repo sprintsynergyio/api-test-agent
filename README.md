@@ -672,7 +672,7 @@ How to read it, before quoting it:
 - **Node 22 or newer** on macOS, Windows or Linux. CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the typecheck, every offline suite, the Pactum template tests, a full `FAKE_MODEL=1` end-to-end run and `npm test` in both exported projects on `ubuntu-latest`, `windows-latest` and `macos-latest` with Node 22 and 24.
 - **Windows:** npm scripts work the same in PowerShell and Git Bash (`cross-env` sets variables; CI runs both). CI also runs the UI and the whole agent from a folder with spaces in its path and on a drive letter other than `C:`. Set a variable for one command in PowerShell with `$env:NAME="value"; npm run ...`. If `claude` is not found after installing Claude Code, add npm's global folder (usually `%AppData%\npm`) to your PATH and open a new terminal.
 - **macOS and Linux:** nothing extra. Install Claude Code without `sudo`.
-- **Browsers:** not needed to generate or run tests. Only `npm run test:ui-layout` needs Chromium (`npx playwright install chromium` once).
+- **Browsers:** not needed to generate or run tests. Only `npm run test:ui-layout` and `npm run test:ui-page` need Chromium (`npx playwright install chromium` once).
 - **Shared servers** cannot use a personal Claude Code login; use an API key and hosted mode ([docs/HOSTING.md](docs/HOSTING.md)).
 
 ---
@@ -689,6 +689,7 @@ How to read it, before quoting it:
 | `npm run test:importers` | Importer tests against `test-fixtures/importers/`, offline; the 2 live text-importer tests run only with `RUN_LIVE_CLAUDE_TESTS=1` and a model |
 | `npm run test:platform` | The parts that differ between macOS, Windows and Linux (how tools are started, paths) |
 | `npm run test:ui-layout` | Opens the UI in headless Chromium at 1920 to 390 px wide and at 125% and 150% zoom, with a long input name, base URL, `.env` variable and path, and checks the two columns never overlap, nothing sticks out of its card and the page never scrolls sideways (needs `npx playwright install chromium` once) |
+| `npm run test:ui-page` | Clicks through the UI in headless Chromium the way a tester does, offline with no model call, and checks the fixes from the team's test sheet (needs `npx playwright install chromium` once, or `CHROME_PATH` pointing to a Chrome) |
 | `npm run test:ui-smoke` | Starts the UI with `npm run ui` and calls the routes that load the agent modules (input validation, key check); CI runs it on Windows from a folder with spaces on a J: drive |
 | `npm run test:e2e` | Whole agent with `FAKE_MODEL=1` (no key) for both frameworks against the local API, then `npm install` and `npm test` in each exported project |
 
