@@ -313,8 +313,14 @@ await check('pipeline: --test-workers 4 on the nested input passes with cleanup 
   assert.equal(four.summary.status, 'completed', four.out.slice(-800));
   assert.match(four.out, /Running \d+ tests using 4 workers/);
   assert.equal(four.summary.scope.testWorkers, 4);
-  assert.equal(four.summary.totals.failed, 0);
+  // The only failure is the planted delete-no-auth bug: the nested input has delete-product since test sheet TC-073.
+  const findings = (r: typeof four) => ((r.summary as unknown as { findings?: { endpointId: string; actualStatus: number }[] }).findings ?? []).map((f) => `${f.endpointId} ${f.actualStatus}`);
+  assert.deepEqual(findings(four), ['delete-product 204']);
+  assert.deepEqual(findings(one), ['delete-product 204']);
+  assert.equal(four.summary.totals.failed, 1);
+  assert.equal(four.summary.totals.passed, one.summary.totals.passed);
   assert.equal(four.summary.cleanup.failed, 0);
+  assert.equal((four.summary.cleanup as { skippedNoDeleteEndpoint?: number }).skippedNoDeleteEndpoint, 0, 'every product the run makes is deleted');
   assert.deepEqual(four.summary.cleanup, one.summary.cleanup, 'parallel workers change nothing about what gets cleaned');
   // spawnSync blocks the event loop, so the API's stdout arrives only once we yield.
   await sleep(500);

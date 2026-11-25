@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
-import { extname } from 'node:path';
+import { basename, extname } from 'node:path';
 import { readSheet } from 'read-excel-file/node';
 import { AGENT_CASE_PREFIX, TEST_TYPES } from './model';
 import { fillPlaceholders, type TestData } from './test-data';
@@ -444,10 +444,15 @@ function looksLikeXlsx(buf: Buffer): boolean {
 // A sheet from bytes (an upload) or pasted text. name is the file name, used for the format only.
 export async function parseSheet(input: Buffer | string, name = ''): Promise<ParsedSheet> {
   const ext = extname(name).toLowerCase();
+  if (ext === '.xls') throw new SheetError('old .xls files are not supported; save the sheet as .xlsx or .csv');
+  // A named file must be a sheet type (an upload named report.pdf is refused by its type, not read as a
+  // CSV and refused for missing columns). A name without an extension (pasted text) is read as text.
+  if (ext && ![...SHEET_EXTENSIONS, '.xlsm'].includes(ext)) {
+    throw new SheetError(`${basename(name)} is not a test case sheet: upload a ${SHEET_EXTENSIONS.join(', ')} file (Excel: save as .xlsx)`);
+  }
   if (typeof input !== 'string' && (ext === '.xlsx' || ext === '.xlsm' || looksLikeXlsx(input))) {
     return casesFromRows(await parseXlsxRows(input), 'xlsx');
   }
-  if (ext === '.xls') throw new SheetError('old .xls files are not supported; save the sheet as .xlsx or .csv');
   const text = typeof input === 'string' ? input : input.toString('utf8');
   if (Buffer.byteLength(text, 'utf8') > MAX_SHEET_BYTES) throw new SheetError(`the sheet is larger than ${MAX_SHEET_BYTES / 1024 / 1024} MB`);
   if (/^\s*https?:\/\/\S+\s*$/.test(text)) {

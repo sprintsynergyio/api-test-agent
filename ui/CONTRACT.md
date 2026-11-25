@@ -230,8 +230,10 @@ UI server:
 
 Nothing in sections 1 to 7 changes. When `UI_USERS` is set (login on) and/or `HOSTED=1`:
 
-- GET /api/session: `{ loginRequired, hosted, user, runsPerHour }`. `user` is null before login. The page shows
+- GET /api/session: `{ loginRequired, hosted, user, runsPerHour, forceProduction }`. `user` is null before login. The page shows
   the Sign in card while `loginRequired` is true and `user` is null, and the rest of the page only after.
+  `forceProduction` is true when the server runs with `AGENT_FORCE_PRODUCTION=1` (testing only); the page then
+  treats every host as production, like the server and the agent.
 - POST /api/login `{ user, password }`: 200 `{ user }` plus the session cookie, or 401 `{ error }`.
   POST /api/logout clears it.
 - With login on, every `/api/*` route except session, login and logout, and `/report` and `/allure`,
